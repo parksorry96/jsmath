@@ -1,0 +1,21 @@
+{
+  "name": "jsmath",
+  "private": true,
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "test": "turbo test",
+    "dev:web": "pnpm --filter @jsmath/web dev",
+    "dev:lms": "pnpm --filter @jsmath/lms-api dev",
+    "dev:ocr": "cd apps/ocr-api && uvicorn app.main:app --reload --port 8000"
+  },
+  "devDependencies": {
+    "turbo": "^2"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@10.13.1"
+}

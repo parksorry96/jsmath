@@ -1,0 +1,43 @@
+[project]
+name = "jsmath-ocr-api"
+version = "0.0.1"
+description = "OCR/AI Pipeline for JSMath"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "celery[redis]>=5.4",
+    "redis>=5.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "pillow>=11.0",
+    "opencv-python-headless>=4.10",
+    "sympy>=1.13",
+    "numpy>=2.0",
+    "httpx>=0.28",
+    "boto3>=1.35",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

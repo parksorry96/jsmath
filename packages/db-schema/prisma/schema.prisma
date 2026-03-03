@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── LMS 도메인 (lms schema) ───
+
+model User {
+  id             String       @id @default(cuid())
+  email          String       @unique
+  name           String
+  passwordHash   String       @map("password_hash")
+  role           Role         @default(student)
+  organizationId String?      @map("organization_id")
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  enrollments    Enrollment[]
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  users     User[]
+  courses   Course[]
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("organizations")
+}
+
+model Course {
+  id             String       @id @default(cuid())
+  title          String
+  description    String?
+  organizationId String       @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  enrollments    Enrollment[]
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  @@map("courses")
+}
+
+model Enrollment {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  courseId   String   @map("course_id")
+  role      Role     @default(student)
+  user      User     @relation(fields: [userId], references: [id])
+  course    Course   @relation(fields: [courseId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, courseId])
+  @@map("enrollments")
+}
+
+enum Role {
+  admin
+  teacher
+  student
+}
+
+// ─── OCR 도메인 (ocr schema — FastAPI/SQLAlchemy에서도 접근) ───
+
+model SourceFile {
+  id        String   @id @default(cuid())
+  filename  String
+  s3Key     String   @map("s3_key")
+  fileHash  String   @unique @map("file_hash")
+  sizeBytes Int      @map("size_bytes")
+  ocrJobs   OcrJob[]
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("source_files")
+}
+
+model OcrJob {
+  id           String       @id @default(cuid())
+  sourceFileId String       @map("source_file_id")
+  sourceFile   SourceFile   @relation(fields: [sourceFileId], references: [id])
+  status       OcrJobStatus @default(pending)
+  problemCount Int?         @map("problem_count")
+  errorMessage String?      @map("error_message")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  completedAt  DateTime?    @map("completed_at")
+
+  @@index([status, createdAt])
+  @@map("ocr_jobs")
+}
+
+enum OcrJobStatus {
+  pending
+  processing
+  completed
+  failed
+  manual_review
+}
