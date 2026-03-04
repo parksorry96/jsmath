@@ -1,7 +1,7 @@
 """Analysis pipeline orchestration — chains AI analysis tasks.
 
-Stage 1 (parallel): analyze_solution, refine_classification, detect_exam_pattern
-Stage 2 (sequential): merge → generate_embedding → find_similar → auto_review
+Unified mode (default): single GPT call per problem via unified_analysis
+Legacy mode: parallel chord of 3 separate GPT calls → merge → Stage 2
 """
 
 from __future__ import annotations
@@ -14,15 +14,13 @@ from celery import chain, chord, group
 from sqlalchemy import select
 
 from app.celery_app import celery
+from app.config import settings
 from app.database import worker_session
 from app.models.problem import AnalysisStatus, Problem
 from app.services.redis_events import notify_analysis_completed, notify_analysis_failed
-from app.workers.analyze_solution import analyze_solution
 from app.workers.auto_review import auto_review
-from app.workers.detect_exam_pattern import detect_exam_pattern
 from app.workers.find_similar import find_similar
 from app.workers.generate_embedding import generate_embedding
-from app.workers.refine_classification import refine_classification
 
 logger = logging.getLogger(__name__)
 
@@ -30,24 +28,30 @@ logger = logging.getLogger(__name__)
 def start_analysis_pipeline(ocr_job_id: str, problem_ids: list[str]) -> str:
     """Kick off AI analysis for a batch of problems.
 
-    For each problem:
-      Stage 1 (parallel): analyze_solution + refine_classification + detect_exam_pattern
-      → merge_stage1_results
-      Stage 2 (sequential): generate_embedding → find_similar → auto_review
-
-    All problems run in parallel via a group.
+    Unified mode (default): single GPT call per problem
+    Legacy mode: parallel chord of 3 separate GPT calls
     """
     workflows = []
     for pid in problem_ids:
-        stage1 = chord(
-            group(
-                analyze_solution.s(problem_id=pid),
-                refine_classification.s(problem_id=pid),
-                detect_exam_pattern.s(problem_id=pid),
-            ),
-            merge_stage1_results.s(problem_id=pid),
-        )
+        if settings.use_unified_analysis:
+            from app.workers.unified_analysis import unified_analysis
+            stage1 = unified_analysis.s(problem_id=pid)
+        else:
+            from app.workers.analyze_solution import analyze_solution
+            from app.workers.detect_exam_pattern import detect_exam_pattern
+            from app.workers.refine_classification import refine_classification
+            stage1 = chord(
+                group(
+                    analyze_solution.s(problem_id=pid),
+                    refine_classification.s(problem_id=pid),
+                    detect_exam_pattern.s(problem_id=pid),
+                ),
+                merge_stage1_results.s(problem_id=pid),
+            )
+
+        from app.workers.detect_exam_pattern import apply_deterministic_rules
         stage2 = chain(
+            apply_deterministic_rules.s(problem_id=pid),
             generate_embedding.s(problem_id=pid),
             find_similar.s(problem_id=pid),
             auto_review.s(problem_id=pid),
@@ -56,15 +60,15 @@ def start_analysis_pipeline(ocr_job_id: str, problem_ids: list[str]) -> str:
         per_problem.on_error(on_problem_error.s(problem_id=pid))
         workflows.append(per_problem)
 
-    # Wrap with finalization callback
     batch = chord(
         group(workflows),
         finalize_analysis.s(ocr_job_id=ocr_job_id, total=len(problem_ids)),
     )
     result = batch.apply_async()
+    mode = "unified" if settings.use_unified_analysis else "legacy"
     logger.info(
-        "Analysis pipeline started for job %s: %d problems, task_id=%s",
-        ocr_job_id, len(problem_ids), result.id,
+        "Analysis pipeline (%s) started for job %s: %d problems, task_id=%s",
+        mode, ocr_job_id, len(problem_ids), result.id,
     )
     return result.id
 

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from app.celery_app import celery
 from app.config import settings
 from app.database import worker_session
-from app.models.problem import Problem
+from app.models.problem import AnalysisStatus, Problem
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +207,77 @@ async def _detect(task, problem_id: str) -> dict:
     }
 
 
+@celery.task(
+    bind=True,
+    name="task.analysis.apply_exam_rules",
+    acks_late=True,
+)
+def apply_deterministic_rules(self, prev_result: dict | None = None, *, problem_id: str | None = None) -> dict:
+    """Apply deterministic CSAT exam rules and save analysis results to DB.
+
+    Runs after unified_analysis or legacy merge. Reads problem_number from DB,
+    applies position_type/point_value/question_format rules, and persists
+    all analysis fields from prev_result.
+    """
+    if prev_result and isinstance(prev_result, dict):
+        problem_id = problem_id or prev_result.get("problem_id")
+    if not problem_id:
+        raise ValueError("problem_id is required")
+    return asyncio.run(_apply_rules(problem_id, prev_result or {}))
+
+
+async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
+    async with worker_session() as session:
+        result = await session.execute(
+            select(Problem).where(Problem.id == problem_id)
+        )
+        problem = result.scalar_one_or_none()
+        if not problem:
+            return {**prev_result, "problem_id": problem_id}
+
+        qnum = _parse_question_number(problem.problem_number)
+        rules = _rules_from_number(qnum)
+
+        if rules:
+            position_type, point_value, question_format = rules
+            problem.position_type = position_type
+            problem.point_value = point_value
+            if not problem.question_format:
+                problem.question_format = question_format
+        else:
+            # Fallback: use difficulty from prev_result or existing
+            difficulty = prev_result.get("difficulty_refined") or problem.difficulty_refined or problem.difficulty
+            problem.point_value = _point_from_difficulty(difficulty)
+            problem.position_type = _position_from_difficulty(difficulty)
+
+        # Save unified analysis results to DB
+        field_map = {
+            "solution_strategy": "solution_strategy",
+            "required_concepts": "required_concepts",
+            "solution_steps": "solution_steps",
+            "estimated_time_sec": "estimated_time_sec",
+            "common_mistakes": "common_mistakes",
+            "subject": "subject",
+            "unit_major": "unit_major",
+            "unit_minor": "unit_minor",
+            "unit_sub": "unit_sub",
+            "difficulty_refined": "difficulty_refined",
+            "is_common": "is_common",
+            "classification_confidence": "classification_confidence",
+            "exam_source": "exam_source",
+        }
+        for key, attr in field_map.items():
+            val = prev_result.get(key)
+            if val is not None and hasattr(problem, attr):
+                setattr(problem, attr, val)
+
+        problem.analysis_status = AnalysisStatus.analyzing
+        await session.commit()
+
+    merged = {**prev_result, "problem_id": problem_id}
+    return merged
+
+
 async def _identify_exam_source(
     task, problem_id: str, stem_latex: str, stem_text: str, problem_number: str,
 ) -> dict | None:
@@ -227,7 +298,6 @@ async def _identify_exam_source(
             model=settings.ai_model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.1,
             max_completion_tokens=200,
         )
     except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
