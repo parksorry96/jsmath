@@ -1,1 +1,106 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-sans: "Pretendard Variable", "Pretendard", ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+    --radius-2xl: calc(var(--radius) + 8px);
+    --radius-3xl: calc(var(--radius) + 12px);
+    --radius-4xl: calc(var(--radius) + 16px);
+
+    /* Brand colors for direct usage: bg-brand-dark, text-brand-beige etc. */
+    --color-brand-dark: #222831;
+    --color-brand-charcoal: #393E46;
+    --color-brand-warm: #948979;
+    --color-brand-beige: #DFD0B8;
+
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+    --color-sidebar: var(--sidebar);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/*
+ * Brand color palette (dark-tone warm design):
+ * #222831 - Dark Navy (primary background)
+ * #393E46 - Charcoal (secondary/cards/sidebar)
+ * #948979 - Warm Gray (accents, borders, muted text)
+ * #DFD0B8 - Warm Beige (highlights, CTA buttons, active states)
+ */
+:root {
+    --radius: 0.625rem;
+    --background: #222831;
+    --foreground: #EEEEEE;
+    --card: #393E46;
+    --card-foreground: #EEEEEE;
+    --popover: #393E46;
+    --popover-foreground: #EEEEEE;
+    --primary: #DFD0B8;
+    --primary-foreground: #222831;
+    --secondary: #393E46;
+    --secondary-foreground: #DFD0B8;
+    --muted: #393E46;
+    --muted-foreground: #948979;
+    --accent: #948979;
+    --accent-foreground: #EEEEEE;
+    --destructive: #E74C3C;
+    --border: #4A5060;
+    --input: #393E46;
+    --ring: #DFD0B8;
+    --chart-1: #DFD0B8;
+    --chart-2: #948979;
+    --chart-3: #5C6370;
+    --chart-4: #7BA695;
+    --chart-5: #C4956A;
+    --sidebar: #393E46;
+    --sidebar-foreground: #EEEEEE;
+    --sidebar-primary: #DFD0B8;
+    --sidebar-primary-foreground: #222831;
+    --sidebar-accent: #222831;
+    --sidebar-accent-foreground: #DFD0B8;
+    --sidebar-border: #4A5060;
+    --sidebar-ring: #DFD0B8;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}

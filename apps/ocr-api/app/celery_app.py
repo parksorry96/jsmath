@@ -19,4 +19,13 @@ celery.conf.update(
     worker_prefetch_multiplier=1,
 )
 
-celery.autodiscover_tasks(["app.workers"])
+celery.conf.update(
+    include=[
+        "app.workers.ocr_submit",
+        "app.workers.ocr_poll",
+        "app.workers.parse_results",
+        "app.workers.segment_problems",
+        "app.workers.crop_figures",
+        "app.workers.classify_problems",
+    ],
+)

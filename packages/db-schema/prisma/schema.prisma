@@ -41,6 +41,8 @@ model Course {
   organizationId String       @map("organization_id")
   organization   Organization @relation(fields: [organizationId], references: [id])
   enrollments    Enrollment[]
+  assignments    Assignment[]
+  deletedAt      DateTime?    @map("deleted_at")
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
@@ -58,6 +60,21 @@ model Enrollment {
 
   @@unique([userId, courseId])
   @@map("enrollments")
+}
+
+model Assignment {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  courseId    String    @map("course_id")
+  course      Course    @relation(fields: [courseId], references: [id])
+  dueAt       DateTime? @map("due_at")
+  maxScore    Int       @default(100) @map("max_score")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([courseId])
+  @@map("assignments")
 }
 
 enum Role {
@@ -87,6 +104,7 @@ model OcrJob {
   status       OcrJobStatus @default(pending)
   problemCount Int?         @map("problem_count")
   errorMessage String?      @map("error_message")
+  problems     Problem[]
   createdAt    DateTime     @default(now()) @map("created_at")
   completedAt  DateTime?    @map("completed_at")
 
@@ -100,4 +118,108 @@ enum OcrJobStatus {
   completed
   failed
   manual_review
+}
+
+model Problem {
+  id                       String        @id @default(cuid())
+  ocrJobId                 String        @map("ocr_job_id")
+  ocrJob                   OcrJob        @relation(fields: [ocrJobId], references: [id])
+  textbookId               String?       @map("textbook_id")
+  sourceFileId             String?       @map("source_file_id")
+
+  // Position in source
+  startPage                Int           @map("start_page")
+  endPage                  Int           @map("end_page")
+  problemNumber            String?       @map("problem_number")
+  displayNumber            String?       @map("display_number")
+
+  // Parent-child for sub-problems
+  parentId                 String?       @map("parent_id")
+  parent                   Problem?      @relation("SubProblems", fields: [parentId], references: [id])
+  subProblems              Problem[]     @relation("SubProblems")
+
+  // Content
+  stemLatex                String        @map("stem_latex")
+  stemText                 String        @map("stem_text")
+  stemLatexNormalized      String?       @map("stem_latex_normalized")
+  sharedStemLatex          String?       @map("shared_stem_latex")
+  sharedStemText           String?       @map("shared_stem_text")
+  problemType              ProblemType   @map("problem_type")
+
+  // Answer
+  answerText               String?       @map("answer_text")
+  answerLatex              String?       @map("answer_latex")
+
+  // Classification
+  gradeLevel               String?       @map("grade_level")
+  subject                  String?
+  unitMajor                String?       @map("unit_major")
+  unitMinor                String?       @map("unit_minor")
+  unitSub                  String?       @map("unit_sub")
+  difficulty               Int?          @db.SmallInt
+  classificationConfidence Float?        @map("classification_confidence")
+
+  // Review
+  reviewStatus             ReviewStatus  @default(pending_review) @map("review_status")
+  reviewedBy               String?       @map("reviewed_by")
+
+  // Relations
+  choices                  ProblemChoice[]
+  assets                   ProblemAsset[]
+
+  createdAt                DateTime      @default(now()) @map("created_at")
+  updatedAt                DateTime      @updatedAt @map("updated_at")
+
+  @@index([ocrJobId])
+  @@index([textbookId])
+  @@index([gradeLevel, subject, unitMajor])
+  @@index([reviewStatus])
+  @@map("problems")
+}
+
+model ProblemChoice {
+  id           String  @id @default(cuid())
+  problemId    String  @map("problem_id")
+  problem      Problem @relation(fields: [problemId], references: [id])
+  position     Int     @db.SmallInt
+  label        String  @db.VarChar(10)
+  contentLatex String  @map("content_latex")
+  contentText  String  @map("content_text")
+  isCorrect    Boolean? @map("is_correct")
+
+  @@unique([problemId, position])
+  @@map("problem_choices")
+}
+
+model ProblemAsset {
+  id              String   @id @default(cuid())
+  problemId       String   @map("problem_id")
+  problem         Problem  @relation(fields: [problemId], references: [id])
+  kind            String
+  subKind         String?  @map("sub_kind")
+  s3Key           String   @map("s3_key")
+  format          String   @default("webp")
+  widthPx         Int?     @map("width_px")
+  heightPx        Int?     @map("height_px")
+  detectionMethod String?  @map("detection_method")
+  aiDescription   String?  @map("ai_description")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([problemId, kind])
+  @@map("problem_assets")
+}
+
+enum ProblemType {
+  multiple_choice
+  short_answer
+  written_solution
+  essay
+}
+
+enum ReviewStatus {
+  auto_approved
+  pending_review
+  approved
+  rejected
 }
