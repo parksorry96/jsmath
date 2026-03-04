@@ -6,6 +6,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Code,
   FileText,
   Keyboard,
@@ -15,6 +16,7 @@ import {
   ArrowLeft,
   Upload,
   Trash2,
+  Sparkles,
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -52,10 +54,24 @@ interface Problem {
   problemType: string;
   choices?: ProblemChoice[];
   reviewStatus: string;
+  analysisStatus?: string;
   classificationConfidence: number | null;
   assets?: ProblemAsset[];
   sourceFile?: string;
   startPage?: number;
+}
+
+interface AnalysisResult {
+  solutionStrategy?: string;
+  requiredConcepts?: string[];
+  solutionSteps?: string[];
+  estimatedTimeSec?: number;
+  commonMistakes?: string[];
+  difficultyRefined?: number;
+  isCommon?: boolean;
+  pointValue?: number;
+  positionType?: string;
+  questionFormat?: string;
 }
 
 interface PaginatedResponse {
@@ -105,6 +121,20 @@ function getFirstAssetS3Key(problem: Problem): string | null {
 
 function getDisplayContent(problem: Problem): string {
   return problem.stemLatex || problem.stemText || "";
+}
+
+function formatTimeSec(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m === 0) return `${s}초`;
+  if (s === 0) return `${m}분`;
+  return `${m}분 ${s}초`;
+}
+
+function difficultyBadgeClass(d: number): string {
+  if (d <= 2) return "bg-green-500/20 text-green-400 border-green-500/30";
+  if (d <= 3) return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
+  return "bg-red-500/20 text-red-400 border-red-500/30";
 }
 
 function useAssetUrl(s3Key: string | null) {
@@ -263,6 +293,173 @@ function FileListView({
         </div>
       )}
     </div>
+  );
+}
+
+// --- Analysis Section Component ---
+
+function AnalysisSection({
+  problem,
+  ocrJobId,
+}: {
+  problem: Problem;
+  ocrJobId: string;
+}) {
+  const queryClient = useQueryClient();
+  const [expanded, setExpanded] = useState(false);
+
+  const analysisQuery = useQuery({
+    queryKey: ["analysis", problem.id],
+    queryFn: () => api.get<AnalysisResult>(`/problems/${problem.id}/analysis`),
+    enabled: problem.analysisStatus === "completed",
+  });
+
+  const analyzeMutation = useMutation({
+    mutationFn: () => api.post("/problems/analyze", { ocrJobId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["review-queue", ocrJobId] });
+    },
+  });
+
+  const isAnalyzing = problem.analysisStatus === "analyzing" || analyzeMutation.isPending;
+  const isCompleted = problem.analysisStatus === "completed";
+  const analysis = analysisQuery.data;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Sparkles className="h-4 w-4 text-brand-beige" />
+            AI 분석
+          </CardTitle>
+          <div className="flex items-center gap-2">
+            {isCompleted && (
+              <Badge variant="default" className="text-xs">분석 완료</Badge>
+            )}
+            {isCompleted ? (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => setExpanded((v) => !v)}
+              >
+                <ChevronDown className={`h-3 w-3 transition-transform ${expanded ? "rotate-180" : ""}`} />
+                {expanded ? "접기" : "펼치기"}
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={isAnalyzing}
+                onClick={() => analyzeMutation.mutate()}
+              >
+                {isAnalyzing ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    분석 중...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                    AI 분석 시작
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      {expanded && isCompleted && analysis && (
+        <CardContent>
+          <div className="space-y-4 rounded-lg border border-border bg-brand-dark p-4 text-sm">
+            {/* Difficulty */}
+            {analysis.difficultyRefined != null && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">정밀 난이도:</span>
+                <Badge variant="outline" className={difficultyBadgeClass(analysis.difficultyRefined)}>
+                  {analysis.difficultyRefined}등급
+                </Badge>
+              </div>
+            )}
+
+            {/* Solution strategy */}
+            {analysis.solutionStrategy && (
+              <div>
+                <p className="mb-1 font-medium text-muted-foreground">풀이 전략</p>
+                <p className="text-foreground">{analysis.solutionStrategy}</p>
+              </div>
+            )}
+
+            {/* Required concepts */}
+            {analysis.requiredConcepts && analysis.requiredConcepts.length > 0 && (
+              <div>
+                <p className="mb-1.5 font-medium text-muted-foreground">필요 개념</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {analysis.requiredConcepts.map((c, i) => (
+                    <Badge key={i} variant="secondary" className="text-xs">{c}</Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Solution steps */}
+            {analysis.solutionSteps && analysis.solutionSteps.length > 0 && (
+              <div>
+                <p className="mb-1.5 font-medium text-muted-foreground">풀이 단계</p>
+                <ol className="list-decimal space-y-1 pl-5 text-foreground">
+                  {analysis.solutionSteps.map((step, i) => (
+                    <li key={i}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+            )}
+
+            {/* Estimated time */}
+            {analysis.estimatedTimeSec != null && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">예상 풀이시간:</span>
+                <span className="text-foreground">{formatTimeSec(analysis.estimatedTimeSec)}</span>
+              </div>
+            )}
+
+            {/* Common mistakes */}
+            {analysis.commonMistakes && analysis.commonMistakes.length > 0 && (
+              <div>
+                <p className="mb-1.5 font-medium text-muted-foreground">흔한 실수</p>
+                <ul className="list-disc space-y-1 pl-5 text-foreground">
+                  {analysis.commonMistakes.map((m, i) => (
+                    <li key={i}>{m}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* CSAT info */}
+            {(analysis.isCommon != null || analysis.pointValue != null || analysis.positionType || analysis.questionFormat) && (
+              <div>
+                <p className="mb-1.5 font-medium text-muted-foreground">수능 정보</p>
+                <div className="flex flex-wrap gap-2">
+                  {analysis.isCommon != null && (
+                    <Badge variant="outline" className="text-xs">
+                      {analysis.isCommon ? "공통" : "선택"}
+                    </Badge>
+                  )}
+                  {analysis.pointValue != null && (
+                    <Badge variant="outline" className="text-xs">{analysis.pointValue}점</Badge>
+                  )}
+                  {analysis.positionType && (
+                    <Badge variant="outline" className="text-xs">{analysis.positionType}</Badge>
+                  )}
+                  {analysis.questionFormat && (
+                    <Badge variant="outline" className="text-xs">{analysis.questionFormat}</Badge>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      )}
+    </Card>
   );
 }
 
@@ -698,6 +895,9 @@ function ProblemReviewView({
               </CardContent>
             )}
           </Card>
+
+          {/* AI Analysis */}
+          <AnalysisSection problem={current!} ocrJobId={ocrJobId} />
         </div>
       </div>
 
