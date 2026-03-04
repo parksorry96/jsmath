@@ -9,12 +9,13 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.config import settings
+from app.services.openai_client import get_openai_client
 from app.database import worker_session
 from app.models.problem import Problem, ProblemChoice
 
@@ -82,10 +83,7 @@ async def _generate(task, problem_id: str, stage1_result: dict | None) -> dict:
         logger.warning("AI_API_KEY missing; skipping embedding for %s", problem_id)
         return {"problem_id": problem_id, "embedding_generated": False}
 
-    client_kwargs: dict = {"api_key": settings.ai_api_key}
-    if settings.ai_api_base_url:
-        client_kwargs["base_url"] = settings.ai_api_base_url
-    client = AsyncOpenAI(**client_kwargs)
+    client = get_openai_client()
 
     try:
         response = await client.embeddings.create(

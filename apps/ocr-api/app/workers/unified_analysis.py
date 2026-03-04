@@ -11,13 +11,14 @@ import json
 import logging
 from typing import Optional
 
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.config import settings
+from app.services.openai_client import get_openai_client
 from app.database import worker_session
 from app.models.problem import Problem, ProblemChoice
 from app.schemas.problem import CURRICULUM_TREE, SUBJECTS
@@ -181,10 +182,7 @@ async def _unified_analyze(task, problem_id: str) -> dict:
         logger.warning("AI_API_KEY missing; returning heuristic fallback for %s", problem_id)
         return _heuristic_fallback(problem_id)
 
-    client_kwargs: dict = {"api_key": settings.ai_api_key}
-    if settings.ai_api_base_url:
-        client_kwargs["base_url"] = settings.ai_api_base_url
-    client = AsyncOpenAI(**client_kwargs)
+    client = get_openai_client()
 
     try:
         response = await client.chat.completions.create(

@@ -10,11 +10,12 @@ import asyncio
 import json
 import logging
 
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from sqlalchemy import select
 
 from app.celery_app import celery
 from app.config import settings
+from app.services.openai_client import get_openai_client
 from app.database import worker_session
 from app.models.problem import AnalysisStatus, Problem
 
@@ -283,10 +284,7 @@ async def _identify_exam_source(
     task, problem_id: str, stem_latex: str, stem_text: str, problem_number: str,
 ) -> dict | None:
     """Call GPT to identify exam source only."""
-    client_kwargs: dict = {"api_key": settings.ai_api_key}
-    if settings.ai_api_base_url:
-        client_kwargs["base_url"] = settings.ai_api_base_url
-    client = AsyncOpenAI(**client_kwargs)
+    client = get_openai_client()
 
     prompt = EXAM_SOURCE_PROMPT.format(
         stem_latex=stem_latex,

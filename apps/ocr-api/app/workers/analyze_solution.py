@@ -11,12 +11,13 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.config import settings
+from app.services.openai_client import get_openai_client
 from app.database import worker_session
 from app.models.problem import AnalysisStatus, Problem, ProblemChoice
 
@@ -109,18 +110,14 @@ async def _analyze(task, problem_id: str) -> dict:
             "common_mistakes": [],
         }
 
-    client_kwargs: dict = {"api_key": settings.ai_api_key}
-    if settings.ai_api_base_url:
-        client_kwargs["base_url"] = settings.ai_api_base_url
-    client = AsyncOpenAI(**client_kwargs)
+    client = get_openai_client()
 
     try:
         response = await client.chat.completions.create(
             model=settings.ai_model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.3,
-            max_completion_tokens=1000,
+            max_completion_tokens=2000,
         )
     except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
         logger.warning("OpenAI API error for problem %s: %s — retrying", problem_id, exc)

@@ -10,11 +10,12 @@ import asyncio
 import json
 import logging
 
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from sqlalchemy import select
 
 from app.celery_app import celery
 from app.config import settings
+from app.services.openai_client import get_openai_client
 from app.database import worker_session
 from app.models.problem import Problem
 from app.schemas.problem import CURRICULUM_TREE, SUBJECTS
@@ -127,18 +128,14 @@ async def _refine(task, problem_id: str) -> dict:
         logger.warning("AI_API_KEY missing; returning heuristic for %s", problem_id)
         return _heuristic_refine(problem_id)
 
-    client_kwargs: dict = {"api_key": settings.ai_api_key}
-    if settings.ai_api_base_url:
-        client_kwargs["base_url"] = settings.ai_api_base_url
-    client = AsyncOpenAI(**client_kwargs)
+    client = get_openai_client()
 
     try:
         response = await client.chat.completions.create(
             model=settings.ai_model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.2,
-            max_completion_tokens=800,
+            max_completion_tokens=1500,
         )
     except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
         logger.warning("OpenAI API error for problem %s: %s — retrying", problem_id, exc)
