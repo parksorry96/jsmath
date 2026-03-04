@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import enum
+from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    DateTime,
     Float,
     ForeignKey,
     Index,
@@ -47,6 +49,24 @@ class ReviewStatus(str, enum.Enum):
     pending_review = "pending_review"  # needs teacher review
     approved = "approved"  # teacher approved
     rejected = "rejected"  # teacher rejected
+
+
+class AnalysisStatus(str, enum.Enum):
+    pending = "pending"
+    analyzing = "analyzing"
+    completed = "completed"
+    failed = "failed"
+
+
+class QuestionFormat(str, enum.Enum):
+    multiple_choice_5 = "multiple_choice_5"  # 5지선다
+    short_answer = "short_answer"  # 단답형
+
+
+class PositionType(str, enum.Enum):
+    normal = "normal"
+    semi_killer = "semi_killer"  # 준킬러
+    killer = "killer"  # 킬러
 
 
 # ─── Problem (main entity) ───
@@ -107,6 +127,23 @@ class Problem(Base, TimestampMixin):
     review_status: Mapped[ReviewStatus] = mapped_column(default=ReviewStatus.pending_review)
     reviewed_by: Mapped[str | None] = mapped_column(String(30))  # user id from lms
 
+    # CSAT-specific metadata
+    is_common: Mapped[bool | None] = mapped_column(default=True)  # 공통과목 vs 선택과목
+    point_value: Mapped[int | None] = mapped_column(SmallInteger)  # 2, 3, 4
+    question_format: Mapped[QuestionFormat | None] = mapped_column()
+    position_type: Mapped[PositionType | None] = mapped_column()
+    exam_source: Mapped[dict | None] = mapped_column(JSONB)  # {"year","month","type","number"}
+
+    # AI analysis results
+    solution_strategy: Mapped[str | None] = mapped_column(Text)
+    required_concepts: Mapped[list | None] = mapped_column(JSONB)
+    solution_steps: Mapped[list | None] = mapped_column(JSONB)
+    estimated_time_sec: Mapped[int | None] = mapped_column(Integer)
+    common_mistakes: Mapped[list | None] = mapped_column(JSONB)
+    difficulty_refined: Mapped[float | None] = mapped_column(Float)
+    analysis_status: Mapped[AnalysisStatus] = mapped_column(default=AnalysisStatus.pending)
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Full-text search
     stem_tsv: Mapped[str | None] = mapped_column(TSVECTOR)
 
@@ -125,6 +162,7 @@ class Problem(Base, TimestampMixin):
         Index("ix_problems_textbook", "textbook_id"),
         Index("ix_problems_classification", "grade_level", "subject", "unit_major"),
         Index("ix_problems_review", "review_status"),
+        Index("ix_problems_analysis_status", "analysis_status"),
         Index("ix_problems_stem_tsv", "stem_tsv", postgresql_using="gin"),
         Index("ix_problems_embedding", "embedding", postgresql_using="hnsw",
               postgresql_with={"m": 16, "ef_construction": 64},
