@@ -1,0 +1,184 @@
+"""Analysis pipeline orchestration — chains AI analysis tasks.
+
+Stage 1 (parallel): analyze_solution, refine_classification, detect_exam_pattern
+Stage 2 (sequential): merge → generate_embedding → find_similar → auto_review
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+
+from celery import chain, chord, group
+from sqlalchemy import select
+
+from app.celery_app import celery
+from app.database import worker_session
+from app.models.problem import AnalysisStatus, Problem
+from app.services.redis_events import notify_analysis_completed, notify_analysis_failed
+from app.workers.analyze_solution import analyze_solution
+from app.workers.auto_review import auto_review
+from app.workers.detect_exam_pattern import detect_exam_pattern
+from app.workers.find_similar import find_similar
+from app.workers.generate_embedding import generate_embedding
+from app.workers.refine_classification import refine_classification
+
+logger = logging.getLogger(__name__)
+
+
+def start_analysis_pipeline(ocr_job_id: str, problem_ids: list[str]) -> str:
+    """Kick off AI analysis for a batch of problems.
+
+    For each problem:
+      Stage 1 (parallel): analyze_solution + refine_classification + detect_exam_pattern
+      → merge_stage1_results
+      Stage 2 (sequential): generate_embedding → find_similar → auto_review
+
+    All problems run in parallel via a group.
+    """
+    workflows = []
+    for pid in problem_ids:
+        stage1 = chord(
+            group(
+                analyze_solution.s(problem_id=pid),
+                refine_classification.s(problem_id=pid),
+                detect_exam_pattern.s(problem_id=pid),
+            ),
+            merge_stage1_results.s(problem_id=pid),
+        )
+        stage2 = chain(
+            generate_embedding.s(problem_id=pid),
+            find_similar.s(problem_id=pid),
+            auto_review.s(problem_id=pid),
+        )
+        workflow = chain(stage1, stage2)
+        workflows.append(workflow)
+
+    # Wrap with finalization callback
+    batch = chord(
+        group(workflows),
+        finalize_analysis.s(ocr_job_id=ocr_job_id, total=len(problem_ids)),
+    )
+    result = batch.apply_async()
+    logger.info(
+        "Analysis pipeline started for job %s: %d problems, task_id=%s",
+        ocr_job_id, len(problem_ids), result.id,
+    )
+    return result.id
+
+
+@celery.task(
+    bind=True,
+    name="task.analysis.merge_stage1",
+    max_retries=2,
+    default_retry_delay=5,
+    acks_late=True,
+)
+def merge_stage1_results(self, stage1_results: list[dict], *, problem_id: str) -> dict:
+    """Merge parallel Stage 1 results and save to database."""
+    return asyncio.run(_merge(problem_id, stage1_results))
+
+
+async def _merge(problem_id: str, results: list[dict]) -> dict:
+    merged: dict = {"problem_id": problem_id}
+    for result in results:
+        if isinstance(result, dict):
+            merged.update(result)
+    # Ensure problem_id is preserved
+    merged["problem_id"] = problem_id
+
+    async with worker_session() as session:
+        query = await session.execute(
+            select(Problem).where(Problem.id == problem_id)
+        )
+        problem = query.scalar_one_or_none()
+        if not problem:
+            raise ValueError(f"Problem {problem_id} not found")
+
+        # Update analysis status
+        problem.analysis_status = AnalysisStatus.analyzing
+
+        # Save Stage 1 results
+        if merged.get("solution_strategy"):
+            problem.solution_strategy = merged["solution_strategy"]
+        if merged.get("required_concepts"):
+            problem.required_concepts = merged["required_concepts"]
+        if merged.get("solution_steps"):
+            problem.solution_steps = merged["solution_steps"]
+        if merged.get("estimated_time_sec") is not None:
+            problem.estimated_time_sec = merged["estimated_time_sec"]
+        if merged.get("common_mistakes"):
+            problem.common_mistakes = merged["common_mistakes"]
+
+        # Refined classification
+        if merged.get("subject"):
+            problem.subject = merged["subject"]
+        if merged.get("unit_major"):
+            problem.unit_major = merged["unit_major"]
+        if merged.get("unit_minor"):
+            problem.unit_minor = merged["unit_minor"]
+        if merged.get("unit_sub"):
+            problem.unit_sub = merged["unit_sub"]
+        if merged.get("difficulty_refined") is not None:
+            problem.difficulty_refined = merged["difficulty_refined"]
+        if merged.get("is_common") is not None:
+            problem.is_common = merged["is_common"]
+        if merged.get("classification_confidence") is not None:
+            problem.classification_confidence = merged["classification_confidence"]
+
+        # Exam pattern
+        if merged.get("exam_source"):
+            problem.exam_source = merged["exam_source"]
+        if merged.get("position_type"):
+            problem.position_type = merged["position_type"]
+        if merged.get("point_value") is not None:
+            problem.point_value = merged["point_value"]
+        if merged.get("question_format"):
+            problem.question_format = merged["question_format"]
+
+        await session.commit()
+
+    logger.info("Merged Stage 1 results for problem %s", problem_id)
+    return merged
+
+
+@celery.task(
+    bind=True,
+    name="task.analysis.finalize",
+    acks_late=True,
+)
+def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> dict:
+    """Finalize analysis batch — count results and notify NestJS."""
+    auto_approved = 0
+    completed = 0
+    failed = 0
+
+    for result in results:
+        if isinstance(result, dict):
+            decision = result.get("decision")
+            if decision == "auto_approved":
+                auto_approved += 1
+                completed += 1
+            elif decision == "pending_review":
+                completed += 1
+            else:
+                failed += 1
+        else:
+            failed += 1
+
+    if failed > 0 and completed == 0:
+        notify_analysis_failed(ocr_job_id, f"All {failed} problems failed analysis")
+    else:
+        notify_analysis_completed(ocr_job_id, completed, auto_approved)
+
+    logger.info(
+        "Analysis finalized for job %s: %d completed, %d auto-approved, %d failed",
+        ocr_job_id, completed, auto_approved, failed,
+    )
+    return {
+        "ocr_job_id": ocr_job_id,
+        "completed": completed,
+        "auto_approved": auto_approved,
+        "failed": failed,
+    }
