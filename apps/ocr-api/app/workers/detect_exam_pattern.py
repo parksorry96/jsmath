@@ -308,13 +308,3 @@ async def _identify_exam_source(
     analysis = json.loads(content)
     return analysis.get("exam_source")
 
-
-def _default_pattern(problem_id: str) -> dict:
-    """Fallback defaults."""
-    return {
-        "problem_id": problem_id,
-        "exam_source": None,
-        "position_type": "normal",
-        "point_value": 3,
-        "question_format": "multiple_choice_5",
-    }

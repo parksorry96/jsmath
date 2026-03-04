@@ -26,7 +26,6 @@ celery.conf.update(
         "app.workers.parse_results",
         "app.workers.segment_problems",
         "app.workers.crop_figures",
-        "app.workers.classify_problems",
         "app.workers.analyze_solution",
         "app.workers.refine_classification",
         "app.workers.detect_exam_pattern",
@@ -34,5 +33,6 @@ celery.conf.update(
         "app.workers.find_similar",
         "app.workers.auto_review",
         "app.workers.analysis_pipeline",
+        "app.workers.unified_analysis",
     ],
 )
