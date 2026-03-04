@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Check,
   X,
@@ -307,21 +307,33 @@ function AnalysisSection({
 }) {
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const prevStatusRef = useRef(problem.analysisStatus);
+
+  // Auto-expand when status transitions to completed
+  useEffect(() => {
+    if (prevStatusRef.current !== "completed" && problem.analysisStatus === "completed") {
+      setExpanded(true);
+    }
+    prevStatusRef.current = problem.analysisStatus;
+  }, [problem.analysisStatus]);
 
   const analysisQuery = useQuery({
     queryKey: ["analysis", problem.id],
     queryFn: () => api.get<AnalysisResult>(`/problems/${problem.id}/analysis`),
     enabled: problem.analysisStatus === "completed",
+    staleTime: 60_000,
   });
 
   const analyzeMutation = useMutation({
-    mutationFn: () => api.post("/problems/analyze", { ocrJobId }),
+    mutationFn: () =>
+      api.post("/problems/analyze", { ocrJobId, problemIds: [problem.id] }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["review-queue", ocrJobId] });
     },
   });
 
   const isAnalyzing = problem.analysisStatus === "analyzing" || analyzeMutation.isPending;
+  const isFailed = problem.analysisStatus === "failed";
   const isCompleted = problem.analysisStatus === "completed";
   const analysis = analysisQuery.data;
 
@@ -337,6 +349,9 @@ function AnalysisSection({
             {isCompleted && (
               <Badge variant="default" className="text-xs">분석 완료</Badge>
             )}
+            {isFailed && (
+              <Badge variant="destructive" className="text-xs">분석 실패</Badge>
+            )}
             {isCompleted ? (
               <Button
                 variant="ghost"
@@ -346,17 +361,21 @@ function AnalysisSection({
                 <ChevronDown className={`h-3 w-3 transition-transform ${expanded ? "rotate-180" : ""}`} />
                 {expanded ? "접기" : "펼치기"}
               </Button>
+            ) : isAnalyzing ? (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                AI가 분석 중입니다...
+              </div>
             ) : (
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={isAnalyzing}
                 onClick={() => analyzeMutation.mutate()}
               >
-                {isAnalyzing ? (
+                {isFailed ? (
                   <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    분석 중...
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                    다시 분석
                   </>
                 ) : (
                   <>
@@ -494,6 +513,13 @@ function ProblemReviewView({
       api.get<PaginatedResponse>(
         `/problems?ocrJobId=${ocrJobId}&page=1&limit=200`,
       ),
+    refetchInterval: (query) => {
+      const problems = query.state.data?.data;
+      if (problems?.some((p) => p.analysisStatus === "analyzing")) {
+        return 3000;
+      }
+      return false;
+    },
   });
 
   const problems = response?.data ?? [];
