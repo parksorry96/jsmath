@@ -5,6 +5,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  schemas  = ["public", "ocr"]
 }
 
 // ─── LMS 도메인 (lms schema) ───
@@ -22,6 +23,7 @@ model User {
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
   @@map("users")
+  @@schema("public")
 }
 
 model Organization {
@@ -32,6 +34,7 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("organizations")
+  @@schema("public")
 }
 
 model Course {
@@ -47,6 +50,7 @@ model Course {
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
   @@map("courses")
+  @@schema("public")
 }
 
 model Enrollment {
@@ -60,6 +64,7 @@ model Enrollment {
 
   @@unique([userId, courseId])
   @@map("enrollments")
+  @@schema("public")
 }
 
 model Assignment {
@@ -75,12 +80,15 @@ model Assignment {
 
   @@index([courseId])
   @@map("assignments")
+  @@schema("public")
 }
 
 enum Role {
   admin
   teacher
   student
+
+  @@schema("public")
 }
 
 // ─── OCR 도메인 (ocr schema — FastAPI/SQLAlchemy에서도 접근) ───
@@ -95,6 +103,7 @@ model SourceFile {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("source_files")
+  @@schema("ocr")
 }
 
 model OcrJob {
@@ -110,6 +119,7 @@ model OcrJob {
 
   @@index([status, createdAt])
   @@map("ocr_jobs")
+  @@schema("ocr")
 }
 
 enum OcrJobStatus {
@@ -118,6 +128,8 @@ enum OcrJobStatus {
   completed
   failed
   manual_review
+
+  @@schema("ocr")
 }
 
 model Problem {
@@ -191,7 +203,9 @@ model Problem {
   @@index([textbookId])
   @@index([gradeLevel, subject, unitMajor])
   @@index([reviewStatus])
+  @@index([analysisStatus])
   @@map("problems")
+  @@schema("ocr")
 }
 
 model ProblemChoice {
@@ -206,6 +220,7 @@ model ProblemChoice {
 
   @@unique([problemId, position])
   @@map("problem_choices")
+  @@schema("ocr")
 }
 
 model ProblemAsset {
@@ -225,6 +240,7 @@ model ProblemAsset {
 
   @@index([problemId, kind])
   @@map("problem_assets")
+  @@schema("ocr")
 }
 
 model ProblemSimilarity {
@@ -239,6 +255,7 @@ model ProblemSimilarity {
   @@unique([problemId, similarProblemId])
   @@index([problemId])
   @@map("problem_similarities")
+  @@schema("ocr")
 }
 
 enum ProblemType {
@@ -246,6 +263,8 @@ enum ProblemType {
   short_answer
   written_solution
   essay
+
+  @@schema("ocr")
 }
 
 enum ReviewStatus {
@@ -253,4 +272,6 @@ enum ReviewStatus {
   pending_review
   approved
   rejected
+
+  @@schema("ocr")
 }
