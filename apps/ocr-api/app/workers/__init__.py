@@ -13,3 +13,4 @@ from app.workers.ocr_submit import submit_pdf_to_mathpix  # noqa: F401
 from app.workers.parse_results import parse_mathpix_results  # noqa: F401
 from app.workers.refine_classification import refine_classification  # noqa: F401
 from app.workers.segment_problems import segment_problems  # noqa: F401
+from app.workers.unified_analysis import unified_analysis  # noqa: F401
