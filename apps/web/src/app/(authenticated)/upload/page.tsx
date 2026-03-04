@@ -13,6 +13,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
@@ -57,9 +58,7 @@ export default function UploadPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const pollingRef = useRef<Map<string, ReturnType<typeof setInterval>>>(
-    new Map(),
-  );
+  const sseRef = useRef<Map<string, EventSource>>(new Map());
 
   const updateFile = useCallback(
     (id: string, updates: Partial<UploadedFile>) => {
@@ -70,47 +69,50 @@ export default function UploadPage() {
     [],
   );
 
-  const pollStatus = useCallback(
-    (uploadId: string, fileId: string) => {
-      const token = localStorage.getItem("token");
-      const interval = setInterval(async () => {
-        try {
-          const res = await fetch(`${API_URL}/files/${fileId}/status`, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-          });
-          if (!res.ok) throw new Error("Status check failed");
+  const startSSE = useCallback(
+    (uploadId: string, jobId: string) => {
+      const es = new EventSource(`${API_URL}/files/${jobId}/events`);
 
-          const data = (await res.json()) as {
-            status: string;
-            progress?: number;
+      const stageProgress: Record<string, number> = {
+        ocr_submit: 25,
+        ocr_processing: 40,
+        parsing: 55,
+        segmentation: 65,
+        ocr_complete: 70,
+        analyzing: 85,
+        analysis_complete: 100,
+      };
+
+      es.addEventListener("progress", (e) => {
+        try {
+          const data = JSON.parse(e.data) as {
+            stage: string;
+            current: number;
+            total: number;
+            message: string;
           };
 
-          if (data.status === "completed") {
-            updateFile(uploadId, {
-              status: "completed",
-              progress: 100,
-            });
-            clearInterval(interval);
-            pollingRef.current.delete(uploadId);
-          } else if (data.status === "failed") {
-            updateFile(uploadId, {
-              status: "failed",
-              error: "OCR 처리에 실패했습니다.",
-            });
-            clearInterval(interval);
-            pollingRef.current.delete(uploadId);
+          const percent = stageProgress[data.stage] ?? 50;
+
+          if (data.stage === "analysis_complete") {
+            updateFile(uploadId, { status: "completed", progress: 100 });
+            toast.success("분석 완료! 검수 페이지에서 확인하세요.");
+            es.close();
+            sseRef.current.delete(uploadId);
           } else {
-            updateFile(uploadId, {
-              status: "processing",
-              progress: data.progress ?? 50,
-            });
+            updateFile(uploadId, { status: "processing", progress: percent });
           }
         } catch {
-          // Silently retry on transient errors
+          // Ignore parse errors
         }
-      }, 3000);
+      });
 
-      pollingRef.current.set(uploadId, interval);
+      es.onerror = () => {
+        es.close();
+        sseRef.current.delete(uploadId);
+      };
+
+      sseRef.current.set(uploadId, es);
     },
     [updateFile],
   );
@@ -146,22 +148,27 @@ export default function UploadPage() {
 
       xhr.addEventListener("load", () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          let responseData: { id?: string; fileId?: string } = {};
+          let responseData: {
+            id?: string;
+            jobId?: string;
+            fileId?: string;
+          } = {};
           try {
             responseData = JSON.parse(xhr.responseText);
           } catch {
             // Response might not be JSON
           }
+          const jobId = responseData.jobId;
           const fileId = responseData.id ?? responseData.fileId;
 
           updateFile(id, {
-            status: fileId ? "processing" : "completed",
-            progress: fileId ? 50 : 100,
+            status: jobId ? "processing" : "completed",
+            progress: jobId ? 25 : 100,
             fileId: fileId ?? undefined,
           });
 
-          if (fileId) {
-            pollStatus(id, fileId);
+          if (jobId) {
+            startSSE(id, jobId);
           }
         } else {
           let errorMsg = "업로드에 실패했습니다.";
@@ -202,7 +209,7 @@ export default function UploadPage() {
       }
       xhr.send(formData);
     },
-    [updateFile, pollStatus],
+    [updateFile, startSSE],
   );
 
   const processFiles = useCallback(
@@ -283,11 +290,11 @@ export default function UploadPage() {
     if (file.abortController && file.status === "uploading") {
       file.abortController.abort();
     }
-    // Stop polling
-    const interval = pollingRef.current.get(file.id);
-    if (interval) {
-      clearInterval(interval);
-      pollingRef.current.delete(file.id);
+    // Close SSE connection
+    const es = sseRef.current.get(file.id);
+    if (es) {
+      es.close();
+      sseRef.current.delete(file.id);
     }
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };

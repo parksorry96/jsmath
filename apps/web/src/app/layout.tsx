@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Toaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Providers } from "@/lib/providers";
 import "./globals.css";
@@ -27,6 +28,7 @@ export default function RootLayout({
       <body>
         <Providers>
           <TooltipProvider>{children}</TooltipProvider>
+          <Toaster richColors position="top-right" />
         </Providers>
       </body>
     </html>
