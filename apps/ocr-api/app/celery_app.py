@@ -28,5 +28,6 @@ celery.conf.update(
         "app.workers.crop_figures",
         "app.workers.classify_problems",
         "app.workers.generate_embedding",
+        "app.workers.auto_review",
     ],
 )
