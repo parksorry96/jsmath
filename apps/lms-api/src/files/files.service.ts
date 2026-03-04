@@ -102,10 +102,33 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
         // Create Problem records from pipeline results
         if (Array.isArray(payload.problems) && payload.problems.length > 0) {
           await this.createProblemsFromOcr(
-            payload.ocrJobId,
+            payload.ocrJobId!,
             job.sourceFileId,
             payload.problems,
           );
+
+          // AUTO-TRIGGER: Start AI analysis immediately
+          const createdProblems = await this.prisma.problem.findMany({
+            where: { ocrJobId: payload.ocrJobId },
+            select: { id: true },
+          });
+          const problemIds = createdProblems.map((p) => p.id);
+          if (problemIds.length > 0) {
+            await this.prisma.problem.updateMany({
+              where: { id: { in: problemIds } },
+              data: { analysisStatus: "analyzing" },
+            });
+            await this.redisPublisher.publish(
+              "analysis:request",
+              JSON.stringify({
+                ocrJobId: payload.ocrJobId,
+                problemIds,
+              }),
+            );
+            this.logger.log(
+              `Auto-triggered analysis for ${problemIds.length} problems (job ${payload.ocrJobId})`,
+            );
+          }
         }
         return;
       }
