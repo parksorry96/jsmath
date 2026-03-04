@@ -8,6 +8,7 @@ Channels:
   - analysis:completed — FastAPI -> NestJS: AI analysis done
   - analysis:failed    — FastAPI -> NestJS: AI analysis failed
   - analysis:request   — NestJS -> FastAPI: start AI analysis
+  - pipeline:progress  — FastAPI -> NestJS: real-time pipeline progress
 """
 
 from __future__ import annotations
@@ -95,4 +96,21 @@ def notify_analysis_failed(ocr_job_id: str, reason: str) -> None:
     publish_sync("analysis:failed", {
         "ocrJobId": ocr_job_id,
         "reason": reason,
+    })
+
+
+def notify_progress(
+    ocr_job_id: str,
+    stage: str,
+    current: int = 0,
+    total: int = 0,
+    message: str = "",
+) -> None:
+    """Publish pipeline progress for real-time SSE updates."""
+    publish_sync("pipeline:progress", {
+        "ocrJobId": ocr_job_id,
+        "stage": stage,
+        "current": current,
+        "total": total,
+        "message": message,
     })

@@ -94,8 +94,9 @@ async def _finalize(ocr_job_id: str, segments: list[dict]) -> dict:
         merged_problems.append(problem)
 
     # Notify NestJS
-    from app.services.redis_events import notify_completed
+    from app.services.redis_events import notify_completed, notify_progress
 
+    notify_progress(ocr_job_id, "ocr_complete", message="OCR 완료")
     notify_completed(ocr_job_id, len(segments), merged_problems)
 
     logger.info(

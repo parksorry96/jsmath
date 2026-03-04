@@ -155,6 +155,10 @@ async def _parse(self, ocr_job_id: str, mathpix_pdf_id: str) -> dict[str, str | 
 
         await session.commit()
 
+    from app.services.redis_events import notify_progress
+
+    notify_progress(ocr_job_id, "parsing", message="결과 파싱 완료")
+
     logger.info(
         "Parsed %d pages, %d lines for job %s",
         num_pages,

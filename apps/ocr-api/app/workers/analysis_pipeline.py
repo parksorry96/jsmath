@@ -17,7 +17,7 @@ from app.celery_app import celery
 from app.config import settings
 from app.database import worker_session
 from app.models.problem import AnalysisStatus, Problem
-from app.services.redis_events import notify_analysis_completed, notify_analysis_failed
+from app.services.redis_events import notify_analysis_completed, notify_analysis_failed, notify_progress
 from app.workers.auto_review import auto_review
 from app.workers.detect_exam_pattern import apply_deterministic_rules
 from app.workers.find_similar import find_similar
@@ -228,6 +228,8 @@ def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> di
                 failed += 1
         else:
             failed += 1
+
+    notify_progress(ocr_job_id, "analysis_complete", current=completed, total=total, message="AI 분석 완료")
 
     if failed > 0 and completed == 0:
         notify_analysis_failed(ocr_job_id, f"All {failed} problems failed analysis")

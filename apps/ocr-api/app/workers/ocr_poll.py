@@ -91,6 +91,10 @@ async def _poll(task: Task, ocr_job_id: str, mathpix_pdf_id: str) -> dict[str, s
             await session.commit()
 
             num_pages = status_data.get("num_pages", 0)
+            from app.services.redis_events import notify_progress
+
+            notify_progress(ocr_job_id, "ocr_processing", current=num_pages, total=num_pages, message="OCR 처리 완료")
+
             logger.info("Mathpix completed for %s, %d pages", ocr_job_id, num_pages)
             return {
                 "ocr_job_id": ocr_job_id,

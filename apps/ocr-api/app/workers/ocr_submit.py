@@ -61,6 +61,10 @@ async def _submit(task: Task, ocr_job_id: str) -> dict[str, str]:
             job.status = JobStatus.processing
             await session.commit()
 
+            from app.services.redis_events import notify_progress
+
+            notify_progress(ocr_job_id, "ocr_submit", message="OCR 처리 시작")
+
             logger.info(
                 "OCR job %s submitted to Mathpix: pdf_id=%s",
                 ocr_job_id,

@@ -63,20 +63,32 @@ SUB_PROBLEM_PATTERNS = [
 
 CHOICE_PATTERN = re.compile(PROBLEM_NUMBER_PATTERNS[6])  # ①②③④⑤
 
-# Two-column layout: if a line's x is this far from the problem's avg x,
-# it's likely from a different column and should be skipped.
-_COLUMN_X_THRESHOLD = 600
+# Two-column layout boundary.  Left column: bbox_x < boundary,
+# right column: bbox_x >= boundary.  Derived from real data:
+# left col max ~1325, right col min ~1506 → midpoint ~1400.
+_COLUMN_BOUNDARY_X = 1400
 
 
 def _is_cross_column(current_lines: list[OcrLine], new_line: OcrLine) -> bool:
-    """Check if new_line is from a different column than current_lines."""
+    """Check if new_line is from a different column than current_lines.
+
+    Uses a fixed column boundary rather than average-x drift so that
+    horizontally-spread choices (e.g. (1)...(5) across the page) within
+    the same column are not accidentally filtered out.
+    """
     if not current_lines or new_line.bbox_x is None:
         return False
-    xs = [l.bbox_x for l in current_lines if l.bbox_x is not None]
-    if not xs:
+    # Determine column of the first content line (problem start)
+    first_x: float | None = None
+    for l in current_lines:
+        if l.bbox_x is not None:
+            first_x = l.bbox_x
+            break
+    if first_x is None:
         return False
-    avg_x = sum(xs) / len(xs)
-    return abs(new_line.bbox_x - avg_x) > _COLUMN_X_THRESHOLD
+    first_col_is_left = first_x < _COLUMN_BOUNDARY_X
+    new_col_is_left = new_line.bbox_x < _COLUMN_BOUNDARY_X
+    return first_col_is_left != new_col_is_left
 
 
 def _is_noise_line(line: OcrLine) -> bool:
@@ -170,6 +182,10 @@ async def _segment(task, ocr_job_id: str) -> dict:
 
     # Pass 1: Rule-based segmentation
     segments = _rule_based_segment(pages)
+
+    from app.services.redis_events import notify_progress
+
+    notify_progress(ocr_job_id, "segmentation", current=len(segments), total=len(segments), message="문제 분할 완료")
 
     logger.info(
         "Rule-based segmentation found %d problems for job %s",
