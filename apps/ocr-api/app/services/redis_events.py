@@ -24,11 +24,20 @@ logger = logging.getLogger(__name__)
 
 
 def publish_sync(channel: str, payload: dict[str, Any]) -> None:
-    """Publish a JSON event to a Redis channel (sync, safe for Celery workers)."""
+    """Publish a JSON event to a Redis channel (sync, safe for Celery workers).
+
+    If no subscribers are listening, pushes to a fallback queue for later processing.
+    """
     r = redis.from_url(settings.redis_url, decode_responses=True)
     try:
-        r.publish(channel, json.dumps(payload))
-        logger.info("Published to %s: %s", channel, payload.get("ocrJobId", ""))
+        data = json.dumps(payload)
+        receivers = r.publish(channel, data)
+        if receivers == 0:
+            fallback_key = f"fallback:{channel}"
+            r.lpush(fallback_key, data)
+            logger.warning("No subscribers for %s — saved to %s", channel, fallback_key)
+        else:
+            logger.info("Published to %s (%d receivers): %s", channel, receivers, payload.get("ocrJobId", ""))
     finally:
         r.close()
 
@@ -70,12 +79,14 @@ def notify_analysis_completed(
     ocr_job_id: str,
     analyzed_count: int,
     auto_approved_count: int,
+    problem_ids: list[str] | None = None,
 ) -> None:
     """Notify NestJS that AI analysis completed for a batch."""
     publish_sync("analysis:completed", {
         "ocrJobId": ocr_job_id,
         "analyzedCount": analyzed_count,
         "autoApprovedCount": auto_approved_count,
+        "problemIds": problem_ids or [],
     })
 
 

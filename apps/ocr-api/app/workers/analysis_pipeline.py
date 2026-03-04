@@ -74,12 +74,12 @@ def start_analysis_pipeline(ocr_job_id: str, problem_ids: list[str]) -> str:
     name="task.analysis.on_problem_error",
     acks_late=True,
 )
-def on_problem_error(self, request, exc, tb, *, problem_id: str) -> dict:
+def on_problem_error(self, failed_task_id, *, problem_id: str) -> dict:
     """Error callback for per-problem pipeline failures.
 
     Marks the problem as analysis_status='failed' and stores the error message.
     """
-    error_msg = str(exc) if exc else "Unknown error"
+    error_msg = f"Task {failed_task_id} failed"
     logger.error(
         "Analysis pipeline failed for problem %s: %s", problem_id, error_msg
     )
@@ -98,12 +98,14 @@ async def _mark_problem_failed(problem_id: str, error_msg: str) -> None:
         problem = result.scalar_one_or_none()
         if problem:
             problem.analysis_status = AnalysisStatus.failed
-            problem.common_mistakes = problem.common_mistakes or []
-            # Store error in a machine-readable way via existing JSONB field
-            if not isinstance(problem.common_mistakes, list):
-                problem.common_mistakes = []
+            # Store error message in common_mistakes as structured data
+            error_entry = {"_error": error_msg}
+            if isinstance(problem.common_mistakes, list):
+                problem.common_mistakes = [error_entry] + problem.common_mistakes
+            else:
+                problem.common_mistakes = [error_entry]
             await session.commit()
-            logger.info("Marked problem %s as analysis_status=failed", problem_id)
+            logger.info("Marked problem %s as analysis_status=failed: %s", problem_id, error_msg)
 
 
 @celery.task(
@@ -203,15 +205,21 @@ def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> di
     auto_approved = 0
     completed = 0
     failed = 0
+    problem_ids: list[str] = []
 
     for result in results:
         if isinstance(result, dict):
+            pid = result.get("problem_id")
             decision = result.get("decision")
             if decision == "auto_approved":
                 auto_approved += 1
                 completed += 1
+                if pid:
+                    problem_ids.append(pid)
             elif decision == "pending_review":
                 completed += 1
+                if pid:
+                    problem_ids.append(pid)
             else:
                 failed += 1
         else:
@@ -220,7 +228,7 @@ def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> di
     if failed > 0 and completed == 0:
         notify_analysis_failed(ocr_job_id, f"All {failed} problems failed analysis")
     else:
-        notify_analysis_completed(ocr_job_id, completed, auto_approved)
+        notify_analysis_completed(ocr_job_id, completed, auto_approved, problem_ids)
 
     logger.info(
         "Analysis finalized for job %s: %d completed, %d auto-approved, %d failed (expected %d)",
