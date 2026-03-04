@@ -13,6 +13,7 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createHash } from "crypto";
 import { Redis } from "ioredis";
+import { Subject } from "rxjs";
 
 const VALID_PROBLEM_TYPES = new Set(Object.values(ProblemType));
 
@@ -23,6 +24,17 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
   private redisPublisher: Redis;
   private redisSubscriber: Redis;
   private bucket: string;
+  private progressSubject = new Subject<{
+    ocrJobId: string;
+    stage: string;
+    current: number;
+    total: number;
+    message: string;
+  }>();
+
+  getProgressStream() {
+    return this.progressSubject.asObservable();
+  }
 
   constructor(
     private prisma: PrismaService,
@@ -57,6 +69,7 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
       "ocr:failed",
       "analysis:completed",
       "analysis:failed",
+      "pipeline:progress",
     );
     this.redisSubscriber.on("message", (channel, message) => {
       void this.handleOcrPipelineEvent(channel, message);
@@ -79,6 +92,11 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
         problems?: Array<Record<string, unknown>>;
         reason?: unknown;
       };
+
+      if (channel === "pipeline:progress") {
+        this.progressSubject.next(payload as any);
+        return;
+      }
 
       const isAnalysisEvent = channel === "analysis:completed" || channel === "analysis:failed";
       if (!payload.ocrJobId && !isAnalysisEvent) {
