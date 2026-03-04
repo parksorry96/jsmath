@@ -82,9 +82,14 @@ def merge_stage1_results(self, stage1_results: list[dict], *, problem_id: str) -
 
 async def _merge(problem_id: str, results: list[dict]) -> dict:
     merged: dict = {"problem_id": problem_id}
-    for result in results:
+    for i, result in enumerate(results):
         if isinstance(result, dict):
             merged.update(result)
+        else:
+            logger.warning(
+                "Stage 1 task %d returned non-dict for problem %s: %r",
+                i, problem_id, result,
+            )
     # Ensure problem_id is preserved
     merged["problem_id"] = problem_id
 

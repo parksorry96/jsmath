@@ -21,7 +21,7 @@ class ProblemSimilarity(Base, TimestampMixin):
 
     __tablename__ = "problem_similarities"
 
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
     problem_id: Mapped[str] = mapped_column(
         ForeignKey("problems.id"), nullable=False
     )

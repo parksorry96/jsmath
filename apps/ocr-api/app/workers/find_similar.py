@@ -64,10 +64,11 @@ async def _find(problem_id: str) -> dict:
             LIMIT :top_k
         """)
 
+        embedding_str = '[' + ','.join(str(x) for x in embedding) + ']'
         similar_result = await session.execute(
             similar_query,
             {
-                "query_embedding": str(embedding),
+                "query_embedding": embedding_str,
                 "problem_id": problem_id,
                 "top_k": TOP_K,
             },
@@ -81,13 +82,13 @@ async def _find(problem_id: str) -> dict:
                 continue
 
             stmt = pg_insert(ProblemSimilarity).values(
-                id=str(uuid.uuid4())[:30],
+                id=str(uuid.uuid4()),
                 problem_id=problem_id,
                 similar_problem_id=similar_id,
                 similarity_score=round(float(score), 4),
                 similarity_type=SimilarityType.content,
             ).on_conflict_do_update(
-                constraint="uq_problem_similarity",
+                index_elements=["problem_id", "similar_problem_id"],
                 set_={"similarity_score": round(float(score), 4)},
             )
             await session.execute(stmt)
