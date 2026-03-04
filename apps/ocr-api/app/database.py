@@ -14,15 +14,24 @@ async def get_db() -> AsyncSession:  # type: ignore[misc]
         yield session
 
 
+_worker_engine = None
+
+
 @asynccontextmanager
 async def worker_session():
-    """Create a fresh async session for Celery workers.
+    """Create an async session for Celery workers.
 
-    Each asyncio.run() call creates a new event loop, so we need a fresh
-    engine with NullPool to avoid event-loop binding issues with asyncpg.
+    Uses a cached engine with NullPool. NullPool creates a new connection
+    per checkout and closes it on checkin, so there's no connection pooling
+    state that could conflict across asyncio.run() calls.
     """
-    eng = create_async_engine(settings.async_database_url, poolclass=NullPool)
-    factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+    global _worker_engine
+    if _worker_engine is None:
+        _worker_engine = create_async_engine(
+            settings.async_database_url, poolclass=NullPool
+        )
+    factory = async_sessionmaker(
+        _worker_engine, class_=AsyncSession, expire_on_commit=False
+    )
     async with factory() as session:
         yield session
-    await eng.dispose()
