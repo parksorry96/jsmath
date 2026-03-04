@@ -11,13 +11,14 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.config import settings
 from app.database import worker_session
-from app.models.problem import AnalysisStatus, Problem
+from app.models.problem import AnalysisStatus, Problem, ProblemChoice
 
 logger = logging.getLogger(__name__)
 
@@ -74,13 +75,15 @@ def analyze_solution(self, previous_result=None, *, problem_id: str | None = Non
 async def _analyze(task, problem_id: str) -> dict:
     async with worker_session() as session:
         result = await session.execute(
-            select(Problem).where(Problem.id == problem_id)
+            select(Problem)
+            .options(selectinload(Problem.choices))
+            .where(Problem.id == problem_id)
         )
         problem = result.scalar_one_or_none()
         if not problem:
             raise ValueError(f"Problem {problem_id} not found")
 
-        # Build choices text if available
+        # Build choices text if available — extract data before session closes
         choices_text = ""
         if problem.choices:
             choices_lines = []
@@ -111,13 +114,17 @@ async def _analyze(task, problem_id: str) -> dict:
         client_kwargs["base_url"] = settings.ai_api_base_url
     client = AsyncOpenAI(**client_kwargs)
 
-    response = await client.chat.completions.create(
-        model=settings.ai_model,
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        temperature=0.3,
-        max_completion_tokens=1000,
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=settings.ai_model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_completion_tokens=1000,
+        )
+    except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
+        logger.warning("OpenAI API error for problem %s: %s — retrying", problem_id, exc)
+        raise task.retry(exc=exc)
 
     content = response.choices[0].message.content or "{}"
     analysis = json.loads(content)

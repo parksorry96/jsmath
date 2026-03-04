@@ -35,7 +35,7 @@ async def listen_for_events() -> None:
                 if channel == "ocr:submit":
                     await _handle_submit(message["data"])
                 elif channel == "analysis:request":
-                    _handle_analysis_request(json.loads(message["data"]))
+                    await _handle_analysis_request(json.loads(message["data"]))
             except Exception:
                 logger.exception("Error handling %s event", channel)
     finally:
@@ -66,14 +66,19 @@ async def _handle_submit(raw: str) -> None:
         session.add(tracking)
         await session.commit()
 
-    # Start the Celery pipeline
+    # Start the Celery pipeline — offload to thread to avoid blocking event loop
     from app.workers.pipeline import start_ocr_pipeline
 
-    start_ocr_pipeline(ocr_job_id)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, start_ocr_pipeline, ocr_job_id)
 
 
-def _handle_analysis_request(data: dict) -> None:
-    """Handle analysis:request event from NestJS."""
+async def _handle_analysis_request(data: dict) -> None:
+    """Handle analysis:request event from NestJS.
+
+    Celery's apply_async() is a synchronous call that must not block the
+    async event loop.  We offload it to a thread via run_in_executor.
+    """
     ocr_job_id = data.get("ocrJobId")
     problem_ids = data.get("problemIds", [])
     if not ocr_job_id:
@@ -82,4 +87,6 @@ def _handle_analysis_request(data: dict) -> None:
     logger.info("Received analysis:request for job %s (%d problems)", ocr_job_id, len(problem_ids))
 
     from app.workers.analysis_pipeline import start_analysis_pipeline
-    start_analysis_pipeline(ocr_job_id, problem_ids)
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, start_analysis_pipeline, ocr_job_id, problem_ids)

@@ -27,7 +27,12 @@ celery.conf.update(
         "app.workers.segment_problems",
         "app.workers.crop_figures",
         "app.workers.classify_problems",
+        "app.workers.analyze_solution",
+        "app.workers.refine_classification",
+        "app.workers.detect_exam_pattern",
         "app.workers.generate_embedding",
+        "app.workers.find_similar",
         "app.workers.auto_review",
+        "app.workers.analysis_pipeline",
     ],
 )

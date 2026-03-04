@@ -52,8 +52,9 @@ def start_analysis_pipeline(ocr_job_id: str, problem_ids: list[str]) -> str:
             find_similar.s(problem_id=pid),
             auto_review.s(problem_id=pid),
         )
-        workflow = chain(stage1, stage2)
-        workflows.append(workflow)
+        per_problem = chain(stage1, stage2)
+        per_problem.on_error(on_problem_error.s(problem_id=pid))
+        workflows.append(per_problem)
 
     # Wrap with finalization callback
     batch = chord(
@@ -66,6 +67,43 @@ def start_analysis_pipeline(ocr_job_id: str, problem_ids: list[str]) -> str:
         ocr_job_id, len(problem_ids), result.id,
     )
     return result.id
+
+
+@celery.task(
+    bind=True,
+    name="task.analysis.on_problem_error",
+    acks_late=True,
+)
+def on_problem_error(self, request, exc, tb, *, problem_id: str) -> dict:
+    """Error callback for per-problem pipeline failures.
+
+    Marks the problem as analysis_status='failed' and stores the error message.
+    """
+    error_msg = str(exc) if exc else "Unknown error"
+    logger.error(
+        "Analysis pipeline failed for problem %s: %s", problem_id, error_msg
+    )
+    try:
+        asyncio.run(_mark_problem_failed(problem_id, error_msg))
+    except Exception:
+        logger.exception("Failed to mark problem %s as failed in DB", problem_id)
+    return {"problem_id": problem_id, "decision": "failed", "error": error_msg}
+
+
+async def _mark_problem_failed(problem_id: str, error_msg: str) -> None:
+    async with worker_session() as session:
+        result = await session.execute(
+            select(Problem).where(Problem.id == problem_id)
+        )
+        problem = result.scalar_one_or_none()
+        if problem:
+            problem.analysis_status = AnalysisStatus.failed
+            problem.common_mistakes = problem.common_mistakes or []
+            # Store error in a machine-readable way via existing JSONB field
+            if not isinstance(problem.common_mistakes, list):
+                problem.common_mistakes = []
+            await session.commit()
+            logger.info("Marked problem %s as analysis_status=failed", problem_id)
 
 
 @celery.task(
@@ -155,6 +193,13 @@ async def _merge(problem_id: str, results: list[dict]) -> dict:
 )
 def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> dict:
     """Finalize analysis batch — count results and notify NestJS."""
+    actual = len(results) if results else 0
+    if actual != total:
+        logger.warning(
+            "Analysis finalize mismatch for job %s: expected %d results, got %d",
+            ocr_job_id, total, actual,
+        )
+
     auto_approved = 0
     completed = 0
     failed = 0
@@ -178,8 +223,8 @@ def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> di
         notify_analysis_completed(ocr_job_id, completed, auto_approved)
 
     logger.info(
-        "Analysis finalized for job %s: %d completed, %d auto-approved, %d failed",
-        ocr_job_id, completed, auto_approved, failed,
+        "Analysis finalized for job %s: %d completed, %d auto-approved, %d failed (expected %d)",
+        ocr_job_id, completed, auto_approved, failed, total,
     )
     return {
         "ocr_job_id": ocr_job_id,

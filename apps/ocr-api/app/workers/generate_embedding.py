@@ -9,13 +9,14 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.config import settings
 from app.database import worker_session
-from app.models.problem import Problem
+from app.models.problem import Problem, ProblemChoice
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,9 @@ def generate_embedding(
 async def _generate(task, problem_id: str, stage1_result: dict | None) -> dict:
     async with worker_session() as session:
         result = await session.execute(
-            select(Problem).where(Problem.id == problem_id)
+            select(Problem)
+            .options(selectinload(Problem.choices))
+            .where(Problem.id == problem_id)
         )
         problem = result.scalar_one_or_none()
         if not problem:
@@ -72,6 +75,7 @@ async def _generate(task, problem_id: str, stage1_result: dict | None) -> dict:
         if not solution_strategy:
             solution_strategy = problem.solution_strategy
 
+        # Build embedding text while session is open (accesses choices relation)
         text = _build_embedding_text(problem, solution_strategy)
 
     if not settings.ai_api_key:
@@ -83,10 +87,18 @@ async def _generate(task, problem_id: str, stage1_result: dict | None) -> dict:
         client_kwargs["base_url"] = settings.ai_api_base_url
     client = AsyncOpenAI(**client_kwargs)
 
-    response = await client.embeddings.create(
-        model=EMBEDDING_MODEL,
-        input=text,
-    )
+    try:
+        response = await client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=text,
+        )
+    except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
+        logger.warning("OpenAI embedding API error for problem %s: %s — retrying", problem_id, exc)
+        raise task.retry(exc=exc)
+    except Exception:
+        logger.exception("Embedding generation failed for %s; skipping", problem_id)
+        return {"problem_id": problem_id, "embedding_generated": False}
+
     embedding = response.data[0].embedding
 
     # Store embedding in DB

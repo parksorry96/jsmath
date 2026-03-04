@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
 from sqlalchemy import select
 
 from app.celery_app import celery
@@ -107,13 +107,17 @@ async def _detect(task, problem_id: str) -> dict:
         client_kwargs["base_url"] = settings.ai_api_base_url
     client = AsyncOpenAI(**client_kwargs)
 
-    response = await client.chat.completions.create(
-        model=settings.ai_model,
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        max_completion_tokens=300,
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=settings.ai_model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            max_completion_tokens=300,
+        )
+    except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
+        logger.warning("OpenAI API error for problem %s: %s — retrying", problem_id, exc)
+        raise task.retry(exc=exc)
 
     content = response.choices[0].message.content or "{}"
     analysis = json.loads(content)
