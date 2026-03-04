@@ -52,7 +52,12 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    await this.redisSubscriber.subscribe("ocr:completed", "ocr:failed");
+    await this.redisSubscriber.subscribe(
+      "ocr:completed",
+      "ocr:failed",
+      "analysis:completed",
+      "analysis:failed",
+    );
     this.redisSubscriber.on("message", (channel, message) => {
       void this.handleOcrPipelineEvent(channel, message);
     });
@@ -69,12 +74,14 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
     try {
       const payload = JSON.parse(message) as {
         ocrJobId?: string;
+        problemIds?: string[];
         problemCount?: unknown;
         problems?: Array<Record<string, unknown>>;
         reason?: unknown;
       };
 
-      if (!payload.ocrJobId) {
+      const isAnalysisEvent = channel === "analysis:completed" || channel === "analysis:failed";
+      if (!payload.ocrJobId && !isAnalysisEvent) {
         this.logger.warn(`Ignored ${channel}: missing ocrJobId`);
         return;
       }
@@ -115,6 +122,31 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
             completedAt: new Date(),
           },
         });
+        return;
+      }
+
+      if (channel === "analysis:completed") {
+        const ids = Array.isArray(payload.problemIds) ? payload.problemIds : [];
+        if (ids.length > 0) {
+          await this.prisma.problem.updateMany({
+            where: { id: { in: ids } },
+            data: { analysisStatus: "completed", analyzedAt: new Date() },
+          });
+          this.logger.log(`analysis:completed for ${ids.length} problems`);
+        }
+        return;
+      }
+
+      if (channel === "analysis:failed") {
+        const ids = Array.isArray(payload.problemIds) ? payload.problemIds : [];
+        if (ids.length > 0) {
+          await this.prisma.problem.updateMany({
+            where: { id: { in: ids } },
+            data: { analysisStatus: "failed" },
+          });
+          this.logger.warn(`analysis:failed for ${ids.length} problems`);
+        }
+        return;
       }
     } catch (error) {
       this.logger.error(

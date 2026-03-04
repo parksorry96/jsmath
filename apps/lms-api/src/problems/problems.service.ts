@@ -1,7 +1,15 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  Injectable,
+  NotFoundException,
+  OnModuleDestroy,
+  OnModuleInit,
+  Logger,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReviewStatus, OcrJobStatus } from "@prisma/client";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
+import { Redis } from "ioredis";
 
 export interface ProblemsQuery {
   ocrJobId?: string;
@@ -18,8 +26,23 @@ export interface ProblemsQuery {
 }
 
 @Injectable()
-export class ProblemsService {
-  constructor(private prisma: PrismaService) {}
+export class ProblemsService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(ProblemsService.name);
+  private redisPublisher: Redis;
+
+  constructor(
+    private prisma: PrismaService,
+    private config: ConfigService,
+  ) {}
+
+  onModuleInit() {
+    const redisUrl = this.config.getOrThrow<string>("REDIS_URL");
+    this.redisPublisher = new Redis(redisUrl);
+  }
+
+  async onModuleDestroy() {
+    await this.redisPublisher.quit();
+  }
 
   async findAll(query: ProblemsQuery) {
     const page = query.page ?? 1;
@@ -65,6 +88,7 @@ export class ProblemsService {
           unitMinor: true,
           difficulty: true,
           classificationConfidence: true,
+          analysisStatus: true,
           ocrJobId: true,
           startPage: true,
           endPage: true,
@@ -184,12 +208,10 @@ export class ProblemsService {
       data: { analysisStatus: "analyzing" },
     });
 
-    const redis = this.getRedisClient();
-    await redis.publish(
+    await this.redisPublisher.publish(
       "analysis:request",
       JSON.stringify({ ocrJobId, problemIds }),
     );
-    redis.disconnect();
 
     return {
       ocrJobId,
@@ -246,11 +268,5 @@ export class ProblemsService {
         reviewedBy: true,
       },
     });
-  }
-
-  private getRedisClient() {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const Redis = require("ioredis");
-    return new Redis(process.env.REDIS_URL || "redis://localhost:6379");
   }
 }
