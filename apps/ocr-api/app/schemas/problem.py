@@ -7,16 +7,9 @@ from pydantic import BaseModel, Field
 
 # ─── Classification Taxonomy Constants ───
 
-GRADE_LEVELS = [
-    "middle_1", "middle_2", "middle_3",
-    "high_1", "high_2", "high_3",
-]
+GRADE_LEVELS = ["high_1", "high_2", "high_3"]
 
-SUBJECTS = [
-    "수학(중등)",
-    "수학I", "수학II",
-    "확률과 통계", "미적분", "기하",
-]
+SUBJECTS = ["수학I", "수학II", "확률과 통계", "미적분", "기하"]
 
 # Korean 2022 Revised Curriculum hierarchy
 CURRICULUM_TREE: dict[str, dict[str, list[str]]] = {
