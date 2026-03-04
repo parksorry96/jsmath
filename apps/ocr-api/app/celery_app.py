@@ -27,5 +27,6 @@ celery.conf.update(
         "app.workers.segment_problems",
         "app.workers.crop_figures",
         "app.workers.classify_problems",
+        "app.workers.generate_embedding",
     ],
 )
