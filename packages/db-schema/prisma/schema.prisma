@@ -163,6 +163,23 @@ model Problem {
   reviewStatus             ReviewStatus  @default(pending_review) @map("review_status")
   reviewedBy               String?       @map("reviewed_by")
 
+  // CSAT-specific
+  isCommon             Boolean?      @map("is_common")
+  pointValue           Int?          @db.SmallInt @map("point_value")
+  questionFormat       String?       @map("question_format")
+  positionType         String?       @map("position_type")
+  examSource           Json?         @map("exam_source")
+
+  // AI analysis
+  solutionStrategy     String?       @map("solution_strategy")
+  requiredConcepts     Json?         @map("required_concepts")
+  solutionSteps        Json?         @map("solution_steps")
+  estimatedTimeSec     Int?          @map("estimated_time_sec")
+  commonMistakes       Json?         @map("common_mistakes")
+  difficultyRefined    Float?        @map("difficulty_refined")
+  analysisStatus       String        @default("pending") @map("analysis_status")
+  analyzedAt           DateTime?     @map("analyzed_at")
+
   // Relations
   choices                  ProblemChoice[]
   assets                   ProblemAsset[]
@@ -208,6 +225,20 @@ model ProblemAsset {
 
   @@index([problemId, kind])
   @@map("problem_assets")
+}
+
+model ProblemSimilarity {
+  id                String   @id @default(cuid())
+  problemId         String   @map("problem_id")
+  similarProblemId  String   @map("similar_problem_id")
+  similarityScore   Float    @map("similarity_score")
+  similarityType    String   @map("similarity_type")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([problemId, similarProblemId])
+  @@index([problemId])
+  @@map("problem_similarities")
 }
 
 enum ProblemType {

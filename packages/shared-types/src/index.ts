@@ -54,13 +54,7 @@ export type AssetKind =
   | "table"
   | "other";
 
-export type GradeLevel =
-  | "middle_1"
-  | "middle_2"
-  | "middle_3"
-  | "high_1"
-  | "high_2"
-  | "high_3";
+export type GradeLevel = "high_1" | "high_2" | "high_3";
 
 export type Difficulty = 1 | 2 | 3 | 4 | 5;
 
@@ -83,6 +77,24 @@ export interface ProblemAsset {
   heightPx: number | null;
 }
 
+export type AnalysisStatus = "pending" | "analyzing" | "completed" | "failed";
+export type QuestionFormat = "multiple_choice_5" | "short_answer";
+export type PositionType = "normal" | "semi_killer" | "killer";
+export type CsatSubject = "수학I" | "수학II" | "확률과 통계" | "미적분" | "기하";
+
+export interface ExamSource {
+  year: number;
+  month: number;
+  type: "수능" | "모의평가" | "학력평가";
+  number?: number;
+}
+
+export interface SolutionStep {
+  step: number;
+  description: string;
+  concept: string;
+}
+
 export interface Problem {
   id: string;
   ocrJobId: string;
@@ -103,6 +115,21 @@ export interface Problem {
   difficulty: Difficulty | null;
   classificationConfidence: number | null;
   reviewStatus: ReviewStatus;
+  // CSAT metadata
+  isCommon: boolean | null;
+  pointValue: number | null;
+  questionFormat: QuestionFormat | null;
+  positionType: PositionType | null;
+  examSource: ExamSource | null;
+  // AI analysis
+  solutionStrategy: string | null;
+  requiredConcepts: string[] | null;
+  solutionSteps: SolutionStep[] | null;
+  estimatedTimeSec: number | null;
+  commonMistakes: string[] | null;
+  difficultyRefined: number | null;
+  analysisStatus: AnalysisStatus;
+  analyzedAt: string | null;
   choices: ProblemChoice[];
   assets: ProblemAsset[];
   createdAt: string;
@@ -139,4 +166,23 @@ export interface ReviewNeededPayload {
   problemId: string;
   reason: string;
   confidence: number;
+}
+
+export interface ProblemSimilarity {
+  id: string;
+  problemId: string;
+  similarProblemId: string;
+  similarityScore: number;
+  similarityType: "content" | "concept" | "structure";
+}
+
+export interface AnalysisRequestPayload {
+  ocrJobId: string;
+  problemIds: string[];
+}
+
+export interface AnalysisCompletedPayload {
+  ocrJobId: string;
+  analyzedCount: number;
+  autoApprovedCount: number;
 }
