@@ -13,4 +13,5 @@ from .problem import (  # noqa: F401
     ReviewStatus,
     TagDictionary,
 )
+from .similarity import ProblemSimilarity, SimilarityType  # noqa: F401
 from .textbook import Textbook, TextbookVersion  # noqa: F401
