@@ -233,6 +233,7 @@ async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
         )
         problem = result.scalar_one_or_none()
         if not problem:
+            logger.warning("Problem %s not found in DB — skipping deterministic rules", problem_id)
             return {**prev_result, "problem_id": problem_id}
 
         qnum = _parse_question_number(problem.problem_number)
@@ -298,6 +299,7 @@ async def _identify_exam_source(
             model=settings.ai_model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
+            temperature=0.1,
             max_completion_tokens=200,
         )
     except (RateLimitError, APITimeoutError, APIConnectionError) as exc:

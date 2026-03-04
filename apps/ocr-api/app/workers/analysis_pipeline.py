@@ -19,6 +19,7 @@ from app.database import worker_session
 from app.models.problem import AnalysisStatus, Problem
 from app.services.redis_events import notify_analysis_completed, notify_analysis_failed
 from app.workers.auto_review import auto_review
+from app.workers.detect_exam_pattern import apply_deterministic_rules
 from app.workers.find_similar import find_similar
 from app.workers.generate_embedding import generate_embedding
 
@@ -49,7 +50,6 @@ def start_analysis_pipeline(ocr_job_id: str, problem_ids: list[str]) -> str:
                 merge_stage1_results.s(problem_id=pid),
             )
 
-        from app.workers.detect_exam_pattern import apply_deterministic_rules
         stage2 = chain(
             apply_deterministic_rules.s(problem_id=pid),
             generate_embedding.s(problem_id=pid),
