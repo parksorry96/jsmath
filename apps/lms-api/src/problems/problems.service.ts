@@ -11,6 +11,7 @@ export interface ProblemsQuery {
   unitMajor?: string;
   difficulty?: string;
   problemType?: string;
+  analysisStatus?: string;
   q?: string;
   page?: number;
   limit?: number;
@@ -33,6 +34,7 @@ export class ProblemsService {
     if (query.subject) where.subject = query.subject;
     if (query.unitMajor) where.unitMajor = query.unitMajor;
     if (query.problemType) where.problemType = query.problemType;
+    if (query.analysisStatus) where.analysisStatus = query.analysisStatus;
     if (query.difficulty !== undefined) {
       const parsed = parseInt(query.difficulty, 10);
       if (!isNaN(parsed)) where.difficulty = parsed;
@@ -164,6 +166,70 @@ export class ProblemsService {
     });
   }
 
+  async triggerAnalysis(ocrJobId: string, problemIds?: string[]) {
+    if (!problemIds || problemIds.length === 0) {
+      const problems = await this.prisma.problem.findMany({
+        where: { ocrJobId },
+        select: { id: true },
+      });
+      problemIds = problems.map((p) => p.id);
+    }
+
+    if (problemIds.length === 0) {
+      throw new NotFoundException("No problems found for this OCR job");
+    }
+
+    await this.prisma.problem.updateMany({
+      where: { id: { in: problemIds } },
+      data: { analysisStatus: "analyzing" },
+    });
+
+    const redis = this.getRedisClient();
+    await redis.publish(
+      "analysis:request",
+      JSON.stringify({ ocrJobId, problemIds }),
+    );
+    redis.disconnect();
+
+    return {
+      ocrJobId,
+      problemCount: problemIds.length,
+      status: "analyzing",
+    };
+  }
+
+  async getAnalysis(problemId: string) {
+    const problem = await this.prisma.problem.findUnique({
+      where: { id: problemId },
+      select: {
+        id: true,
+        stemLatex: true,
+        stemText: true,
+        subject: true,
+        unitMajor: true,
+        unitMinor: true,
+        difficulty: true,
+        difficultyRefined: true,
+        solutionStrategy: true,
+        requiredConcepts: true,
+        solutionSteps: true,
+        estimatedTimeSec: true,
+        commonMistakes: true,
+        isCommon: true,
+        pointValue: true,
+        questionFormat: true,
+        positionType: true,
+        examSource: true,
+        analysisStatus: true,
+        analyzedAt: true,
+        classificationConfidence: true,
+        reviewStatus: true,
+      },
+    });
+    if (!problem) throw new NotFoundException("Problem not found");
+    return problem;
+  }
+
   async review(id: string, action: "approved" | "rejected", reviewerId: string) {
     const problem = await this.prisma.problem.findUnique({ where: { id } });
     if (!problem) throw new NotFoundException("Problem not found");
@@ -180,5 +246,11 @@ export class ProblemsService {
         reviewedBy: true,
       },
     });
+  }
+
+  private getRedisClient() {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Redis = require("ioredis");
+    return new Redis(process.env.REDIS_URL || "redis://localhost:6379");
   }
 }

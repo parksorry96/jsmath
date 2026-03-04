@@ -40,6 +40,7 @@ export class ProblemsController {
     @Query("unitMajor") unitMajor?: string,
     @Query("difficulty") difficulty?: string,
     @Query("problemType") problemType?: string,
+    @Query("analysisStatus") analysisStatus?: string,
     @Query("q") q?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
@@ -52,10 +53,22 @@ export class ProblemsController {
       unitMajor,
       difficulty,
       problemType,
+      analysisStatus,
       q,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
+  }
+
+  @Post("analyze")
+  @Roles("admin", "teacher")
+  triggerAnalysis(@Body() body: { ocrJobId: string; problemIds?: string[] }) {
+    return this.problems.triggerAnalysis(body.ocrJobId, body.problemIds);
+  }
+
+  @Get(":id/analysis")
+  getAnalysis(@Param("id") id: string) {
+    return this.problems.getAnalysis(id);
   }
 
   @Patch(":id")
