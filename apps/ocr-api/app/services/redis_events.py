@@ -5,6 +5,9 @@ Channels:
   - ocr:completed — FastAPI -> NestJS: pipeline done
   - ocr:failed    — FastAPI -> NestJS: pipeline failed
   - review:needed — FastAPI -> NestJS: manual review required
+  - analysis:completed — FastAPI -> NestJS: AI analysis done
+  - analysis:failed    — FastAPI -> NestJS: AI analysis failed
+  - analysis:request   — NestJS -> FastAPI: start AI analysis
 """
 
 from __future__ import annotations
@@ -60,4 +63,25 @@ def notify_review_needed(problem_id: str, reason: str, confidence: float) -> Non
         "problemId": problem_id,
         "reason": reason,
         "confidence": confidence,
+    })
+
+
+def notify_analysis_completed(
+    ocr_job_id: str,
+    analyzed_count: int,
+    auto_approved_count: int,
+) -> None:
+    """Notify NestJS that AI analysis completed for a batch."""
+    publish_sync("analysis:completed", {
+        "ocrJobId": ocr_job_id,
+        "analyzedCount": analyzed_count,
+        "autoApprovedCount": auto_approved_count,
+    })
+
+
+def notify_analysis_failed(ocr_job_id: str, reason: str) -> None:
+    """Notify NestJS that AI analysis failed."""
+    publish_sync("analysis:failed", {
+        "ocrJobId": ocr_job_id,
+        "reason": reason,
     })

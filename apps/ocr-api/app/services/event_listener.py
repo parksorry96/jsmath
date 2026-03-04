@@ -1,6 +1,6 @@
 """Redis Pub/Sub listener for incoming events from NestJS.
 
-Listens on `ocr:submit` channel and starts the OCR pipeline.
+Listens on `ocr:submit` and `analysis:request` channels.
 Runs as an asyncio background task inside the FastAPI process.
 """
 
@@ -23,19 +23,23 @@ async def listen_for_events() -> None:
     """Subscribe to Redis and process incoming OCR events."""
     r = aioredis.from_url(settings.redis_url, decode_responses=True)
     pubsub = r.pubsub()
-    await pubsub.subscribe("ocr:submit")
-    logger.info("Listening for ocr:submit events on Redis")
+    await pubsub.subscribe("ocr:submit", "analysis:request")
+    logger.info("Listening for ocr:submit and analysis:request events on Redis")
 
     try:
         async for message in pubsub.listen():
             if message["type"] != "message":
                 continue
+            channel = message["channel"]
             try:
-                await _handle_submit(message["data"])
+                if channel == "ocr:submit":
+                    await _handle_submit(message["data"])
+                elif channel == "analysis:request":
+                    _handle_analysis_request(json.loads(message["data"]))
             except Exception:
-                logger.exception("Error handling ocr:submit event")
+                logger.exception("Error handling %s event", channel)
     finally:
-        await pubsub.unsubscribe("ocr:submit")
+        await pubsub.unsubscribe("ocr:submit", "analysis:request")
         await r.aclose()
 
 
@@ -66,3 +70,16 @@ async def _handle_submit(raw: str) -> None:
     from app.workers.pipeline import start_ocr_pipeline
 
     start_ocr_pipeline(ocr_job_id)
+
+
+def _handle_analysis_request(data: dict) -> None:
+    """Handle analysis:request event from NestJS."""
+    ocr_job_id = data.get("ocrJobId")
+    problem_ids = data.get("problemIds", [])
+    if not ocr_job_id:
+        logger.warning("analysis:request missing ocrJobId")
+        return
+    logger.info("Received analysis:request for job %s (%d problems)", ocr_job_id, len(problem_ids))
+
+    from app.workers.analysis_pipeline import start_analysis_pipeline
+    start_analysis_pipeline(ocr_job_id, problem_ids)
