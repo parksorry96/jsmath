@@ -8,6 +8,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     DateTime,
+    Enum,
     Float,
     ForeignKey,
     Index,
@@ -124,7 +125,10 @@ class Problem(Base, TimestampMixin):
     classification_confidence: Mapped[float | None] = mapped_column(Float)
 
     # Review
-    review_status: Mapped[ReviewStatus] = mapped_column(default=ReviewStatus.pending_review)
+    review_status: Mapped[ReviewStatus] = mapped_column(
+        Enum(ReviewStatus, name="ReviewStatus", schema="ocr", create_constraint=False),
+        default=ReviewStatus.pending_review,
+    )
     reviewed_by: Mapped[str | None] = mapped_column(String(30))  # user id from lms
 
     # CSAT-specific metadata

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     mathpix_base_url: str = "https://api.mathpix.com/v3"
     ai_api_key: str = ""
     ai_api_base_url: str = "https://api.openai.com/v1"
-    ai_model: str = "gpt-4o"
+    ai_model: str = "gpt-5-mini"
     use_unified_analysis: bool = True
 
     model_config = {"env_file": "../../.env", "extra": "ignore"}

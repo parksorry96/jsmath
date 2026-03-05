@@ -10,7 +10,7 @@ import asyncio
 import logging
 import uuid
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.celery_app import celery
@@ -56,11 +56,11 @@ async def _find(problem_id: str) -> dict:
 
         # Query pgvector for top-K similar problems using cosine distance (<=>)
         similar_query = text("""
-            SELECT id, 1 - (embedding <=> :query_embedding::vector) AS score
+            SELECT id, 1 - (embedding <=> CAST(:query_embedding AS vector)) AS score
             FROM ocr.problems
             WHERE id != :problem_id
               AND embedding IS NOT NULL
-            ORDER BY embedding <=> :query_embedding::vector
+            ORDER BY embedding <=> CAST(:query_embedding AS vector)
             LIMIT :top_k
         """)
 
@@ -87,9 +87,14 @@ async def _find(problem_id: str) -> dict:
                 similar_problem_id=similar_id,
                 similarity_score=round(float(score), 4),
                 similarity_type=SimilarityType.content,
+                created_at=func.now(),
+                updated_at=func.now(),
             ).on_conflict_do_update(
                 index_elements=["problem_id", "similar_problem_id"],
-                set_={"similarity_score": round(float(score), 4)},
+                set_={
+                    "similarity_score": round(float(score), 4),
+                    "updated_at": func.now(),
+                },
             )
             await session.execute(stmt)
             stored += 1

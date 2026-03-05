@@ -28,6 +28,38 @@ logger = logging.getLogger(__name__)
 COMMON_SUBJECTS = {"수학I", "수학II"}
 
 
+def _make_strict_schema(schema: dict) -> dict:
+    """Post-process Pydantic JSON schema for OpenAI strict structured output.
+
+    Recursively adds additionalProperties: false to all object types,
+    ensures all properties are listed in required, and removes unsupported
+    keys like 'default' and 'title'.
+    """
+    schema = {k: v for k, v in schema.items() if k not in ("default", "title")}
+
+    if schema.get("type") == "object":
+        schema["additionalProperties"] = False
+        if "properties" in schema:
+            schema["required"] = list(schema["properties"].keys())
+            schema["properties"] = {
+                k: _make_strict_schema(v)
+                for k, v in schema["properties"].items()
+            }
+
+    if "$defs" in schema:
+        schema["$defs"] = {
+            k: _make_strict_schema(v) for k, v in schema["$defs"].items()
+        }
+
+    if "anyOf" in schema:
+        schema["anyOf"] = [_make_strict_schema(s) for s in schema["anyOf"]]
+
+    if "items" in schema and isinstance(schema["items"], dict):
+        schema["items"] = _make_strict_schema(schema["items"])
+
+    return schema
+
+
 # ─── Pydantic output schemas ───
 
 
@@ -196,7 +228,7 @@ async def _unified_analyze(task, problem_id: str) -> dict:
                 "json_schema": {
                     "name": "unified_analysis",
                     "strict": True,
-                    "schema": UnifiedAnalysisResult.model_json_schema(),
+                    "schema": _make_strict_schema(UnifiedAnalysisResult.model_json_schema()),
                 },
             },
             max_completion_tokens=3000,
