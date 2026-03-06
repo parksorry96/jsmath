@@ -131,6 +131,16 @@ class Problem(Base, TimestampMixin):
     )
     reviewed_by: Mapped[str | None] = mapped_column(String(30))  # user id from lms
 
+    # Textbook-specific metadata
+    book_source: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True, comment='{"title","publisher","chapter","section"}'
+    )
+    answer_match_status: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="matched | unmatched | no_answer_key"
+    )
+    solution_latex: Mapped[str | None] = mapped_column(Text, nullable=True)
+    solution_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # CSAT-specific metadata
     is_common: Mapped[bool | None] = mapped_column(default=True)  # 공통과목 vs 선택과목
     point_value: Mapped[int | None] = mapped_column(SmallInteger)  # 2, 3, 4

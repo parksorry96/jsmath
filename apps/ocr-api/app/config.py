@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -23,6 +24,7 @@ class Settings(BaseSettings):
     ai_api_key: str = ""
     ai_api_base_url: str = "https://api.openai.com/v1"
     ai_model: str = "gpt-5-mini"
+    celery_worker_concurrency: int = Field(default=4, ge=1)
     use_unified_analysis: bool = True
 
     model_config = {"env_file": "../../.env", "extra": "ignore"}

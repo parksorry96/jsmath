@@ -233,6 +233,11 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
               typeof p.classificationConfidence === "number"
                 ? p.classificationConfidence
                 : null,
+            ...(p.bookSource ? { bookSource: p.bookSource as any } : {}),
+            answerMatchStatus: typeof p.answerMatchStatus === "string" ? p.answerMatchStatus : null,
+            solutionLatex: typeof p.solutionLatex === "string" ? p.solutionLatex : null,
+            solutionText: typeof p.solutionText === "string" ? p.solutionText : null,
+            ...(typeof p.answerText === "string" ? { answerText: p.answerText } : {}),
             reviewStatus: "pending_review",
             ...(choices && choices.length > 0
               ? {
@@ -287,7 +292,11 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  async uploadPdf(file: Express.Multer.File, uploaderId: string) {
+  async uploadPdf(file: Express.Multer.File, uploaderId: string, meta?: {
+    documentType: string;
+    bookTitle: string | null;
+    publisher: string | null;
+  }) {
     const fileHash = createHash("sha256").update(file.buffer).digest("hex");
 
     // Idempotency: return existing record if same file already uploaded
@@ -325,11 +334,19 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
         s3Key,
         fileHash,
         sizeBytes: file.size,
+        documentType: meta?.documentType ?? "exam",
+        bookTitle: meta?.bookTitle ?? null,
+        publisher: meta?.publisher ?? null,
       },
     });
 
     const ocrJob = await this.prisma.ocrJob.create({
-      data: { sourceFileId: sourceFile.id },
+      data: {
+        sourceFileId: sourceFile.id,
+        documentType: meta?.documentType ?? "exam",
+        bookTitle: meta?.bookTitle ?? null,
+        publisher: meta?.publisher ?? null,
+      },
     });
 
     // Publish OCR submit event to Redis
@@ -340,6 +357,9 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
         sourceFileId: sourceFile.id,
         s3Key,
         filename: file.originalname,
+        documentType: meta?.documentType ?? "exam",
+        bookTitle: meta?.bookTitle ?? null,
+        publisher: meta?.publisher ?? null,
       }),
     );
 
@@ -372,6 +392,8 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
         ocrJobId: job?.id ?? null,
         ocrStatus: job?.status ?? null,
         problemCount: job?._count?.problems ?? 0,
+        documentType: f.documentType ?? "exam",
+        bookTitle: f.bookTitle ?? null,
       };
     });
   }

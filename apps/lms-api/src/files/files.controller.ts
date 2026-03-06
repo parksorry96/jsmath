@@ -5,6 +5,7 @@ import {
   Delete,
   Param,
   Query,
+  Body,
   UseGuards,
   UseInterceptors,
   UploadedFile,
@@ -30,16 +31,30 @@ export class FilesController {
   }
 
   @Post("pdf")
-  @UseInterceptors(FileInterceptor("file"))
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 300 * 1024 * 1024 } }))
   uploadPdf(
     @UploadedFile() file: Express.Multer.File,
     @Request() req: AuthRequest,
+    @Body("document_type") documentType?: string,
+    @Body("book_title") bookTitle?: string,
+    @Body("publisher") publisher?: string,
   ) {
     if (!file) throw new BadRequestException("No file provided");
     if (file.mimetype !== "application/pdf") {
       throw new BadRequestException("Only PDF files are accepted");
     }
-    return this.files.uploadPdf(file, req.user.id);
+    const docType = documentType ?? "exam";
+    if (docType !== "exam" && docType !== "textbook") {
+      throw new BadRequestException("document_type must be 'exam' or 'textbook'");
+    }
+    if (docType === "textbook" && !bookTitle) {
+      throw new BadRequestException("book_title is required for textbook uploads");
+    }
+    return this.files.uploadPdf(file, req.user.id, {
+      documentType: docType,
+      bookTitle: bookTitle ?? null,
+      publisher: publisher ?? null,
+    });
   }
 
   @Get("assets/url")

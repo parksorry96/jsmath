@@ -59,12 +59,18 @@ interface Problem {
   assets?: ProblemAsset[];
   sourceFile?: string;
   startPage?: number;
+  bookSource?: {
+    chapter?: string;
+    section?: string;
+  };
+  answerMatchStatus?: string;
+  solutionLatex?: string;
 }
 
 interface AnalysisResult {
   solutionStrategy?: string;
   requiredConcepts?: string[];
-  solutionSteps?: string[];
+  solutionSteps?: (string | { concept: string; description: string })[];
   estimatedTimeSec?: number;
   commonMistakes?: string[];
   difficultyRefined?: number;
@@ -72,6 +78,7 @@ interface AnalysisResult {
   pointValue?: number;
   positionType?: string;
   questionFormat?: string;
+  answerText?: string;
 }
 
 interface PaginatedResponse {
@@ -88,6 +95,8 @@ interface SourceFileItem {
   ocrJobId: string | null;
   ocrStatus: string | null;
   problemCount: number;
+  documentType?: string;
+  bookTitle?: string;
 }
 
 // --- Helpers ---
@@ -155,6 +164,32 @@ const STATUS_LABELS: Record<string, { label: string; variant: "default" | "secon
   processing: { label: "처리중", variant: "secondary" },
   pending: { label: "대기", variant: "outline" },
   failed: { label: "실패", variant: "destructive" },
+};
+
+const POSITION_TYPE_LABELS: Record<string, string> = {
+  normal: "일반",
+  semi_killer: "준킬러",
+  killer: "킬러",
+};
+
+const QUESTION_FORMAT_LABELS: Record<string, string> = {
+  multiple_choice_5: "5지선다",
+  short_answer: "주관식",
+};
+
+const PROBLEM_TYPE_LABELS: Record<string, string> = {
+  multiple_choice: "객관식",
+  short_answer: "주관식",
+  written_solution: "서술형",
+  essay: "서술형",
+  true_false: "O/X",
+};
+
+const REVIEW_STATUS_LABELS: Record<string, string> = {
+  approved: "승인",
+  rejected: "반려",
+  pending_review: "검수대기",
+  auto_approved: "자동승인",
 };
 
 function formatDate(dateStr: string): string {
@@ -267,11 +302,23 @@ function FileListView({
                     <FileText className="h-6 w-6 text-brand-beige" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{file.filename}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-sm font-medium">{file.filename}</p>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        file.documentType === 'textbook'
+                          ? 'bg-blue-100 text-blue-700'
+                          : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        {file.documentType === 'textbook' ? '교재' : '시험지'}
+                      </span>
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       {formatDate(file.createdAt)}
                       {file.problemCount > 0 && ` · ${file.problemCount}문제`}
                     </p>
+                    {file.bookTitle && (
+                      <span className="text-sm text-gray-500">{file.bookTitle}</span>
+                    )}
                   </div>
                   <Badge variant={status.variant}>{status.label}</Badge>
                 </button>
@@ -401,11 +448,19 @@ function AnalysisSection({
               </div>
             )}
 
+            {/* Answer */}
+            {analysis.answerText && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">정답:</span>
+                <LatexRenderer content={analysis.answerText} className="inline text-xs font-mono" />
+              </div>
+            )}
+
             {/* Solution strategy */}
             {analysis.solutionStrategy && (
               <div>
                 <p className="mb-1 font-medium text-muted-foreground">풀이 전략</p>
-                <p className="text-foreground">{analysis.solutionStrategy}</p>
+                <LatexRenderer content={analysis.solutionStrategy} className="text-foreground" />
               </div>
             )}
 
@@ -425,9 +480,18 @@ function AnalysisSection({
             {analysis.solutionSteps && analysis.solutionSteps.length > 0 && (
               <div>
                 <p className="mb-1.5 font-medium text-muted-foreground">풀이 단계</p>
-                <ol className="list-decimal space-y-1 pl-5 text-foreground">
-                  {analysis.solutionSteps.map((step, i) => (
-                    <li key={i}>{step}</li>
+                <ol className="list-decimal space-y-1.5 pl-5 text-foreground">
+                  {analysis.solutionSteps.map((s, i) => (
+                    <li key={i}>
+                      {typeof s === "string" ? (
+                        <LatexRenderer content={s} className="inline" />
+                      ) : (
+                        <div>
+                          <strong>{s.concept}</strong>
+                          <LatexRenderer content={s.description} className="mt-0.5" />
+                        </div>
+                      )}
+                    </li>
                   ))}
                 </ol>
               </div>
@@ -445,9 +509,11 @@ function AnalysisSection({
             {analysis.commonMistakes && analysis.commonMistakes.length > 0 && (
               <div>
                 <p className="mb-1.5 font-medium text-muted-foreground">흔한 실수</p>
-                <ul className="list-disc space-y-1 pl-5 text-foreground">
+                <ul className="list-disc space-y-1.5 pl-5 text-foreground">
                   {analysis.commonMistakes.map((m, i) => (
-                    <li key={i}>{m}</li>
+                    <li key={i}>
+                      {typeof m === "string" ? <LatexRenderer content={m} className="inline" /> : String(m)}
+                    </li>
                   ))}
                 </ul>
               </div>
@@ -467,10 +533,10 @@ function AnalysisSection({
                     <Badge variant="outline" className="text-xs">{analysis.pointValue}점</Badge>
                   )}
                   {analysis.positionType && (
-                    <Badge variant="outline" className="text-xs">{analysis.positionType}</Badge>
+                    <Badge variant="outline" className="text-xs">{POSITION_TYPE_LABELS[analysis.positionType] ?? analysis.positionType}</Badge>
                   )}
                   {analysis.questionFormat && (
-                    <Badge variant="outline" className="text-xs">{analysis.questionFormat}</Badge>
+                    <Badge variant="outline" className="text-xs">{QUESTION_FORMAT_LABELS[analysis.questionFormat] ?? analysis.questionFormat}</Badge>
                   )}
                 </div>
               </div>
@@ -839,9 +905,26 @@ function ProblemReviewView({
                   </span>
                   변환 결과
                 </CardTitle>
-                <Badge variant="secondary" className="text-xs">
-                  {current!.problemType}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  {current!.bookSource && (
+                    <span className="text-xs text-gray-500">
+                      {current!.bookSource.chapter && `${current!.bookSource.chapter}장`}
+                      {current!.bookSource.section && ` ${current!.bookSource.section}절`}
+                    </span>
+                  )}
+                  {current!.answerMatchStatus && current!.answerMatchStatus !== 'no_answer_key' && (
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      current!.answerMatchStatus === 'matched'
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-yellow-100 text-yellow-700'
+                    }`}>
+                      {current!.answerMatchStatus === 'matched' ? '해설 매칭' : '매칭 안됨'}
+                    </span>
+                  )}
+                  <Badge variant="secondary" className="text-xs">
+                    {PROBLEM_TYPE_LABELS[current!.problemType] ?? current!.problemType}
+                  </Badge>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
@@ -867,6 +950,16 @@ function ProblemReviewView({
                         />
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {current!.solutionLatex && (
+                  <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+                    <h4 className="text-sm font-medium text-blue-800 mb-1">해설지 풀이</h4>
+                    <LatexRenderer
+                      content={current!.solutionLatex}
+                      className="text-sm text-gray-700"
+                    />
                   </div>
                 )}
               </div>
@@ -1010,11 +1103,7 @@ function ProblemReviewView({
                       }
                       className="text-xs"
                     >
-                      {item.reviewStatus === "approved"
-                        ? "승인"
-                        : item.reviewStatus === "rejected"
-                          ? "반려"
-                          : item.reviewStatus}
+                      {REVIEW_STATUS_LABELS[item.reviewStatus] ?? item.reviewStatus}
                     </Badge>
                   )}
                   <span

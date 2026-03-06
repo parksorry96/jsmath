@@ -1,97 +1,149 @@
-"""Analysis pipeline orchestration — chains AI analysis tasks.
+"""Analysis pipeline orchestration — batch processing with batched GPT calls.
 
-Unified mode (default): single GPT call per problem via unified_analysis
-Legacy mode: parallel chord of 3 separate GPT calls → merge → Stage 2
+Groups problems into batches of BATCH_SIZE (default 5, textbook 10),
+sends each batch as a single GPT call, then runs downstream steps
+(rules, embedding, similarity, auto-review) for each successful result.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 
-from celery import chain, chord, group
+from celery import chord, group
 from sqlalchemy import select
 
 from app.celery_app import celery
-from app.config import settings
 from app.database import worker_session
 from app.models.problem import AnalysisStatus, Problem
 from app.services.redis_events import notify_analysis_completed, notify_analysis_failed, notify_progress
-from app.workers.auto_review import auto_review
-from app.workers.detect_exam_pattern import apply_deterministic_rules
-from app.workers.find_similar import find_similar
-from app.workers.generate_embedding import generate_embedding
 
 logger = logging.getLogger(__name__)
 
+BATCH_SIZE = 10
+TEXTBOOK_BATCH_SIZE = 10
 
-def start_analysis_pipeline(ocr_job_id: str, problem_ids: list[str]) -> str:
-    """Kick off AI analysis for a batch of problems.
+# ─── Pipeline entry point ───
 
-    Unified mode (default): single GPT call per problem
-    Legacy mode: parallel chord of 3 separate GPT calls
+
+def start_analysis_pipeline(
+    ocr_job_id: str, problem_ids: list[str], *, is_textbook: bool = False,
+) -> str:
+    """Kick off AI analysis for problems in batches.
+
+    Each batch fires concurrent GPT calls, then processes
+    downstream steps (rules, embedding, similarity, auto-review).
+    Uses larger batch size for textbooks (simpler problems).
     """
-    workflows = []
-    for pid in problem_ids:
-        if settings.use_unified_analysis:
-            from app.workers.unified_analysis import unified_analysis
-            stage1 = unified_analysis.s(problem_id=pid)
-        else:
-            from app.workers.analyze_solution import analyze_solution
-            from app.workers.detect_exam_pattern import detect_exam_pattern
-            from app.workers.refine_classification import refine_classification
-            stage1 = chord(
-                group(
-                    analyze_solution.s(problem_id=pid),
-                    refine_classification.s(problem_id=pid),
-                    detect_exam_pattern.s(problem_id=pid),
-                ),
-                merge_stage1_results.s(problem_id=pid),
-            )
+    batch_size = TEXTBOOK_BATCH_SIZE if is_textbook else BATCH_SIZE
+    batches = [
+        problem_ids[i : i + batch_size]
+        for i in range(0, len(problem_ids), batch_size)
+    ]
 
-        stage2 = chain(
-            apply_deterministic_rules.s(problem_id=pid),
-            generate_embedding.s(problem_id=pid),
-            find_similar.s(problem_id=pid),
-            auto_review.s(problem_id=pid),
-        )
-        per_problem = chain(stage1, stage2)
-        per_problem.on_error(on_problem_error.s(problem_id=pid))
-        workflows.append(per_problem)
+    batch_tasks = [
+        batch_analyze.s(problem_ids=batch) for batch in batches
+    ]
 
-    batch = chord(
-        group(workflows),
+    pipeline = chord(
+        group(batch_tasks),
         finalize_analysis.s(ocr_job_id=ocr_job_id, total=len(problem_ids)),
     )
-    result = batch.apply_async()
-    mode = "unified" if settings.use_unified_analysis else "legacy"
+    result = pipeline.apply_async()
     logger.info(
-        "Analysis pipeline (%s) started for job %s: %d problems, task_id=%s",
-        mode, ocr_job_id, len(problem_ids), result.id,
+        "Analysis pipeline started for job %s: %d problems in %d batches, task_id=%s",
+        ocr_job_id, len(problem_ids), len(batches), result.id,
     )
     return result.id
 
 
+# ─── Batch processing task ───
+
+
 @celery.task(
     bind=True,
-    name="task.analysis.on_problem_error",
+    name="task.analysis.batch",
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=660,
 )
-def on_problem_error(self, failed_task_id, *, problem_id: str) -> dict:
-    """Error callback for per-problem pipeline failures.
+def batch_analyze(self, *, problem_ids: list[str]) -> list[dict]:
+    """Process a batch of problems: batch GPT → rules → embedding → similar → review."""
+    return asyncio.run(_process_batch(problem_ids))
 
-    Marks the problem as analysis_status='failed' and stores the error message.
-    """
-    error_msg = f"Task {failed_task_id} failed"
-    logger.error(
-        "Analysis pipeline failed for problem %s: %s", problem_id, error_msg
-    )
+
+async def _process_batch(problem_ids: list[str]) -> list[dict]:
+    """Full pipeline for a batch. Single GPT call for all problems."""
+    from app.workers.detect_exam_pattern import _apply_rules
+    from app.workers.generate_embedding import generate_embedding_async
+    from app.workers.find_similar import _find
+    from app.workers.auto_review import _review
+    from app.workers.unified_analysis import analyze_problems_batch
+
+    logger.info("Batch start: %d problems %s", len(problem_ids), problem_ids)
+
+    # ── Stage 1: Batch GPT analysis (single API call for all problems) ──
+    succeeded: list[tuple[str, dict]] = []
+    failed_results: list[dict] = []
+
     try:
-        asyncio.run(_mark_problem_failed(problem_id, error_msg))
-    except Exception:
-        logger.exception("Failed to mark problem %s as failed in DB", problem_id)
-    return {"problem_id": problem_id, "decision": "failed", "error": error_msg}
+        batch_results = await analyze_problems_batch(problem_ids)
+        result_map = {r["problem_id"]: r for r in batch_results}
+        for pid in problem_ids:
+            if pid in result_map:
+                succeeded.append((pid, result_map[pid]))
+            else:
+                logger.error("Problem %s missing from batch GPT result", pid)
+                await _mark_problem_failed(pid, "Missing from batch GPT result")
+                failed_results.append({"problem_id": pid, "decision": "failed", "error": "Missing from batch result"})
+    except Exception as exc:
+        logger.error("Batch GPT analysis failed for %d problems: %s", len(problem_ids), exc)
+        for pid in problem_ids:
+            await _mark_problem_failed(pid, str(exc))
+            failed_results.append({"problem_id": pid, "decision": "failed", "error": str(exc)})
+        return failed_results
+
+    if not succeeded:
+        return failed_results
+
+    # ── Stage 2: Apply deterministic rules + save to DB (concurrent, fast) ──
+    await asyncio.gather(
+        *[_apply_rules(pid, result) for pid, result in succeeded],
+        return_exceptions=True,
+    )
+
+    # ── Stage 3: Generate embeddings (concurrent API calls) ──
+    await asyncio.gather(
+        *[generate_embedding_async(pid, result) for pid, result in succeeded],
+        return_exceptions=True,
+    )
+
+    # ── Stage 4: Find similar problems (concurrent pgvector queries) ──
+    await asyncio.gather(
+        *[_find(pid) for pid, _ in succeeded],
+        return_exceptions=True,
+    )
+
+    # ── Stage 5: Auto review (concurrent, fast) ──
+    review_results = await asyncio.gather(
+        *[_review(pid) for pid, _ in succeeded],
+        return_exceptions=True,
+    )
+
+    final_results = list(failed_results)
+    for (pid, _), review in zip(succeeded, review_results):
+        if isinstance(review, dict):
+            final_results.append(review)
+        else:
+            logger.error("Review failed for %s: %s", pid, review)
+            final_results.append({"problem_id": pid, "decision": "failed", "error": str(review)})
+
+    ok = sum(1 for r in final_results if r.get("decision") != "failed")
+    logger.info("Batch done: %d/%d succeeded", ok, len(problem_ids))
+    return final_results
+
+
+# ─── Helper: mark problem as failed ───
 
 
 async def _mark_problem_failed(problem_id: str, error_msg: str) -> None:
@@ -102,94 +154,16 @@ async def _mark_problem_failed(problem_id: str, error_msg: str) -> None:
         problem = result.scalar_one_or_none()
         if problem:
             problem.analysis_status = AnalysisStatus.failed
-            # Store error message in common_mistakes as structured data
             error_entry = {"_error": error_msg}
             if isinstance(problem.common_mistakes, list):
                 problem.common_mistakes = [error_entry] + problem.common_mistakes
             else:
                 problem.common_mistakes = [error_entry]
             await session.commit()
-            logger.info("Marked problem %s as analysis_status=failed: %s", problem_id, error_msg)
+            logger.info("Marked problem %s as failed: %s", problem_id, error_msg)
 
 
-@celery.task(
-    bind=True,
-    name="task.analysis.merge_stage1",
-    max_retries=2,
-    default_retry_delay=5,
-    acks_late=True,
-)
-def merge_stage1_results(self, stage1_results: list[dict], *, problem_id: str) -> dict:
-    """Merge parallel Stage 1 results and save to database."""
-    return asyncio.run(_merge(problem_id, stage1_results))
-
-
-async def _merge(problem_id: str, results: list[dict]) -> dict:
-    merged: dict = {"problem_id": problem_id}
-    for i, result in enumerate(results):
-        if isinstance(result, dict):
-            merged.update(result)
-        else:
-            logger.warning(
-                "Stage 1 task %d returned non-dict for problem %s: %r",
-                i, problem_id, result,
-            )
-    # Ensure problem_id is preserved
-    merged["problem_id"] = problem_id
-
-    async with worker_session() as session:
-        query = await session.execute(
-            select(Problem).where(Problem.id == problem_id)
-        )
-        problem = query.scalar_one_or_none()
-        if not problem:
-            raise ValueError(f"Problem {problem_id} not found")
-
-        # Update analysis status
-        problem.analysis_status = AnalysisStatus.analyzing
-
-        # Save Stage 1 results
-        if merged.get("solution_strategy"):
-            problem.solution_strategy = merged["solution_strategy"]
-        if merged.get("required_concepts"):
-            problem.required_concepts = merged["required_concepts"]
-        if merged.get("solution_steps"):
-            problem.solution_steps = merged["solution_steps"]
-        if merged.get("estimated_time_sec") is not None:
-            problem.estimated_time_sec = merged["estimated_time_sec"]
-        if merged.get("common_mistakes"):
-            problem.common_mistakes = merged["common_mistakes"]
-
-        # Refined classification
-        if merged.get("subject"):
-            problem.subject = merged["subject"]
-        if merged.get("unit_major"):
-            problem.unit_major = merged["unit_major"]
-        if merged.get("unit_minor"):
-            problem.unit_minor = merged["unit_minor"]
-        if merged.get("unit_sub"):
-            problem.unit_sub = merged["unit_sub"]
-        if merged.get("difficulty_refined") is not None:
-            problem.difficulty_refined = merged["difficulty_refined"]
-        if merged.get("is_common") is not None:
-            problem.is_common = merged["is_common"]
-        if merged.get("classification_confidence") is not None:
-            problem.classification_confidence = merged["classification_confidence"]
-
-        # Exam pattern
-        if merged.get("exam_source"):
-            problem.exam_source = merged["exam_source"]
-        if merged.get("position_type"):
-            problem.position_type = merged["position_type"]
-        if merged.get("point_value") is not None:
-            problem.point_value = merged["point_value"]
-        if merged.get("question_format"):
-            problem.question_format = merged["question_format"]
-
-        await session.commit()
-
-    logger.info("Merged Stage 1 results for problem %s", problem_id)
-    return merged
+# ─── Finalize task ───
 
 
 @celery.task(
@@ -197,14 +171,15 @@ async def _merge(problem_id: str, results: list[dict]) -> dict:
     name="task.analysis.finalize",
     acks_late=True,
 )
-def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> dict:
-    """Finalize analysis batch — count results and notify NestJS."""
-    actual = len(results) if results else 0
-    if actual != total:
-        logger.warning(
-            "Analysis finalize mismatch for job %s: expected %d results, got %d",
-            ocr_job_id, total, actual,
-        )
+def finalize_analysis(self, batch_results: list, *, ocr_job_id: str, total: int) -> dict:
+    """Finalize analysis — flatten batch results, count, and notify NestJS."""
+    # Flatten: batch_results is list[list[dict]]
+    results: list[dict] = []
+    for batch in batch_results:
+        if isinstance(batch, list):
+            results.extend(batch)
+        elif isinstance(batch, dict):
+            results.append(batch)
 
     auto_approved = 0
     completed = 0
@@ -212,20 +187,20 @@ def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> di
     problem_ids: list[str] = []
 
     for result in results:
-        if isinstance(result, dict):
-            pid = result.get("problem_id")
-            decision = result.get("decision")
-            if decision == "auto_approved":
-                auto_approved += 1
-                completed += 1
-                if pid:
-                    problem_ids.append(pid)
-            elif decision == "pending_review":
-                completed += 1
-                if pid:
-                    problem_ids.append(pid)
-            else:
-                failed += 1
+        if not isinstance(result, dict):
+            failed += 1
+            continue
+        pid = result.get("problem_id")
+        decision = result.get("decision")
+        if decision == "auto_approved":
+            auto_approved += 1
+            completed += 1
+            if pid:
+                problem_ids.append(pid)
+        elif decision == "pending_review":
+            completed += 1
+            if pid:
+                problem_ids.append(pid)
         else:
             failed += 1
 
@@ -237,7 +212,7 @@ def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> di
         notify_analysis_completed(ocr_job_id, completed, auto_approved, problem_ids)
 
     logger.info(
-        "Analysis finalized for job %s: %d completed, %d auto-approved, %d failed (expected %d)",
+        "Analysis finalized for job %s: %d completed, %d auto-approved, %d failed (total %d)",
         ocr_job_id, completed, auto_approved, failed, total,
     )
     return {
@@ -246,3 +221,73 @@ def finalize_analysis(self, results: list, *, ocr_job_id: str, total: int) -> di
         "auto_approved": auto_approved,
         "failed": failed,
     }
+
+
+# ─── Legacy support: merge_stage1_results (kept for backwards compatibility) ──
+
+
+@celery.task(
+    bind=True,
+    name="task.analysis.merge_stage1",
+    max_retries=2,
+    default_retry_delay=5,
+    acks_late=True,
+)
+def merge_stage1_results(self, stage1_results: list[dict], *, problem_id: str) -> dict:
+    """Merge parallel Stage 1 results and save to database (legacy mode)."""
+    return asyncio.run(_merge(problem_id, stage1_results))
+
+
+async def _merge(problem_id: str, results: list[dict]) -> dict:
+    merged: dict = {"problem_id": problem_id}
+    for i, result in enumerate(results):
+        if isinstance(result, dict):
+            merged.update(result)
+    merged["problem_id"] = problem_id
+
+    async with worker_session() as session:
+        query = await session.execute(
+            select(Problem).where(Problem.id == problem_id)
+        )
+        problem = query.scalar_one_or_none()
+        if not problem:
+            raise ValueError(f"Problem {problem_id} not found")
+
+        problem.analysis_status = AnalysisStatus.analyzing
+        field_map = [
+            "solution_strategy", "required_concepts", "solution_steps",
+            "estimated_time_sec", "common_mistakes", "subject", "unit_major",
+            "unit_minor", "unit_sub", "difficulty_refined", "is_common",
+            "classification_confidence", "exam_source", "position_type",
+            "point_value", "question_format",
+        ]
+        for key in field_map:
+            val = merged.get(key)
+            if val is not None and hasattr(problem, key):
+                setattr(problem, key, val)
+        await session.commit()
+
+    return merged
+
+
+# ─── Legacy: on_problem_error ───
+
+
+@celery.task(
+    bind=True,
+    name="task.analysis.on_problem_error",
+    acks_late=True,
+)
+def on_problem_error(self, failed_task_id, *, problem_id: str) -> dict:
+    """Error callback for per-problem pipeline failures (legacy)."""
+    error_msg = f"Task {failed_task_id} failed"
+    logger.error("Analysis pipeline failed for problem %s: %s", problem_id, error_msg)
+    try:
+        asyncio.run(_mark_problem_failed_sync(problem_id, error_msg))
+    except Exception:
+        logger.exception("Failed to mark problem %s as failed in DB", problem_id)
+    return {"problem_id": problem_id, "decision": "failed", "error": error_msg}
+
+
+async def _mark_problem_failed_sync(problem_id: str, error_msg: str) -> None:
+    await _mark_problem_failed(problem_id, error_msg)

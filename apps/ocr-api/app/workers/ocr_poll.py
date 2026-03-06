@@ -17,11 +17,14 @@ logger = logging.getLogger(__name__)
 
 # Polling strategy (from agent instructions):
 # 0-5 min: 30s intervals, 5-15 min: 60s, 15+ min: 120s, >30 min: give up
+# For textbooks: extended to 60 min (MAX_POLL_ATTEMPTS=120)
 MAX_POLL_ATTEMPTS = 60
+MAX_POLL_ATTEMPTS_TEXTBOOK = 120
 POLL_INTERVALS = {
     10: 30,   # first 10 attempts (0~5min at 30s each)
     20: 60,   # next 10 attempts (5~15min at 60s each)
     60: 120,  # remaining (15~30min at 120s each)
+    120: 120, # textbook extended range (30~60min at 120s each)
 }
 
 
@@ -36,7 +39,7 @@ def _get_poll_delay(attempt: int) -> int:
 @celery.task(
     bind=True,
     name="task.ocr.poll",
-    max_retries=MAX_POLL_ATTEMPTS,
+    max_retries=MAX_POLL_ATTEMPTS_TEXTBOOK,  # use higher limit; actual check is in _poll
     acks_late=True,
 )
 def poll_mathpix_status(
@@ -117,15 +120,19 @@ async def _poll(task: Task, ocr_job_id: str, mathpix_pdf_id: str) -> dict[str, s
         # Still processing -- schedule next poll
         await session.commit()
 
-        if attempt >= MAX_POLL_ATTEMPTS:
-            # Exceeded 30 min timeout
+        # Determine max attempts based on document type
+        doc_type = job.document_type if job else "exam"
+        max_attempts = MAX_POLL_ATTEMPTS_TEXTBOOK if doc_type == "textbook" else MAX_POLL_ATTEMPTS
+        timeout_label = "60 min" if doc_type == "textbook" else "30 min"
+
+        if attempt >= max_attempts:
             async with worker_session() as s2:
                 res = await s2.execute(
                     select(OcrJobTracking).where(OcrJobTracking.id == ocr_job_id)
                 )
                 j = res.scalar_one()
                 j.status = JobStatus.failed
-                j.error_message = "Mathpix processing timeout (>30 min)"
+                j.error_message = f"Mathpix processing timeout (>{timeout_label})"
                 await s2.commit()
 
             from app.services.redis_events import notify_failed

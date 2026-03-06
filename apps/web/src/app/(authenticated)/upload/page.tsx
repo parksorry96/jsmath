@@ -18,7 +18,7 @@ import { toast } from "sonner";
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
 
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
 
 type UploadStatus =
   | "pending"
@@ -57,6 +57,9 @@ let fileIdCounter = 0;
 export default function UploadPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [documentType, setDocumentType] = useState<'exam' | 'textbook'>('exam');
+  const [bookTitle, setBookTitle] = useState('');
+  const [publisher, setPublisher] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sseRef = useRef<Map<string, EventSource>>(new Map());
 
@@ -73,15 +76,17 @@ export default function UploadPage() {
     (uploadId: string, jobId: string) => {
       const es = new EventSource(`${API_URL}/files/${jobId}/events`);
 
-      const stageProgress: Record<string, number> = {
-        ocr_submit: 25,
-        ocr_processing: 40,
-        parsing: 55,
-        segmentation: 65,
-        ocr_complete: 70,
-        analyzing: 85,
-        analysis_complete: 100,
-      };
+      const stageProgress: Record<string, number> = documentType === 'textbook'
+        ? {
+            ocr_submit: 15, ocr_processing: 30, parsing: 45,
+            detect_sections: 55, segmentation: 65, answer_matching: 75,
+            ocr_complete: 80, analyzing: 90, analysis_complete: 100,
+          }
+        : {
+            ocr_submit: 25, ocr_processing: 40, parsing: 55,
+            segmentation: 65, ocr_complete: 70, analyzing: 85,
+            analysis_complete: 100,
+          };
 
       es.addEventListener("progress", (e) => {
         try {
@@ -114,11 +119,16 @@ export default function UploadPage() {
 
       sseRef.current.set(uploadId, es);
     },
-    [updateFile],
+    [updateFile, documentType],
   );
 
   const uploadFile = useCallback(
     (file: File) => {
+      if (documentType === 'textbook' && !bookTitle.trim()) {
+        toast.error('교재 제목을 입력해주세요');
+        return;
+      }
+
       const id = `upload-${++fileIdCounter}`;
       const abortController = new AbortController();
 
@@ -136,6 +146,11 @@ export default function UploadPage() {
       const token = localStorage.getItem("token");
       const formData = new FormData();
       formData.append("file", file);
+      formData.append('document_type', documentType);
+      if (documentType === 'textbook') {
+        formData.append('book_title', bookTitle);
+        if (publisher) formData.append('publisher', publisher);
+      }
 
       const xhr = new XMLHttpRequest();
 
@@ -209,7 +224,7 @@ export default function UploadPage() {
       }
       xhr.send(formData);
     },
-    [updateFile, startSSE],
+    [updateFile, startSSE, documentType, bookTitle, publisher],
   );
 
   const processFiles = useCallback(
@@ -309,7 +324,43 @@ export default function UploadPage() {
       </div>
 
       <Card>
-        <CardContent className="p-0">
+        <CardContent className="p-6">
+          <div className="flex gap-4 mb-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="docType" value="exam"
+                checked={documentType === 'exam'}
+                onChange={() => setDocumentType('exam')}
+                className="accent-blue-600" />
+              <span className="text-sm font-medium">시험지</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="docType" value="textbook"
+                checked={documentType === 'textbook'}
+                onChange={() => setDocumentType('textbook')}
+                className="accent-blue-600" />
+              <span className="text-sm font-medium">교재</span>
+            </label>
+          </div>
+
+          {documentType === 'textbook' && (
+            <div className="space-y-3 mb-4">
+              <input
+                type="text"
+                placeholder="책 제목 (필수)"
+                value={bookTitle}
+                onChange={e => setBookTitle(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="text"
+                placeholder="출판사 (선택)"
+                value={publisher}
+                onChange={e => setPublisher(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          )}
+
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}

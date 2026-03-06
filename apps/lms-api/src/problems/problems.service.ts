@@ -20,6 +20,7 @@ export interface ProblemsQuery {
   difficulty?: string;
   problemType?: string;
   analysisStatus?: string;
+  bookTitle?: string;
   q?: string;
   page?: number;
   limit?: number;
@@ -58,6 +59,9 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     if (query.unitMajor) where.unitMajor = query.unitMajor;
     if (query.problemType) where.problemType = query.problemType;
     if (query.analysisStatus) where.analysisStatus = query.analysisStatus;
+    if (query.bookTitle) {
+      where.bookSource = { path: ["title"], string_contains: query.bookTitle };
+    }
     if (query.difficulty !== undefined) {
       const parsed = parseInt(query.difficulty, 10);
       if (!isNaN(parsed)) where.difficulty = parsed;
@@ -92,6 +96,9 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
           ocrJobId: true,
           startPage: true,
           endPage: true,
+          bookSource: true,
+          answerMatchStatus: true,
+          solutionLatex: true,
           createdAt: true,
           choices: {
             select: {
@@ -246,6 +253,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         analyzedAt: true,
         classificationConfidence: true,
         reviewStatus: true,
+        answerText: true,
       },
     });
     if (!problem) throw new NotFoundException("Problem not found");

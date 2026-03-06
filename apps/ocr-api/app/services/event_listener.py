@@ -46,14 +46,18 @@ async def listen_for_events() -> None:
 async def _handle_submit(raw: str) -> None:
     """Handle an ocr:submit event from NestJS.
 
-    Expected payload: {"fileId": "...", "s3Key": "...", "ocrJobId": "..."}
+    Expected payload: {"fileId": "...", "s3Key": "...", "ocrJobId": "...",
+                       "documentType": "exam"|"textbook", "bookTitle": "...", "publisher": "..."}
     """
     payload = json.loads(raw)
     ocr_job_id = payload.get("jobId") or payload.get("ocrJobId")
     source_file_id = payload.get("sourceFileId") or payload.get("fileId")
     s3_key = payload["s3Key"]
+    document_type = payload.get("documentType", "exam")
+    book_title = payload.get("bookTitle")
+    publisher = payload.get("publisher")
 
-    logger.info("Received ocr:submit for job %s (file=%s)", ocr_job_id, source_file_id)
+    logger.info("Received ocr:submit for job %s (file=%s, type=%s)", ocr_job_id, source_file_id, document_type)
 
     # Create tracking record in OCR schema
     async with async_session() as session:
@@ -62,6 +66,9 @@ async def _handle_submit(raw: str) -> None:
             source_file_id=source_file_id,
             s3_key=s3_key,
             status=JobStatus.pending,
+            document_type=document_type,
+            book_title=book_title,
+            publisher=publisher,
         )
         session.add(tracking)
         await session.commit()
@@ -70,7 +77,7 @@ async def _handle_submit(raw: str) -> None:
     from app.workers.pipeline import start_ocr_pipeline
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, start_ocr_pipeline, ocr_job_id)
+    await loop.run_in_executor(None, start_ocr_pipeline, ocr_job_id, document_type)
 
 
 async def _handle_analysis_request(data: dict) -> None:

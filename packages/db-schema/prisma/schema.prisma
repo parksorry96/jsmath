@@ -94,13 +94,16 @@ enum Role {
 // ─── OCR 도메인 (ocr schema — FastAPI/SQLAlchemy에서도 접근) ───
 
 model SourceFile {
-  id        String   @id @default(cuid())
-  filename  String
-  s3Key     String   @map("s3_key")
-  fileHash  String   @unique @map("file_hash")
-  sizeBytes Int      @map("size_bytes")
-  ocrJobs   OcrJob[]
-  createdAt DateTime @default(now()) @map("created_at")
+  id           String   @id @default(cuid())
+  filename     String
+  s3Key        String   @map("s3_key")
+  fileHash     String   @unique @map("file_hash")
+  sizeBytes    Int      @map("size_bytes")
+  documentType String   @default("exam") @map("document_type")
+  bookTitle    String?  @map("book_title")
+  publisher    String?
+  ocrJobs      OcrJob[]
+  createdAt    DateTime @default(now()) @map("created_at")
 
   @@map("source_files")
   @@schema("ocr")
@@ -111,6 +114,9 @@ model OcrJob {
   sourceFileId String       @map("source_file_id")
   sourceFile   SourceFile   @relation(fields: [sourceFileId], references: [id])
   status       OcrJobStatus @default(pending)
+  documentType String       @default("exam") @map("document_type")
+  bookTitle    String?      @map("book_title")
+  publisher    String?
   problemCount Int?         @map("problem_count")
   errorMessage String?      @map("error_message")
   problems     Problem[]
@@ -181,6 +187,12 @@ model Problem {
   questionFormat       String?       @map("question_format")
   positionType         String?       @map("position_type")
   examSource           Json?         @map("exam_source")
+
+  // Textbook-specific
+  bookSource           Json?         @map("book_source")
+  answerMatchStatus    String?       @map("answer_match_status")
+  solutionLatex        String?       @map("solution_latex")
+  solutionText         String?       @map("solution_text")
 
   // AI analysis
   solutionStrategy     String?       @map("solution_strategy")

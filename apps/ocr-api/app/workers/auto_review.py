@@ -68,6 +68,42 @@ _SUBJECT_CONCEPT_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+def _compute_chapter_match(
+    subject: str | None, unit_major: str | None, book_source: dict | None,
+) -> float:
+    """Factor: Does AI subject/unit align with textbook chapter?"""
+    if not book_source or not book_source.get("chapter"):
+        return 0.5  # neutral
+    chapter = book_source["chapter"].lower()
+    if subject and subject.lower() in chapter:
+        return 1.0
+    if unit_major and unit_major.lower() in chapter:
+        return 0.9
+    # Check reverse: chapter keywords in unit_major
+    chapter_keywords = [w for w in chapter.split() if len(w) > 1]
+    if unit_major and any(kw in unit_major for kw in chapter_keywords):
+        return 0.8
+    return 0.3  # likely mismatch
+
+
+def _normalize_answer(answer: str) -> str:
+    """Normalize answer text for comparison."""
+    answer = answer.strip()
+    circled = {"①": "1", "②": "2", "③": "3", "④": "4", "⑤": "5"}
+    for k, v in circled.items():
+        answer = answer.replace(k, v)
+    return answer
+
+
+def _compute_answer_cross_check(ai_answer: str | None, problem: Problem) -> float:
+    """Factor: Does AI answer match the answer key?"""
+    if problem.answer_match_status != "matched" or not problem.answer_text:
+        return 0.5  # neutral — no answer key
+    ai_norm = _normalize_answer(ai_answer or "")
+    book_norm = _normalize_answer(problem.answer_text)
+    return 1.0 if ai_norm == book_norm else 0.0
+
+
 def _compute_ai_confidence(raw_confidence: float | None) -> float:
     """Factor 1: AI self-reported confidence (clamped to [0, 1])."""
     if raw_confidence is None:
@@ -257,6 +293,8 @@ async def _review(problem_id: str) -> dict:
 
         # ─── Multi-factor composite confidence ───
 
+        is_textbook = bool(problem.book_source)
+
         f_ai = _compute_ai_confidence(problem.classification_confidence)
         factors["ai_confidence"] = f_ai
 
@@ -275,16 +313,50 @@ async def _review(problem_id: str) -> dict:
         )
         factors["similar_agreement"] = f_similar
 
-        composite = (
-            W_AI_CONFIDENCE * f_ai
-            + W_SUBJECT_CONSISTENCY * f_subject
-            + W_DIFFICULTY_TIME * f_time
-            + W_SIMILAR_AGREEMENT * f_similar
-        )
+        if is_textbook:
+            f_chapter = _compute_chapter_match(
+                problem.subject, problem.unit_major, problem.book_source,
+            )
+            factors["chapter_match"] = f_chapter
+
+            f_answer = _compute_answer_cross_check(
+                problem.answer_latex, problem,
+            )
+            factors["answer_cross_check"] = f_answer
+
+            has_answer_key = problem.answer_match_status == "matched"
+            if has_answer_key:
+                composite = (
+                    0.15 * f_ai
+                    + 0.15 * f_subject
+                    + 0.10 * f_time
+                    + 0.15 * f_similar
+                    + 0.20 * f_chapter
+                    + 0.25 * f_answer
+                )
+                threshold = 0.80
+            else:
+                composite = (
+                    0.25 * f_ai
+                    + 0.20 * f_subject
+                    + 0.10 * f_time
+                    + 0.15 * f_similar
+                    + 0.30 * f_chapter
+                )
+                threshold = 0.85
+        else:
+            composite = (
+                W_AI_CONFIDENCE * f_ai
+                + W_SUBJECT_CONSISTENCY * f_subject
+                + W_DIFFICULTY_TIME * f_time
+                + W_SIMILAR_AGREEMENT * f_similar
+            )
+            threshold = AUTO_APPROVE_THRESHOLD
+
         factors["composite"] = round(composite, 4)
 
         # Check 6: Composite confidence above threshold
-        confidence_ok = composite >= AUTO_APPROVE_THRESHOLD
+        confidence_ok = composite >= threshold
         checks.append(("confidence_above_threshold", confidence_ok))
 
         # ─── Decision ───

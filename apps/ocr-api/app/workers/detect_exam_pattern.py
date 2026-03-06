@@ -237,20 +237,28 @@ async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
             logger.warning("Problem %s not found in DB — skipping deterministic rules", problem_id)
             return {**prev_result, "problem_id": problem_id}
 
-        qnum = _parse_question_number(problem.problem_number)
-        rules = _rules_from_number(qnum)
+        is_textbook = bool(problem.book_source)
 
-        if rules:
-            position_type, point_value, question_format = rules
-            problem.position_type = position_type
-            problem.point_value = point_value
-            if not problem.question_format:
-                problem.question_format = question_format
+        if is_textbook:
+            # Textbook mode: skip CSAT-specific rules entirely
+            # position_type, point_value, question_format stay null
+            pass
         else:
-            # Fallback: use difficulty from prev_result or existing
-            difficulty = prev_result.get("difficulty_refined") or problem.difficulty_refined or problem.difficulty
-            problem.point_value = _point_from_difficulty(difficulty)
-            problem.position_type = _position_from_difficulty(difficulty)
+            # CSAT mode: apply deterministic rules
+            qnum = _parse_question_number(problem.problem_number)
+            rules = _rules_from_number(qnum)
+
+            if rules:
+                position_type, point_value, question_format = rules
+                problem.position_type = position_type
+                problem.point_value = point_value
+                if not problem.question_format:
+                    problem.question_format = question_format
+            else:
+                # Fallback: use difficulty from prev_result or existing
+                difficulty = prev_result.get("difficulty_refined") or problem.difficulty_refined or problem.difficulty
+                problem.point_value = _point_from_difficulty(difficulty)
+                problem.position_type = _position_from_difficulty(difficulty)
 
         # Save unified analysis results to DB
         field_map = {
@@ -268,6 +276,12 @@ async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
             "classification_confidence": "classification_confidence",
             "exam_source": "exam_source",
         }
+        if is_textbook:
+            # For textbooks: save AI answer to answer_latex (answer_text has book answer)
+            field_map["answer"] = "answer_latex"
+        else:
+            field_map["answer"] = "answer_text"
+
         for key, attr in field_map.items():
             val = prev_result.get(key)
             if val is not None and hasattr(problem, attr):

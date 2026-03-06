@@ -35,6 +35,13 @@ class OcrJobTracking(Base, TimestampMixin):
     source_file_id: Mapped[str] = mapped_column(String(30), nullable=False)
     s3_key: Mapped[str] = mapped_column(String(500), nullable=False)
 
+    # Document type metadata
+    document_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="exam"
+    )
+    book_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    publisher: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     status: Mapped[JobStatus] = mapped_column(
         Enum(JobStatus, name="pipeline_job_status", schema="ocr"),
         default=JobStatus.pending,

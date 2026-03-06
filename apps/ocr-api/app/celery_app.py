@@ -17,6 +17,7 @@ celery.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    worker_concurrency=settings.celery_worker_concurrency,
 )
 
 celery.conf.update(
@@ -34,5 +35,9 @@ celery.conf.update(
         "app.workers.auto_review",
         "app.workers.analysis_pipeline",
         "app.workers.unified_analysis",
+        "app.workers.detect_sections",
+        "app.workers.segment_textbook",
+        "app.workers.match_answers",
+        "app.workers.finalize_textbook",
     ],
 )

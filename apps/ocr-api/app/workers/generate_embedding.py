@@ -26,7 +26,15 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 
 def _build_embedding_text(problem: Problem, solution_strategy: str | None = None) -> str:
     """Build the text to embed from problem content."""
-    parts = [problem.stem_text]
+    parts = []
+
+    # Prepend subject/unit for better clustering across sources
+    if problem.subject:
+        parts.append(f"[{problem.subject}]")
+    if problem.unit_major:
+        parts.append(f"[{problem.unit_major}]")
+
+    parts.append(problem.stem_text)
 
     if problem.choices:
         for choice in sorted(problem.choices, key=lambda c: c.position):
@@ -34,6 +42,9 @@ def _build_embedding_text(problem: Problem, solution_strategy: str | None = None
 
     if solution_strategy:
         parts.append(f"풀이전략: {solution_strategy}")
+
+    if problem.required_concepts:
+        parts.append(f"개념: {', '.join(problem.required_concepts)}")
 
     return "\n".join(parts)
 
@@ -55,10 +66,20 @@ def generate_embedding(
     if not problem_id:
         raise ValueError("problem_id is required")
 
-    return asyncio.run(_generate(self, problem_id, previous_result))
+    try:
+        return asyncio.run(generate_embedding_async(problem_id, previous_result))
+    except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
+        raise self.retry(exc=exc)
 
 
-async def _generate(task, problem_id: str, stage1_result: dict | None) -> dict:
+async def generate_embedding_async(
+    problem_id: str, stage1_result: dict | None = None,
+) -> dict:
+    """Standalone async embedding generation. Used by batch processing."""
+    return await _generate(problem_id, stage1_result)
+
+
+async def _generate(problem_id: str, stage1_result: dict | None) -> dict:
     async with worker_session() as session:
         result = await session.execute(
             select(Problem)
@@ -91,8 +112,8 @@ async def _generate(task, problem_id: str, stage1_result: dict | None) -> dict:
             input=text,
         )
     except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
-        logger.warning("OpenAI embedding API error for problem %s: %s — retrying", problem_id, exc)
-        raise task.retry(exc=exc)
+        logger.warning("OpenAI embedding API error for problem %s: %s", problem_id, exc)
+        raise
     except Exception:
         logger.exception("Embedding generation failed for %s; skipping", problem_id)
         return {"problem_id": problem_id, "embedding_generated": False}
