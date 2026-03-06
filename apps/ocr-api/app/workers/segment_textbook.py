@@ -109,10 +109,12 @@ _SECTION_TRANSITIONS = [
     (re.compile(r"^\s*Level\s*1\b", re.IGNORECASE), "level1"),
     (re.compile(r"^\s*Level\s*2\b", re.IGNORECASE), "level2"),
     (re.compile(r"^\s*Level\s*3\b", re.IGNORECASE), "level3"),
+    (re.compile(r"^\s*Level\s*$", re.IGNORECASE), "level_pending"),  # "Level" alone (number on next line or header)
     (re.compile(r"^\s*유제\s*$"), "practice"),
     (re.compile(r"^\s*대표\s*기출\s*문제"), "past_exam"),
+    (re.compile(r"^\s*대표기출문제\s*$"), "past_exam"),  # No spaces variant
     (re.compile(r"^\s*한눈에\s*보는\s*정답"), "quick_answer"),
-    (re.compile(r"^\s*정답과\s*풀이"), "answer_detail"),
+    (re.compile(r"^\s*정답과\s*풀이\s*$"), "answer_detail"),  # Exact match only (exclude footer "정답과 풀이 2쪽")
 ]
 
 _EXAMPLE_PATTERN = re.compile(r"^\s*예제\s*(\d{1,2})\s*(.*)")
@@ -437,6 +439,12 @@ def _extract_inline_answer(text: str) -> str | None:
 # ─── Standalone local number (appears after item code) ───
 _LOCAL_NUMBER_PATTERN = re.compile(r"^\s*(\d{1,3})\s*$")
 
+# ─── EBS Chapter pattern: "01 지수와 로그" ───
+_EBS_CHAPTER_PATTERN = re.compile(r"^\s*(0[1-9])\s+\S")
+
+# ─── Leading number at start of text (problem number embedded in stem) ───
+_LEADING_NUMBER = re.compile(r"^\$?(\d{1,3})\s+")
+
 
 def _build_ebs_segment(
     stem_lines: list[OcrLine],
@@ -582,11 +590,37 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     stop_processing = True
                     break
 
+                # Handle "Level" alone — resolve from next line context
+                if sec_type == "level_pending":
+                    _flush_problem(page.page_number)
+                    # Will be resolved by the next line ("기초 연습" etc.)
+                    current_section_type = "level_pending"
+                    current_section_label = "Level"
+                    continue
+
                 # If section changes from example to practice (유제),
                 # flush the current example first
                 _flush_problem(page.page_number)
                 current_section_type = sec_type
                 current_section_label = sec_label
+                continue
+
+            # 1b. Resolve pending "Level" section from follow-up line
+            if current_section_type == "level_pending":
+                lower = text.lower()
+                if "기초" in text:
+                    current_section_type = "level1"
+                    current_section_label = "Level 1 기초 연습"
+                elif "기본" in text:
+                    current_section_type = "level2"
+                    current_section_label = "Level 2 기본 연습"
+                elif "실력" in text:
+                    current_section_type = "level3"
+                    current_section_label = "Level 3 실력 완성"
+                else:
+                    # Default to level1 if can't determine
+                    current_section_type = "level1"
+                    current_section_label = "Level 1"
                 continue
 
             # 2. Check for 예제 N start
@@ -606,10 +640,30 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
             # 3. Check for item code [XXXXX-XXXX]
             item_code = _match_item_code(text)
             if item_code:
-                _flush_problem(page.page_number)
-                current_item_code = item_code
-                current_page_start = page.page_number
-                # The local number will come on the next line
+                if current_item_code is not None:
+                    # Previous item-code problem exists — flush it
+                    _flush_problem(page.page_number)
+                    current_item_code = item_code
+                    current_page_start = page.page_number
+                elif current_stem_lines and current_local_number is not None:
+                    # Lines with local number accumulated before item code (text-first ordering)
+                    # Attach item code to current problem
+                    current_item_code = item_code
+                elif current_stem_lines:
+                    # Lines accumulated but no local number extracted yet
+                    # Try to extract from accumulated lines
+                    current_item_code = item_code
+                    for sl in current_stem_lines:
+                        num_m = _LEADING_NUMBER.match(sl.text.strip())
+                        if num_m:
+                            current_local_number = num_m.group(1)
+                            current_display = f"{current_section_label} {current_local_number}"
+                            break
+                else:
+                    # Item code comes first (no accumulated text)
+                    _flush_problem(page.page_number)
+                    current_item_code = item_code
+                    current_page_start = page.page_number
                 continue
 
             # 4. Check for inline blocks (잠깐이, 풀이, 답) on example/past_exam
@@ -642,21 +696,39 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
 
             # 5. If we just got an item code but no local number yet, check for it
             if current_item_code is not None and current_local_number is None:
+                # Try standalone number first
                 m = _LOCAL_NUMBER_PATTERN.match(text)
                 if m:
                     current_local_number = m.group(1)
                     current_display = f"{current_section_label} {current_local_number}"
                     continue
+                # Try leading number embedded in text (e.g. "$1 \sqrt...")
+                m2 = _LEADING_NUMBER.match(text)
+                if m2:
+                    current_local_number = m2.group(1)
+                    current_display = f"{current_section_label} {current_local_number}"
+                    current_stem_lines.append(line)
+                    continue
 
-            # 6. Check for chapter headers
-            ch = _match_chapter(text)
-            if ch:
-                current_chapter = ch
+            # 6. Check for EBS chapter headers ("01 지수와 로그")
+            ebs_ch = _EBS_CHAPTER_PATTERN.match(text)
+            if ebs_ch:
+                current_chapter = text.strip()
                 continue
 
             # 7. Accumulate line into current problem stem
             if current_local_number is not None:
                 current_stem_lines.append(line)
+            elif current_section_type in ("practice", "level1", "level2", "level3", "past_exam"):
+                # Accumulate even without local number (text-first ordering)
+                current_stem_lines.append(line)
+                if current_page_start == 0:
+                    current_page_start = page.page_number
+                # Try to extract local number from this line
+                m3 = _LEADING_NUMBER.match(text)
+                if m3:
+                    current_local_number = m3.group(1)
+                    current_display = f"{current_section_label} {current_local_number}"
 
     # Flush last problem
     last_page = pages[-1].page_number if pages else 0
