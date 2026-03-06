@@ -415,8 +415,267 @@ def _build_segment(
     return segment
 
 
+def _has_ebs_item_codes(pages: list[OcrPage]) -> bool:
+    """Check if any page contains EBS item codes like [26008-0001]."""
+    for page in pages:
+        for line in page.lines:
+            if _match_item_code(line.text):
+                return True
+    return False
+
+
+# ─── Answer extraction from inline "답" line ───
+_ANSWER_EXTRACT = re.compile(r"^\s*답\s*([①②③④⑤]|\d+)")
+
+
+def _extract_inline_answer(text: str) -> str | None:
+    """Extract answer value from a '답 ④' or '답 125' line."""
+    m = _ANSWER_EXTRACT.match(text.strip())
+    return m.group(1) if m else None
+
+
+# ─── Standalone local number (appears after item code) ───
+_LOCAL_NUMBER_PATTERN = re.compile(r"^\s*(\d{1,3})\s*$")
+
+
+def _build_ebs_segment(
+    stem_lines: list[OcrLine],
+    start_page: int,
+    end_page: int,
+    *,
+    item_code: str | None,
+    section_type: str,
+    section_label: str,
+    local_number: str,
+    display_number: str,
+    chapter: str | None,
+    inline_solution: str | None,
+    inline_answer: str | None,
+    inline_hint: str | None,
+) -> dict:
+    """Build an EBS segment dict from collected lines."""
+    content_lines = [l for l in stem_lines if l.line_type not in _SKIP_LINE_TYPES]
+    if not content_lines:
+        content_lines = stem_lines
+
+    stem_latex = "\n".join(l.latex or l.text for l in content_lines)
+    stem_text = "\n".join(l.text for l in content_lines)
+    problem_type = _detect_problem_type(content_lines)
+    bbox = _compute_bbox(content_lines)
+    choices = _extract_choices(content_lines) if problem_type == "multiple_choice" else None
+
+    return {
+        "item_code": item_code,
+        "section_type": section_type,
+        "section_label": section_label,
+        "local_number": local_number,
+        "display_number": display_number,
+        "problem_number": local_number,
+        "problem_type": problem_type,
+        "start_page": start_page,
+        "end_page": end_page,
+        "chapter": chapter,
+        "section": section_label,
+        "problem_category": section_type,
+        "stem_latex": stem_latex,
+        "stem_text": stem_text,
+        "bbox": bbox,
+        "choices": choices,
+        "inline_solution": inline_solution,
+        "inline_answer": inline_answer,
+        "inline_hint": inline_hint,
+    }
+
+
+def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
+    """Segment EBS 수능특강 textbook pages using section state machine."""
+    segments: list[dict] = []
+
+    # Current section state
+    current_section_type: str | None = None
+    current_section_label: str = ""
+    current_chapter: str | None = None
+
+    # Current problem accumulator
+    current_item_code: str | None = None
+    current_local_number: str | None = None
+    current_display: str = ""
+    current_stem_lines: list[OcrLine] = []
+    current_page_start: int = 0
+    current_inline_hint: str | None = None
+    current_inline_solution: str | None = None
+    current_inline_answer: str | None = None
+
+    # Inline block accumulation for example/past_exam
+    # Tracks which inline block we are currently in: "hint" | "solution" | None
+    inline_block_mode: str | None = None
+    inline_hint_parts: list[str] = []
+    inline_solution_parts: list[str] = []
+
+    # Stop processing after quick_answer or answer_detail sections
+    stop_processing = False
+
+    def _flush_problem(end_page: int) -> None:
+        """Flush the current problem into segments."""
+        nonlocal current_item_code, current_local_number, current_display
+        nonlocal current_stem_lines, current_inline_hint
+        nonlocal current_inline_solution, current_inline_answer
+        nonlocal inline_block_mode, inline_hint_parts, inline_solution_parts
+
+        # Finalize any open inline blocks
+        if inline_hint_parts:
+            current_inline_hint = "\n".join(inline_hint_parts)
+        if inline_solution_parts:
+            current_inline_solution = "\n".join(inline_solution_parts)
+
+        if current_stem_lines and current_local_number is not None:
+            segments.append(_build_ebs_segment(
+                current_stem_lines,
+                current_page_start,
+                end_page,
+                item_code=current_item_code,
+                section_type=current_section_type or "practice",
+                section_label=current_section_label,
+                local_number=current_local_number,
+                display_number=current_display,
+                chapter=current_chapter,
+                inline_solution=current_inline_solution,
+                inline_answer=current_inline_answer,
+                inline_hint=current_inline_hint,
+            ))
+
+        # Reset problem state
+        current_item_code = None
+        current_local_number = None
+        current_display = ""
+        current_stem_lines = []
+        current_inline_hint = None
+        current_inline_solution = None
+        current_inline_answer = None
+        inline_block_mode = None
+        inline_hint_parts = []
+        inline_solution_parts = []
+
+    for page in pages:
+        if stop_processing:
+            break
+
+        sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
+        for line in sorted_lines:
+            if stop_processing:
+                break
+
+            # Skip page headers/footers but not empty/short lines (EBS uses them)
+            if line.line_type in _SKIP_LINE_TYPES:
+                continue
+            text = line.text.strip()
+            if not text:
+                continue
+
+            # 1. Check for section transition
+            transition = _match_section_transition(text)
+            if transition:
+                sec_type, sec_label = transition
+                # Stop at answer sections
+                if sec_type in ("quick_answer", "answer_detail"):
+                    _flush_problem(page.page_number)
+                    stop_processing = True
+                    break
+
+                # If section changes from example to practice (유제),
+                # flush the current example first
+                _flush_problem(page.page_number)
+                current_section_type = sec_type
+                current_section_label = sec_label
+                continue
+
+            # 2. Check for 예제 N start
+            example_match = _match_example_start(text)
+            if example_match:
+                _flush_problem(page.page_number)
+                current_section_type = "example"
+                current_section_label = "예제"
+                num, display = example_match
+                current_local_number = num
+                current_display = display
+                current_stem_lines = [line]
+                current_page_start = page.page_number
+                inline_block_mode = None
+                continue
+
+            # 3. Check for item code [XXXXX-XXXX]
+            item_code = _match_item_code(text)
+            if item_code:
+                _flush_problem(page.page_number)
+                current_item_code = item_code
+                current_page_start = page.page_number
+                # The local number will come on the next line
+                continue
+
+            # 4. Check for inline blocks (잠깐이, 풀이, 답) on example/past_exam
+            if current_section_type in ("example", "past_exam") and current_local_number is not None:
+                if _is_inline_block(text):
+                    # Determine which inline block
+                    stripped = text.strip()
+                    if re.match(r"^\s*잠깐이?\s*$", stripped, re.IGNORECASE):
+                        inline_block_mode = "hint"
+                        continue
+                    elif re.match(r"^\s*풀이\s*$", stripped):
+                        inline_block_mode = "solution"
+                        continue
+                    elif re.match(r"^\s*답\s*[①②③④⑤\d]", stripped):
+                        current_inline_answer = _extract_inline_answer(stripped)
+                        inline_block_mode = None
+                        continue
+                    else:
+                        # 출제의도, 출제경향 — skip
+                        inline_block_mode = None
+                        continue
+
+                # Accumulate into current inline block
+                if inline_block_mode == "hint":
+                    inline_hint_parts.append(text)
+                    continue
+                if inline_block_mode == "solution":
+                    inline_solution_parts.append(text)
+                    continue
+
+            # 5. If we just got an item code but no local number yet, check for it
+            if current_item_code is not None and current_local_number is None:
+                m = _LOCAL_NUMBER_PATTERN.match(text)
+                if m:
+                    current_local_number = m.group(1)
+                    current_display = f"{current_section_label} {current_local_number}"
+                    continue
+
+            # 6. Check for chapter headers
+            ch = _match_chapter(text)
+            if ch:
+                current_chapter = ch
+                continue
+
+            # 7. Accumulate line into current problem stem
+            if current_local_number is not None:
+                current_stem_lines.append(line)
+
+    # Flush last problem
+    last_page = pages[-1].page_number if pages else 0
+    _flush_problem(last_page)
+
+    return segments
+
+
 def _rule_based_segment(pages: list[OcrPage]) -> list[dict]:
-    """Segment pages into problems using regex patterns."""
+    """Segment pages into problems using regex patterns.
+
+    Detects EBS textbooks by checking for item codes and dispatches
+    to the EBS-specific state machine if found.
+    """
+    # EBS detection: if item codes found, use EBS segmentation path
+    if pages and _has_ebs_item_codes(pages):
+        return _ebs_segment(pages)
+
+    # ─── Original non-EBS segmentation logic ───
     segments: list[dict] = []
     current_lines: list[OcrLine] = []
     current_sub_segments: list[dict] = []
