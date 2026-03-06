@@ -101,6 +101,68 @@ _WRITTEN_KEYWORDS = re.compile(r"풀이\s*과정|서술하|서술형|설명하")
 # Number range: 1 ~ 2000 (쎈 has 1700+)
 _MAX_PROBLEM_NUMBER = 2000
 
+# ─── EBS Item Code Pattern ───
+_ITEM_CODE_PATTERN = re.compile(r"\[(\d{5}-\d{4})\]")
+
+# ─── Section Transition Patterns (EBS 수능특강) ───
+_SECTION_TRANSITIONS = [
+    (re.compile(r"^\s*Level\s*1\b", re.IGNORECASE), "level1"),
+    (re.compile(r"^\s*Level\s*2\b", re.IGNORECASE), "level2"),
+    (re.compile(r"^\s*Level\s*3\b", re.IGNORECASE), "level3"),
+    (re.compile(r"^\s*유제\s*$"), "practice"),
+    (re.compile(r"^\s*대표\s*기출\s*문제"), "past_exam"),
+    (re.compile(r"^\s*한눈에\s*보는\s*정답"), "quick_answer"),
+    (re.compile(r"^\s*정답과\s*풀이"), "answer_detail"),
+]
+
+_EXAMPLE_PATTERN = re.compile(r"^\s*예제\s*(\d{1,2})\s*(.*)")
+_PAST_EXAM_YEAR_PATTERN = re.compile(r"(\d{4}학년도\s*(?:수능|6월모의평가|9월모의평가|교육청모의고사))")
+
+_INLINE_BLOCK_PATTERNS = [
+    re.compile(r"^\s*잠깐이?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*풀이\s*$"),
+    re.compile(r"^\s*답\s*[①②③④⑤\d]"),
+    re.compile(r"^\s*출제\s*의도"),
+    re.compile(r"^\s*출제\s*경향"),
+    re.compile(r"^\s*출제의도"),
+    re.compile(r"^\s*출제경향"),
+]
+
+
+def _match_item_code(text: str) -> str | None:
+    """Extract EBS item code like [26008-0001] from text."""
+    m = _ITEM_CODE_PATTERN.search(text)
+    return m.group(1) if m else None
+
+
+def _match_section_transition(text: str) -> tuple[str, str] | None:
+    """Check if text signals a section transition. Returns (section_type, label) or None."""
+    stripped = text.strip()
+    for pattern, section_type in _SECTION_TRANSITIONS:
+        if pattern.match(stripped):
+            return (section_type, stripped)
+    return None
+
+
+def _match_example_start(text: str) -> tuple[str, str] | None:
+    """Check if text starts an example (예제 N). Returns (number, display) or None."""
+    m = _EXAMPLE_PATTERN.match(text.strip())
+    if m:
+        return (m.group(1), text.strip())
+    return None
+
+
+def _match_past_exam_year(text: str) -> str | None:
+    """Extract exam year label like '2023학년도 수능'. Returns label or None."""
+    m = _PAST_EXAM_YEAR_PATTERN.search(text)
+    return m.group(1) if m else None
+
+
+def _is_inline_block(text: str) -> bool:
+    """Check if text starts an inline block (잠깐의, 풀이, 답, 출제의도, 출제경향)."""
+    stripped = text.strip()
+    return any(p.match(stripped) for p in _INLINE_BLOCK_PATTERNS)
+
 
 @celery.task(
     bind=True,
