@@ -45,7 +45,7 @@ _SOLUTION_HEADER = re.compile(
 _MC_ANSWER = re.compile(r"^[①②③④⑤]$")
 
 # ─── EBS Quick Answer Table Patterns ───
-_QA_CHAPTER_PATTERN = re.compile(r"^\s*(\d{2})\s+\S")
+_QA_CHAPTER_PATTERN = re.compile(r"^\s*(0[1-9])\s+\S")
 
 _QA_SECTION_MAP = {
     "유제": "practice",
@@ -54,7 +54,13 @@ _QA_SECTION_MAP = {
     "Level 3": "level3", "Level 3 실력 완성": "level3",
 }
 
+# Patterns for answer pairs in quick answer table
+# Formats: "1 (1)", "3125", "1 ①", "5100", "1 (5)"
 _QA_PAIR_PATTERN = re.compile(r"(\d{1,2})\s+([①②③④⑤]|\d+)")
+_QA_PAREN_PAIR_PATTERN = re.compile(r"(\d{1,2})\s*\((\d)\)")  # "1 (5)" or "1(5)"
+_QA_SINGLE_LINE_PATTERN = re.compile(r"^(\d{1,2})\s*\((\d)\)\s*$")  # standalone "1 (5)"
+# Concatenated cell: OCR drops space/parens → "65" = prob 6 ans 5, "3125" = prob 3 ans 125
+_QA_CONCAT_CELL = re.compile(r"^(\d{1,2})(\d+)$")
 
 
 def _parse_ebs_quick_answer_table(
@@ -64,6 +70,7 @@ def _parse_ebs_quick_answer_table(
     result: dict[tuple[str, str, str], str] = {}
     current_chapter: str | None = None
     current_section: str | None = None
+    pending_level: bool = False  # "Level" alone on a line
 
     for page in pages:
         sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
@@ -71,15 +78,35 @@ def _parse_ebs_quick_answer_table(
             text = line.text.strip()
             if not text:
                 continue
+            # Skip non-content lines
+            if text.startswith("www.") or text.startswith("본문") or text.startswith("\\"):
+                continue
 
             # Check chapter header
             cm = _QA_CHAPTER_PATTERN.match(text)
             if cm:
                 current_chapter = cm.group(1)
                 current_section = None
+                pending_level = False
+                continue
+
+            # Handle pending "Level" from previous line
+            if pending_level:
+                pending_level = False
+                text_no_num = re.sub(r"^\d+\s*", "", text)
+                if "기초" in text_no_num:
+                    current_section = "level1"
+                elif "기본" in text_no_num:
+                    current_section = "level2"
+                elif "실력" in text_no_num:
+                    current_section = "level3"
                 continue
 
             # Check section label
+            if text.startswith("Level") and text.strip() == "Level":
+                pending_level = True
+                continue
+
             matched_section = False
             for label, stype in _QA_SECTION_MAP.items():
                 if text.startswith(label):
@@ -87,17 +114,36 @@ def _parse_ebs_quick_answer_table(
                     matched_section = True
                     break
             if matched_section:
-                # Don't continue - the same line might have answers after the label
-                # But for clean lines like just "유제", skip
                 if text in _QA_SECTION_MAP:
                     continue
 
             # Parse answer pairs
             if current_chapter and current_section:
-                for m in _QA_PAIR_PATTERN.finditer(text):
+                # Try parenthesized format first: "1 (5)", "4 (4)"
+                paren_matched = False
+                for m in _QA_PAREN_PAIR_PATTERN.finditer(text):
                     num = m.group(1)
-                    ans = m.group(2)
+                    ans = f"({m.group(2)})"  # Store as "(3)" format
                     result[(current_chapter, current_section, num)] = ans
+                    paren_matched = True
+
+                if not paren_matched:
+                    # Try spaced pair: "1 ①", "3 125"
+                    pair_matched = False
+                    for m in _QA_PAIR_PATTERN.finditer(text):
+                        num = m.group(1)
+                        ans = m.group(2)
+                        result[(current_chapter, current_section, num)] = ans
+                        pair_matched = True
+
+                    # Fallback: concatenated cell where OCR dropped space/parens
+                    # "65" → prob 6 ans 5, "3125" → prob 3 ans 125, "5100" → prob 5 ans 100
+                    if not pair_matched:
+                        cm = _QA_CONCAT_CELL.match(text)
+                        if cm:
+                            num = cm.group(1)
+                            ans = cm.group(2)
+                            result[(current_chapter, current_section, num)] = ans
 
     return result
 

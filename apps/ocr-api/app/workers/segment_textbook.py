@@ -122,12 +122,15 @@ _PAST_EXAM_YEAR_PATTERN = re.compile(r"(\d{4}학년도\s*(?:수능|6월모의평
 
 _INLINE_BLOCK_PATTERNS = [
     re.compile(r"^\s*잠깐이?\s*$", re.IGNORECASE),
-    re.compile(r"^\s*풀이\s*$"),
-    re.compile(r"^\s*답\s*[①②③④⑤\d]"),
+    re.compile(r"^\s*풀이\s"),  # "풀이 " followed by content (not standalone)
+    re.compile(r"^\s*풀이\s*$"),  # standalone "풀이"
+    re.compile(r"^\s*답\s*[①②③④⑤\d(]"),  # "답 ④" or "답 (3)" or "답 125"
     re.compile(r"^\s*출제\s*의도"),
     re.compile(r"^\s*출제\s*경향"),
     re.compile(r"^\s*출제의도"),
     re.compile(r"^\s*출제경향"),
+    re.compile(r"^\s*출제\s*$"),  # "출제" alone (next line: "경향" or "의도")
+    re.compile(r"^\s*경향\s*$"),  # "경향" alone (continuation)
 ]
 
 
@@ -427,13 +430,16 @@ def _has_ebs_item_codes(pages: list[OcrPage]) -> bool:
 
 
 # ─── Answer extraction from inline "답" line ───
-_ANSWER_EXTRACT = re.compile(r"^\s*답\s*([①②③④⑤]|\d+)")
+_ANSWER_EXTRACT = re.compile(r"^\s*답\s*(?:\((\d)\)|([①②③④⑤])|(\d+))")
 
 
 def _extract_inline_answer(text: str) -> str | None:
-    """Extract answer value from a '답 ④' or '답 125' line."""
+    """Extract answer value from a '답 ④', '답 (3)', or '답 125' line."""
     m = _ANSWER_EXTRACT.match(text.strip())
-    return m.group(1) if m else None
+    if not m:
+        return None
+    # group(1) = parenthesized digit, group(2) = circled number, group(3) = plain number
+    return m.group(1) or m.group(2) or m.group(3)
 
 
 # ─── Standalone local number (appears after item code) ───
@@ -573,9 +579,21 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
             if stop_processing:
                 break
 
-            # Skip page headers/footers but not empty/short lines (EBS uses them)
+            # Skip page headers/footers — but allow structural EBS elements through
+            # (EBS OCR marks 대표기출문제, Level, 유제, chapter names, 예제 as page_info)
             if line.line_type in _SKIP_LINE_TYPES:
-                continue
+                stripped_pi = line.text.strip()
+                if not stripped_pi:
+                    continue
+                is_structural = (
+                    _match_section_transition(stripped_pi) is not None
+                    or (current_section_type == "past_exam" and _match_past_exam_year(stripped_pi))
+                    or current_section_type == "level_pending"
+                    or _EBS_CHAPTER_PATTERN.match(stripped_pi) is not None
+                    or _EXAMPLE_PATTERN.match(stripped_pi) is not None
+                )
+                if not is_structural:
+                    continue
             text = line.text.strip()
             if not text:
                 continue
@@ -606,22 +624,27 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 continue
 
             # 1b. Resolve pending "Level" section from follow-up line
+            #     OCR may produce "Level\n3 실력 완성" or "Level\n기초 연습"
             if current_section_type == "level_pending":
-                lower = text.lower()
-                if "기초" in text:
+                # Strip leading digits (OCR may put "3 실력 완성" or "1 기초 연습")
+                text_no_num = re.sub(r"^\d+\s*", "", text)
+                if "기초" in text_no_num:
                     current_section_type = "level1"
                     current_section_label = "Level 1 기초 연습"
-                elif "기본" in text:
+                    continue
+                elif "기본" in text_no_num:
                     current_section_type = "level2"
                     current_section_label = "Level 2 기본 연습"
-                elif "실력" in text:
+                    continue
+                elif "실력" in text_no_num:
                     current_section_type = "level3"
                     current_section_label = "Level 3 실력 완성"
+                    continue
                 else:
-                    # Default to level1 if can't determine
+                    # Line doesn't match any level descriptor — resolve to default
+                    # but DON'T consume this line (fall through to normal processing)
                     current_section_type = "level1"
                     current_section_label = "Level 1"
-                continue
 
             # 2. Check for 예제 N start
             example_match = _match_example_start(text)
@@ -636,6 +659,17 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 current_page_start = page.page_number
                 inline_block_mode = None
                 continue
+
+            # 2b. Check for past exam year as problem start (대표기출 section)
+            if current_section_type == "past_exam":
+                year_label = _match_past_exam_year(text)
+                if year_label:
+                    _flush_problem(page.page_number)
+                    current_local_number = year_label
+                    current_display = year_label
+                    current_page_start = page.page_number
+                    inline_block_mode = None
+                    continue
 
             # 3. Check for item code [XXXXX-XXXX]
             item_code = _match_item_code(text)
@@ -677,7 +711,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     elif re.match(r"^\s*풀이\s*$", stripped):
                         inline_block_mode = "solution"
                         continue
-                    elif re.match(r"^\s*답\s*[①②③④⑤\d]", stripped):
+                    elif re.match(r"^\s*답\s*[①②③④⑤\d(]", stripped):
                         current_inline_answer = _extract_inline_answer(stripped)
                         inline_block_mode = None
                         continue
