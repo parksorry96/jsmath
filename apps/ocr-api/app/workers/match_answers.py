@@ -125,7 +125,9 @@ def match_answers(
     answer_pages = prev_result.get("answer_pages") if prev_result else None
     has_quick_answers = prev_result.get("has_quick_answers", False) if prev_result else False
 
-    return asyncio.run(_match(ocr_job_id, segments, answer_pages, has_quick_answers))
+    return asyncio.run(
+        _match(ocr_job_id, segments, answer_pages, has_quick_answers, prev_result)
+    )
 
 
 async def _match(
@@ -133,10 +135,37 @@ async def _match(
     segments: list[dict],
     answer_pages: list[int] | None,
     has_quick_answers: bool,
+    prev_result: dict | None = None,
 ) -> dict:
-    # No answer section — mark all as no_answer_key
-    if not answer_pages:
+    # Load EBS quick answer table if available
+    quick_answer_pages_range = prev_result.get("quick_answer_pages") if prev_result else None
+    ebs_answers: dict[tuple[str, str, str], str] = {}
+    if quick_answer_pages_range:
+        async with worker_session() as session:
+            qa_pages_result = await session.execute(
+                select(OcrPage)
+                .where(
+                    OcrPage.ocr_job_id == ocr_job_id,
+                    OcrPage.page_number >= quick_answer_pages_range[0],
+                    OcrPage.page_number <= quick_answer_pages_range[1],
+                )
+                .options(selectinload(OcrPage.lines))
+                .order_by(OcrPage.page_number)
+            )
+            qa_pages = qa_pages_result.scalars().all()
+        ebs_answers = _parse_ebs_quick_answer_table(qa_pages)
+
+    # No answer section and no EBS answers — mark all as no_answer_key
+    if not answer_pages and not ebs_answers:
         for seg in segments:
+            # Check inline answers even when no answer section exists
+            if seg.get("inline_answer"):
+                seg["answer_text"] = seg["inline_answer"]
+                seg["solution_text"] = seg.get("inline_solution")
+                seg["solution_latex"] = seg.get("inline_solution")
+                seg["answer_match_status"] = "inline"
+                seg["match_confidence"] = 1.0
+                continue
             seg["answer_text"] = None
             seg["solution_latex"] = None
             seg["solution_text"] = None
@@ -145,28 +174,35 @@ async def _match(
 
         from app.services.redis_events import notify_progress
 
-        notify_progress(ocr_job_id, "answer_matching", message="답안 섹션 없음")
+        matched_count = sum(1 for s in segments if s.get("answer_match_status") == "inline")
+        notify_progress(
+            ocr_job_id, "answer_matching",
+            message="답안 섹션 없음" if matched_count == 0
+            else f"인라인 답안 {matched_count}건 매칭",
+        )
 
         return {
             "ocr_job_id": ocr_job_id,
             "segments": segments,
             "problem_count": len(segments),
-            "matched_count": 0,
+            "matched_count": matched_count,
         }
 
     # Load answer section pages
-    async with worker_session() as session:
-        pages_result = await session.execute(
-            select(OcrPage)
-            .where(
-                OcrPage.ocr_job_id == ocr_job_id,
-                OcrPage.page_number >= answer_pages[0],
-                OcrPage.page_number <= answer_pages[1],
+    pages: list = []
+    if answer_pages:
+        async with worker_session() as session:
+            pages_result = await session.execute(
+                select(OcrPage)
+                .where(
+                    OcrPage.ocr_job_id == ocr_job_id,
+                    OcrPage.page_number >= answer_pages[0],
+                    OcrPage.page_number <= answer_pages[1],
+                )
+                .options(selectinload(OcrPage.lines))
+                .order_by(OcrPage.page_number)
             )
-            .options(selectinload(OcrPage.lines))
-            .order_by(OcrPage.page_number)
-        )
-        pages = pages_result.scalars().all()
+            pages = pages_result.scalars().all()
 
     # Two-phase matching
     # Phase 1: Parse quick answer table (if present)
@@ -174,16 +210,43 @@ async def _match(
     # Phase 2: Parse detailed solutions
     solution_map: dict[str, dict] = {}
 
-    if has_quick_answers:
+    if has_quick_answers and pages:
         quick_pages, solution_pages = _split_answer_sections(pages)
         quick_answers = _parse_quick_answer_table(quick_pages)
         solution_map = _parse_answer_section(solution_pages)
-    else:
+    elif pages:
         solution_map = _parse_answer_section(pages)
 
-    # Phase 3: Merge — answer from Phase 1, solution from Phase 2
+    # Phase 3: Merge — inline > EBS quick answer > legacy quick answer > solution
     matched_count = 0
     for seg in segments:
+        # Check if inline answer exists (예제, 대표기출)
+        if seg.get("inline_answer"):
+            seg["answer_text"] = seg["inline_answer"]
+            seg["solution_text"] = seg.get("inline_solution")
+            seg["solution_latex"] = seg.get("inline_solution")
+            seg["answer_match_status"] = "inline"
+            seg["match_confidence"] = 1.0
+            matched_count += 1
+            continue
+
+        # Try EBS quick answer table
+        chapter = seg.get("chapter", "")
+        chapter_num = chapter[:2] if chapter else ""
+        section_type = seg.get("section_type", "")
+        local_num = seg.get("local_number", "")
+        ebs_key = (chapter_num, section_type, local_num)
+
+        if ebs_key in ebs_answers:
+            seg["answer_text"] = ebs_answers[ebs_key]
+            seg["solution_text"] = None
+            seg["solution_latex"] = None
+            seg["answer_match_status"] = "matched"
+            seg["match_confidence"] = 0.9
+            matched_count += 1
+            continue
+
+        # Fall back to legacy number-based matching
         pnum = seg.get("problem_number")
         if not pnum:
             seg["answer_text"] = None
@@ -221,9 +284,10 @@ async def _match(
     )
 
     logger.info(
-        "Answer matching for job %s: %d/%d matched (quick_answers=%d, solutions=%d)",
+        "Answer matching for job %s: %d/%d matched "
+        "(ebs_answers=%d, quick_answers=%d, solutions=%d)",
         ocr_job_id, matched_count, len(segments),
-        len(quick_answers), len(solution_map),
+        len(ebs_answers), len(quick_answers), len(solution_map),
     )
 
     return {
