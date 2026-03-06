@@ -32,6 +32,9 @@ _ANSWER_KEYWORDS = re.compile(
 # "빠른 정답" specific keyword (quick answer tables in 쎈/RPM)
 _QUICK_ANSWER_KEYWORD = re.compile(r"빠른\s*정답", re.IGNORECASE)
 
+# "한눈에 보는 정답" keyword (EBS 수능특강 quick answer overview page)
+_QUICK_ANSWER_PAGE_KEYWORD = re.compile(r"한눈에\s*보는\s*정답", re.IGNORECASE)
+
 # Problem number patterns used to detect content_start_page
 _CONTENT_START_PATTERNS = [
     re.compile(r"^\s*(?:예제|유제|대표문제|확인문제|기본문제|심화문제|연습문제|문제)\s*\d{1,3}"),
@@ -85,6 +88,7 @@ async def _detect(ocr_job_id: str) -> dict:
             "problem_pages": [0, 0],
             "answer_pages": None,
             "has_quick_answers": False,
+            "quick_answer_pages": None,
         }
 
     total_pages = len(pages)
@@ -135,6 +139,9 @@ async def _detect(ocr_job_id: str) -> dict:
             if has_quick_answers:
                 break
 
+    # Detect EBS "한눈에 보는 정답" quick answer overview page
+    quick_answer_page = _find_quick_answer_page(pages)
+
     if answer_start_page is not None:
         problem_pages = [content_start_page, answer_start_page - 1]
         answer_pages: list[int] | None = [answer_start_page, last_page]
@@ -147,12 +154,13 @@ async def _detect(ocr_job_id: str) -> dict:
     notify_progress(ocr_job_id, "detect_sections", message="섹션 감지 완료")
 
     logger.info(
-        "Detected sections for job %s: content_start=%d, problems=%s, answers=%s, quick_answers=%s",
+        "Detected sections for job %s: content_start=%d, problems=%s, answers=%s, quick_answers=%s, quick_answer_pages=%s",
         ocr_job_id,
         content_start_page,
         problem_pages,
         answer_pages,
         has_quick_answers,
+        [quick_answer_page, quick_answer_page] if quick_answer_page else None,
     )
 
     return {
@@ -161,7 +169,18 @@ async def _detect(ocr_job_id: str) -> dict:
         "problem_pages": problem_pages,
         "answer_pages": answer_pages,
         "has_quick_answers": has_quick_answers,
+        "quick_answer_pages": [quick_answer_page, quick_answer_page] if quick_answer_page else None,
     }
+
+
+def _find_quick_answer_page(pages: list[OcrPage]) -> int | None:
+    """Find the page with '한눈에 보는 정답' quick answer table."""
+    for page in pages:
+        sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
+        for line in sorted_lines[:5]:
+            if _QUICK_ANSWER_PAGE_KEYWORD.search(line.text):
+                return page.page_number
+    return None
 
 
 def _find_content_start(pages: list[OcrPage]) -> int:
