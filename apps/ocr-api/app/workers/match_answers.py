@@ -44,6 +44,63 @@ _SOLUTION_HEADER = re.compile(
 # Multiple choice answer pattern
 _MC_ANSWER = re.compile(r"^[①②③④⑤]$")
 
+# ─── EBS Quick Answer Table Patterns ───
+_QA_CHAPTER_PATTERN = re.compile(r"^\s*(\d{2})\s+\S")
+
+_QA_SECTION_MAP = {
+    "유제": "practice",
+    "Level 1": "level1", "Level 1 기초 연습": "level1",
+    "Level 2": "level2", "Level 2 기본 연습": "level2",
+    "Level 3": "level3", "Level 3 실력 완성": "level3",
+}
+
+_QA_PAIR_PATTERN = re.compile(r"(\d{1,2})\s+([①②③④⑤]|\d+)")
+
+
+def _parse_ebs_quick_answer_table(
+    pages: list,
+) -> dict[tuple[str, str, str], str]:
+    """Parse '한눈에 보는 정답' page into (chapter, section_type, number) -> answer map."""
+    result: dict[tuple[str, str, str], str] = {}
+    current_chapter: str | None = None
+    current_section: str | None = None
+
+    for page in pages:
+        sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
+        for line in sorted_lines:
+            text = line.text.strip()
+            if not text:
+                continue
+
+            # Check chapter header
+            cm = _QA_CHAPTER_PATTERN.match(text)
+            if cm:
+                current_chapter = cm.group(1)
+                current_section = None
+                continue
+
+            # Check section label
+            matched_section = False
+            for label, stype in _QA_SECTION_MAP.items():
+                if text.startswith(label):
+                    current_section = stype
+                    matched_section = True
+                    break
+            if matched_section:
+                # Don't continue - the same line might have answers after the label
+                # But for clean lines like just "유제", skip
+                if text in _QA_SECTION_MAP:
+                    continue
+
+            # Parse answer pairs
+            if current_chapter and current_section:
+                for m in _QA_PAIR_PATTERN.finditer(text):
+                    num = m.group(1)
+                    ans = m.group(2)
+                    result[(current_chapter, current_section, num)] = ans
+
+    return result
+
 
 @celery.task(
     bind=True,
