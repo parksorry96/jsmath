@@ -124,7 +124,7 @@ _INLINE_BLOCK_PATTERNS = [
     re.compile(r"^\s*잠깐이?\s*$", re.IGNORECASE),
     re.compile(r"^\s*풀이\s"),  # "풀이 " followed by content (not standalone)
     re.compile(r"^\s*풀이\s*$"),  # standalone "풀이"
-    re.compile(r"^\s*답\s*[①②③④⑤\d(]"),  # "답 ④" or "답 (3)" or "답 125"
+    re.compile(r"^\s*[답달뎔]\s*[①②③④⑤\d(]"),  # "답 ④" or "답 (3)" — includes OCR variants 달/뎔
     re.compile(r"^\s*출제\s*의도"),
     re.compile(r"^\s*출제\s*경향"),
     re.compile(r"^\s*출제의도"),
@@ -430,7 +430,7 @@ def _has_ebs_item_codes(pages: list[OcrPage]) -> bool:
 
 
 # ─── Answer extraction from inline "답" line ───
-_ANSWER_EXTRACT = re.compile(r"^\s*답\s*(?:\((\d)\)|([①②③④⑤])|(\d+))")
+_ANSWER_EXTRACT = re.compile(r"^\s*[답달뎔]\s*(?:\((\d)\)|([①②③④⑤])|(\d+))")
 
 
 def _extract_inline_answer(text: str) -> str | None:
@@ -449,7 +449,9 @@ _LOCAL_NUMBER_PATTERN = re.compile(r"^\s*(\d{1,3})\s*$")
 _EBS_CHAPTER_PATTERN = re.compile(r"^\s*(0[1-9])\s+\S")
 
 # ─── Leading number at start of text (problem number embedded in stem) ───
-_LEADING_NUMBER = re.compile(r"^\$?(\d{1,3})\s+")
+_LEADING_NUMBER = re.compile(
+    r"^\$?(\d{1,3})\s+(?!\\leq|\\geq|\\le(?![a-z])|\\ge(?![a-z])|[<>]|이상|이하)"
+)
 
 
 def _build_ebs_segment(
@@ -591,6 +593,10 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     or current_section_type == "level_pending"
                     or _EBS_CHAPTER_PATTERN.match(stripped_pi) is not None
                     or _EXAMPLE_PATTERN.match(stripped_pi) is not None
+                    # Allow "답" lines through for inline answer capture on examples/past_exam
+                    or (current_section_type in ("example", "past_exam")
+                        and current_local_number is not None
+                        and _is_inline_block(stripped_pi))
                 )
                 if not is_structural:
                     continue
@@ -690,7 +696,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     for sl in current_stem_lines:
                         num_m = _LEADING_NUMBER.match(sl.text.strip())
                         if num_m:
-                            current_local_number = num_m.group(1)
+                            current_local_number = str(int(num_m.group(1)))
                             current_display = f"{current_section_label} {current_local_number}"
                             break
                 else:
@@ -711,7 +717,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     elif re.match(r"^\s*풀이\s*$", stripped):
                         inline_block_mode = "solution"
                         continue
-                    elif re.match(r"^\s*답\s*[①②③④⑤\d(]", stripped):
+                    elif re.match(r"^\s*[답달뎔]\s*[①②③④⑤\d(]", stripped):
                         current_inline_answer = _extract_inline_answer(stripped)
                         inline_block_mode = None
                         continue
@@ -728,27 +734,27 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     inline_solution_parts.append(text)
                     continue
 
-            # 5. If we just got an item code but no local number yet, check for it
+            # 5. Check for EBS chapter headers ("01 지수와 로그") — before number extraction
+            ebs_ch = _EBS_CHAPTER_PATTERN.match(text)
+            if ebs_ch:
+                current_chapter = text.strip()
+                continue
+
+            # 6. If we just got an item code but no local number yet, check for it
             if current_item_code is not None and current_local_number is None:
                 # Try standalone number first
                 m = _LOCAL_NUMBER_PATTERN.match(text)
                 if m:
-                    current_local_number = m.group(1)
+                    current_local_number = str(int(m.group(1)))  # Strip leading zeros
                     current_display = f"{current_section_label} {current_local_number}"
                     continue
                 # Try leading number embedded in text (e.g. "$1 \sqrt...")
                 m2 = _LEADING_NUMBER.match(text)
                 if m2:
-                    current_local_number = m2.group(1)
+                    current_local_number = str(int(m2.group(1)))  # Strip leading zeros
                     current_display = f"{current_section_label} {current_local_number}"
                     current_stem_lines.append(line)
                     continue
-
-            # 6. Check for EBS chapter headers ("01 지수와 로그")
-            ebs_ch = _EBS_CHAPTER_PATTERN.match(text)
-            if ebs_ch:
-                current_chapter = text.strip()
-                continue
 
             # 7. Accumulate line into current problem stem
             if current_local_number is not None:
@@ -761,7 +767,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 # Try to extract local number from this line
                 m3 = _LEADING_NUMBER.match(text)
                 if m3:
-                    current_local_number = m3.group(1)
+                    current_local_number = str(int(m3.group(1)))  # Strip leading zeros
                     current_display = f"{current_section_label} {current_local_number}"
 
     # Flush last problem

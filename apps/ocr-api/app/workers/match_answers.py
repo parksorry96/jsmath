@@ -60,7 +60,64 @@ _QA_PAIR_PATTERN = re.compile(r"(\d{1,2})\s+([①②③④⑤]|\d+)")
 _QA_PAREN_PAIR_PATTERN = re.compile(r"(\d{1,2})\s*\((\d)\)")  # "1 (5)" or "1(5)"
 _QA_SINGLE_LINE_PATTERN = re.compile(r"^(\d{1,2})\s*\((\d)\)\s*$")  # standalone "1 (5)"
 # Concatenated cell: OCR drops space/parens → "65" = prob 6 ans 5, "3125" = prob 3 ans 125
-_QA_CONCAT_CELL = re.compile(r"^(\d{1,2})(\d+)$")
+# Prefer 1-digit problem number (sections rarely exceed 12 problems)
+_QA_CONCAT_CELL_1 = re.compile(r"^(\d)(\d+)$")   # "3125" → prob 3, ans 125
+_QA_CONCAT_CELL_2 = re.compile(r"^(\d{2})(\d+)$") # fallback: "102" → prob 10, ans 2
+
+
+def _clean_latex_table(text: str) -> str:
+    """Strip LaTeX table markup to extract plain-text cell content."""
+    # Remove \begin{tabular}..., \end{tabular}, \hline, column specs
+    cleaned = re.sub(r"\\begin\{tabular\}\{[^}]*\}", "", text)
+    cleaned = re.sub(r"\\end\{tabular\}", "", cleaned)
+    cleaned = re.sub(r"\\hline", "", cleaned)
+    cleaned = re.sub(r"\\multicolumn\{\d+\}\{[^}]*\}\{([^}]*)\}", r"\1", cleaned)
+    # Remove \mathbf{N} → N
+    cleaned = re.sub(r"\\mathbf\{(\d+)\}", r"\1", cleaned)
+    # Remove remaining LaTeX: $, \, {, }
+    cleaned = re.sub(r"[$\\{}]", "", cleaned)
+    # Split on & (table column separator) and \\\\ (row separator)
+    cleaned = re.sub(r"\\\\", " ", cleaned)
+    cleaned = re.sub(r"&", " ", cleaned)
+    # Collapse whitespace
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _parse_answer_cells(
+    text: str,
+    result: dict[tuple[str, str, str], str],
+    current_chapter: str,
+    current_section: str,
+) -> None:
+    """Parse answer pairs from a text string into the result dict."""
+    # Try parenthesized format first: "1 (5)", "4 (4)"
+    paren_matched = False
+    for m in _QA_PAREN_PAIR_PATTERN.finditer(text):
+        num = m.group(1)
+        ans = f"({m.group(2)})"
+        result[(current_chapter, current_section, num)] = ans
+        paren_matched = True
+
+    if not paren_matched:
+        # Try spaced pair: "1 ①", "3 125"
+        pair_matched = False
+        for m in _QA_PAIR_PATTERN.finditer(text):
+            num = m.group(1)
+            ans = m.group(2)
+            result[(current_chapter, current_section, num)] = ans
+            pair_matched = True
+
+        # Fallback: concatenated cell where OCR dropped space/parens
+        # Prefer 1-digit prob number: "3125" → prob 3, ans 125
+        if not pair_matched:
+            cm = _QA_CONCAT_CELL_1.match(text)
+            if cm:
+                result[(current_chapter, current_section, cm.group(1))] = cm.group(2)
+            else:
+                cm2 = _QA_CONCAT_CELL_2.match(text)
+                if cm2:
+                    result[(current_chapter, current_section, cm2.group(1))] = cm2.group(2)
 
 
 def _parse_ebs_quick_answer_table(
@@ -78,6 +135,24 @@ def _parse_ebs_quick_answer_table(
             text = line.text.strip()
             if not text:
                 continue
+
+            # Parse LaTeX table lines — extract plain-text cells for answer pairs
+            if line.line_type == "table" and "\\begin{tabular}" in text:
+                cleaned = _clean_latex_table(text)
+                # Extract section labels from cleaned table content
+                for label, stype in _QA_SECTION_MAP.items():
+                    if label in cleaned:
+                        current_section = stype
+                # Check for Level N subheaders
+                level_m = re.search(r"Level\s*(\d)\s*(기초|기본|실력)", cleaned)
+                if level_m:
+                    lvl_map = {"기초": "level1", "기본": "level2", "실력": "level3"}
+                    current_section = lvl_map.get(level_m.group(2), current_section)
+                # Parse answer pairs from cleaned text
+                if current_chapter and current_section:
+                    _parse_answer_cells(cleaned, result, current_chapter, current_section)
+                continue
+
             # Skip non-content lines
             if text.startswith("www.") or text.startswith("본문") or text.startswith("\\"):
                 continue
@@ -117,33 +192,9 @@ def _parse_ebs_quick_answer_table(
                 if text in _QA_SECTION_MAP:
                     continue
 
-            # Parse answer pairs
+            # Parse answer pairs from simple_cell and text lines
             if current_chapter and current_section:
-                # Try parenthesized format first: "1 (5)", "4 (4)"
-                paren_matched = False
-                for m in _QA_PAREN_PAIR_PATTERN.finditer(text):
-                    num = m.group(1)
-                    ans = f"({m.group(2)})"  # Store as "(3)" format
-                    result[(current_chapter, current_section, num)] = ans
-                    paren_matched = True
-
-                if not paren_matched:
-                    # Try spaced pair: "1 ①", "3 125"
-                    pair_matched = False
-                    for m in _QA_PAIR_PATTERN.finditer(text):
-                        num = m.group(1)
-                        ans = m.group(2)
-                        result[(current_chapter, current_section, num)] = ans
-                        pair_matched = True
-
-                    # Fallback: concatenated cell where OCR dropped space/parens
-                    # "65" → prob 6 ans 5, "3125" → prob 3 ans 125, "5100" → prob 5 ans 100
-                    if not pair_matched:
-                        cm = _QA_CONCAT_CELL.match(text)
-                        if cm:
-                            num = cm.group(1)
-                            ans = cm.group(2)
-                            result[(current_chapter, current_section, num)] = ans
+                _parse_answer_cells(text, result, current_chapter, current_section)
 
     return result
 
