@@ -84,7 +84,7 @@ _SOL_PROBLEM_START_NOSPACE = re.compile(r"^\$?(\d)(.+)$")
 # Standalone number on a line: "1", "2", "$3" (problem number alone, content on next line)
 _SOL_STANDALONE_NUM = re.compile(r"^\$?(\d{1,2})\s*$")
 # Answer line marking end of a solution: "답 (3)", "답 125", "답 (5)"
-_SOL_ANSWER_LINE = re.compile(r"^답\s+(.+)$")
+_SOL_ANSWER_LINE = re.compile(r"^(?:답|뎝|달|뎔)\s+(.+)$")
 
 
 def _clean_latex_table(text: str) -> str:
@@ -455,7 +455,83 @@ def _parse_ebs_solution_section(
                 current_lines.append(line)
 
     _flush()
+
     return result
+
+
+def _fix_two_column_misattribution(
+    solutions: dict[tuple[str, str, str], dict],
+    quick_answers: dict[tuple[str, str, str], str],
+) -> dict[tuple[str, str, str], dict]:
+    """Fix solutions wrongly attributed due to two-column OCR layout.
+
+    In two-column layouts, OCR reads left column (solutions) before right
+    column (section header). This causes solutions for a new section to be
+    stored under the previous section's key.
+
+    Fix: compare the answer line in each solution against the quick answer
+    table. If they don't match but another section's quick answer does,
+    reassign the solution to the correct section.
+    """
+    if not quick_answers:
+        return solutions
+
+    _ANS_EXTRACT = re.compile(r"(?:답|뎝|달|뎔)\s+(.+)$")
+    # Normalize answer values: "(3)" -> "(3)", "125" -> "125"
+    def _norm(ans: str) -> str:
+        return ans.strip().replace(" ", "")
+
+    def _extract_answer(sol: dict) -> str | None:
+        """Extract the last '답 ...' value from solution text."""
+        for line in reversed(sol.get("solution_text", "").split("\n")):
+            m = _ANS_EXTRACT.search(line.strip())
+            if m:
+                return _norm(m.group(1))
+        return None
+
+    # All section types in order of typical appearance
+    section_order = ["practice", "level1", "level2", "level3", "past_exam"]
+
+    # Collect keys to reassign: {wrong_key: correct_key}
+    reassignments: dict[tuple, tuple] = {}
+
+    for key, sol in list(solutions.items()):
+        chapter, section, number = key
+        sol_answer = _extract_answer(sol)
+        if sol_answer is None:
+            continue
+
+        qa_expected = quick_answers.get(key)
+        if qa_expected is None:
+            continue
+
+        # Check if solution answer matches expected quick answer
+        if _norm(qa_expected) == sol_answer:
+            continue  # Correct attribution
+
+        # Mismatch — try to find the correct section
+        for other_sec in section_order:
+            if other_sec == section:
+                continue
+            other_key = (chapter, other_sec, number)
+            other_qa = quick_answers.get(other_key)
+            if other_qa and _norm(other_qa) == sol_answer:
+                # Found the correct section — only reassign if
+                # the target key doesn't already have a solution
+                if other_key not in solutions:
+                    reassignments[key] = other_key
+                    break
+                # Target already has a solution — keep looking
+
+    # Apply reassignments
+    for wrong_key, correct_key in reassignments.items():
+        solutions[correct_key] = solutions.pop(wrong_key)
+        logger.info(
+            "Reassigned solution %s -> %s (two-column layout fix)",
+            wrong_key, correct_key,
+        )
+
+    return solutions
 
 
 @celery.task(
@@ -568,6 +644,8 @@ async def _match(
         solution_pages = [p for p in pages if p.page_number > qa_end]
         if solution_pages:
             ebs_solutions = _parse_ebs_solution_section(solution_pages)
+            # Fix two-column layout misattributions using quick answer table
+            ebs_solutions = _fix_two_column_misattribution(ebs_solutions, ebs_answers)
             logger.info(
                 "Parsed EBS solutions for job %s: %d entries",
                 ocr_job_id, len(ebs_solutions),
