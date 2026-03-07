@@ -1,8 +1,6 @@
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
-
 from app.config import settings
 
 engine = create_async_engine(settings.async_database_url, echo=False, pool_size=10, max_overflow=20)
@@ -14,24 +12,33 @@ async def get_db() -> AsyncSession:  # type: ignore[misc]
         yield session
 
 
-_worker_engine = None
+import asyncio
+
+_worker_engines: dict[int, object] = {}
 
 
 @asynccontextmanager
 async def worker_session():
     """Create an async session for Celery workers.
 
-    Uses a cached engine with NullPool. NullPool creates a new connection
-    per checkout and closes it on checkin, so there's no connection pooling
-    state that could conflict across asyncio.run() calls.
+    Each event loop gets its own engine with a bounded pool (pool_size=5,
+    max_overflow=5). This avoids event-loop mismatch errors when Celery
+    tasks call asyncio.run() (which creates a new loop each time).
+    With concurrency=5, max 50 connections total — well under max_connections=100.
     """
-    global _worker_engine
-    if _worker_engine is None:
-        _worker_engine = create_async_engine(
-            settings.async_database_url, poolclass=NullPool
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    if loop_id not in _worker_engines:
+        _worker_engines[loop_id] = create_async_engine(
+            settings.async_database_url,
+            pool_size=5,
+            max_overflow=5,
+            pool_recycle=300,
+            pool_pre_ping=True,
         )
+    eng = _worker_engines[loop_id]
     factory = async_sessionmaker(
-        _worker_engine, class_=AsyncSession, expire_on_commit=False
+        eng, class_=AsyncSession, expire_on_commit=False
     )
     async with factory() as session:
         yield session

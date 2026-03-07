@@ -64,6 +64,28 @@ _QA_SINGLE_LINE_PATTERN = re.compile(r"^(\d{1,2})\s*\((\d)\)\s*$")  # standalone
 _QA_CONCAT_CELL_1 = re.compile(r"^(\d)(\d+)$")   # "3125" → prob 3, ans 125
 _QA_CONCAT_CELL_2 = re.compile(r"^(\d{2})(\d+)$") # fallback: "102" → prob 10, ans 2
 
+# ─── EBS Solution Section Patterns ───
+# Chapter header: "01 지수와 로그"
+_SOL_CHAPTER_PATTERN = re.compile(r"^\s*(0[1-9])\s+\S")
+# Section labels in solution section
+_SOL_SECTION_MAP = {
+    "유제": "practice",
+    "Level 1": "level1", "Level 1 기초 연습": "level1",
+    "Level 2": "level2", "Level 2 기본 연습": "level2",
+    "Level 3": "level3", "Level 3 실력 완성": "level3",
+    "대표 기출": "past_exam", "대표기출": "past_exam",
+}
+# Problem number at start of solution: "$1 ...", "1 조건", "$3 \frac{..."
+_SOL_PROBLEM_START = re.compile(r"^\$?(\d{1,2})\s+")
+# No-space problem start for lines without $ prefix:
+# "N(content..." or "Ncontent..." where N is a single digit (1-9)
+# Only match when not currently inside a problem (used after flush/answer)
+_SOL_PROBLEM_START_NOSPACE = re.compile(r"^\$?(\d)(.+)$")
+# Standalone number on a line: "1", "2", "$3" (problem number alone, content on next line)
+_SOL_STANDALONE_NUM = re.compile(r"^\$?(\d{1,2})\s*$")
+# Answer line marking end of a solution: "답 (3)", "답 125", "답 (5)"
+_SOL_ANSWER_LINE = re.compile(r"^답\s+(.+)$")
+
 
 def _clean_latex_table(text: str) -> str:
     """Strip LaTeX table markup to extract plain-text cell content."""
@@ -199,6 +221,243 @@ def _parse_ebs_quick_answer_table(
     return result
 
 
+def _parse_ebs_solution_section(
+    pages: list,
+) -> dict[tuple[str, str, str], dict]:
+    """Parse '정답과 풀이' pages into (chapter, section_type, number) -> solution map.
+
+    Structure per chapter:
+    - Chapter header: "01 지수와 로그"
+    - Section header: "유제" / "Level 2 기본 연습" etc.
+    - Answer summary block: short lines like "1 (4)", "2 (3)" right after section header
+    - Per problem: starts with "$N content..." (long line), ends with "답 (N)" or "답 N"
+    """
+    result: dict[tuple[str, str, str], dict] = {}
+    current_chapter: str | None = None
+    current_section: str | None = None
+    current_number: str | None = None
+    current_lines: list = []
+    in_summary_block = False  # True when reading answer summary after section header
+    pending_level = False  # True when "Level" appeared alone on previous line
+    pending_problem: str | None = None  # Problem number alone on a line, waiting for content
+    summary_max_num = 0  # Highest problem number seen in current summary block
+
+    # Pattern for short answer summary lines: "1 (4)", "3125", "7 (4) 8 (5)"
+    _SUMMARY_LINE = re.compile(
+        r"^[\d\s()\[\]①②③④⑤]+$"
+    )
+    # Extract leading number from summary line
+    _SUMMARY_NUM = re.compile(r"^(\d{1,2})")
+
+    def _flush():
+        nonlocal current_number, current_lines
+        if current_chapter and current_section and current_number and current_lines:
+            key = (current_chapter, current_section, current_number)
+            # Skip if all we have is a single short "답" line (just the answer, no solution)
+            real_content = [
+                ln for ln in current_lines
+                if not _SOL_ANSWER_LINE.match(ln.text.strip())
+            ]
+            if real_content:
+                latex_parts = []
+                text_parts = []
+                for ln in current_lines:
+                    latex_parts.append(getattr(ln, "latex", None) or ln.text)
+                    text_parts.append(ln.text)
+                result[key] = {
+                    "solution_latex": "\n".join(latex_parts),
+                    "solution_text": "\n".join(text_parts),
+                }
+        current_number = None
+        current_lines = []
+
+    for page in pages:
+        sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
+
+        for line in sorted_lines:
+            text = line.text.strip()
+            if not text:
+                continue
+            if line.line_type in ("page_header", "page_footer"):
+                continue
+            # Skip page info unless it contains answer lines
+            if line.line_type == "page_info":
+                if not _SOL_ANSWER_LINE.match(text):
+                    continue
+
+            # Chapter header
+            cm = _SOL_CHAPTER_PATTERN.match(text)
+            if cm:
+                _flush()
+                current_chapter = cm.group(1)
+                current_section = None
+                in_summary_block = False
+                pending_level = False
+                pending_problem = None
+                continue
+
+            # Handle pending "Level" from previous line
+            # e.g., line 1: "Level", line 2: "3 실력 완성"
+            if pending_level:
+                pending_level = False
+                text_no_num = re.sub(r"^\d+\s*", "", text)
+                if "기초" in text_no_num:
+                    _flush()
+                    current_section = "level1"
+                    in_summary_block = True; summary_max_num = 0
+                    continue
+                elif "기본" in text_no_num:
+                    _flush()
+                    current_section = "level2"
+                    in_summary_block = True; summary_max_num = 0
+                    continue
+                elif "실력" in text_no_num:
+                    _flush()
+                    current_section = "level3"
+                    in_summary_block = True; summary_max_num = 0
+                    continue
+
+            # "Level" alone on a line — wait for next line
+            if text.strip() == "Level":
+                pending_level = True
+                continue
+
+            # Section header — check both direct text and table content
+            matched_section = False
+            check_text = text
+            # For table lines, also check cleaned content for section labels
+            if line.line_type == "table":
+                check_text = _clean_latex_table(text)
+            for label, stype in _SOL_SECTION_MAP.items():
+                if label in check_text:
+                    _flush()
+                    current_section = stype
+                    in_summary_block = True; summary_max_num = 0
+                    matched_section = True
+                    break
+            # Also detect OCR-garbled "Level" in tables: "ㄱovel", "Lovel", etc.
+            if not matched_section and line.line_type == "table":
+                cleaned = _clean_latex_table(text)
+                if "기초" in cleaned and "연습" in cleaned:
+                    _flush()
+                    current_section = "level1"
+                    in_summary_block = True; summary_max_num = 0
+                    matched_section = True
+                elif "기본" in cleaned and "연습" in cleaned:
+                    _flush()
+                    current_section = "level2"
+                    in_summary_block = True; summary_max_num = 0
+                    matched_section = True
+                elif "실력" in cleaned and "완성" in cleaned:
+                    _flush()
+                    current_section = "level3"
+                    in_summary_block = True; summary_max_num = 0
+                    matched_section = True
+            if not matched_section:
+                for label, stype in _SOL_SECTION_MAP.items():
+                    if text.startswith(label) or text == label:
+                        _flush()
+                        current_section = stype
+                        in_summary_block = True; summary_max_num = 0
+                        matched_section = True
+                        break
+            if matched_section:
+                continue
+
+            if not current_chapter or not current_section:
+                continue
+
+            # Skip answer summary block (short lines like "1 (4)", "2 (3)", etc.)
+            if in_summary_block:
+                if _SUMMARY_LINE.match(text):
+                    # Check if this is a number reset (solution start, not summary)
+                    nm = _SUMMARY_NUM.match(text)
+                    if nm:
+                        num_val = int(nm.group(1))
+                        if summary_max_num >= 3 and num_val < summary_max_num:
+                            # Number went backwards — summary is done, this is solution start
+                            in_summary_block = False
+                        else:
+                            summary_max_num = max(summary_max_num, num_val)
+                            continue
+                    else:
+                        continue
+                # Also skip "본문 N~N쪽" reference lines
+                if in_summary_block and text.startswith("본문"):
+                    continue
+                in_summary_block = False
+
+            # Handle pending problem number from previous line
+            # e.g., line N: "1", line N+1: "$\begin{aligned}..."
+            if pending_problem is not None:
+                pn = pending_problem
+                pending_problem = None
+                # If this line has substantial content (math, text), confirm as problem start
+                am_check = _SOL_ANSWER_LINE.match(text)
+                if not am_check and len(text) > 3:
+                    prev_int = int(current_number) if current_number and current_number.isdigit() else 0
+                    if int(pn) != prev_int:
+                        _flush()
+                        current_number = pn
+                        current_lines = [line]
+                        continue
+                # Otherwise, it was just a stray number — fall through
+
+            # Answer line — flush current problem with its solution
+            am = _SOL_ANSWER_LINE.match(text)
+            if am:
+                if current_number:
+                    current_lines.append(line)
+                    _flush()
+                continue
+
+            # New problem start: "$N content..." where content is substantial
+            pm = _SOL_PROBLEM_START.match(text)
+            if pm:
+                candidate = int(pm.group(1))
+                if 1 <= candidate <= 30:
+                    after_num = text[pm.end():].strip()
+                    if len(after_num) > 3:
+                        # Inline content — real problem start
+                        prev_int = int(current_number) if current_number and current_number.isdigit() else 0
+                        if candidate != prev_int:
+                            _flush()
+                            current_number = str(candidate)
+                            current_lines = [line]
+                            continue
+                    else:
+                        # Number with little/no content — defer to next line
+                        pending_problem = str(candidate)
+                        continue
+
+            # No-space problem start: "$2(\sqrt...", "$8\left..." (OCR drops space)
+            # Only try when we're between problems (just flushed) to avoid false positives
+            if current_number is None:
+                pm2 = _SOL_PROBLEM_START_NOSPACE.match(text)
+                if pm2:
+                    candidate = int(pm2.group(1))
+                    content = pm2.group(2)
+                    if 1 <= candidate <= 30 and len(content) > 3:
+                        current_number = str(candidate)
+                        current_lines = [line]
+                        continue
+
+            # Standalone number on a line: "1", "$3" (no trailing content at all)
+            sm = _SOL_STANDALONE_NUM.match(text)
+            if sm:
+                candidate = int(sm.group(1))
+                if 1 <= candidate <= 30:
+                    pending_problem = str(candidate)
+                    continue
+
+            # Accumulate lines for current problem
+            if current_number:
+                current_lines.append(line)
+
+    _flush()
+    return result
+
+
 @celery.task(
     bind=True,
     name="task.textbook.match_answers",
@@ -301,20 +560,34 @@ async def _match(
             )
             pages = pages_result.scalars().all()
 
-    # Two-phase matching
+    # Parse EBS solution section (정답과 풀이) if this is an EBS textbook
+    ebs_solutions: dict[tuple[str, str, str], dict] = {}
+    if ebs_answers and pages:
+        # Skip quick answer pages — solution pages start after
+        qa_end = quick_answer_pages_range[1] if quick_answer_pages_range else 0
+        solution_pages = [p for p in pages if p.page_number > qa_end]
+        if solution_pages:
+            ebs_solutions = _parse_ebs_solution_section(solution_pages)
+            logger.info(
+                "Parsed EBS solutions for job %s: %d entries",
+                ocr_job_id, len(ebs_solutions),
+            )
+
+    # Two-phase matching (non-EBS path)
     # Phase 1: Parse quick answer table (if present)
     quick_answers: dict[str, str] = {}
     # Phase 2: Parse detailed solutions
     solution_map: dict[str, dict] = {}
 
-    if has_quick_answers and pages:
-        quick_pages, solution_pages = _split_answer_sections(pages)
-        quick_answers = _parse_quick_answer_table(quick_pages)
-        solution_map = _parse_answer_section(solution_pages)
-    elif pages:
-        solution_map = _parse_answer_section(pages)
+    if not ebs_answers:
+        if has_quick_answers and pages:
+            quick_pages, solution_pages = _split_answer_sections(pages)
+            quick_answers = _parse_quick_answer_table(quick_pages)
+            solution_map = _parse_answer_section(solution_pages)
+        elif pages:
+            solution_map = _parse_answer_section(pages)
 
-    # Phase 3: Merge — inline > EBS quick answer > legacy quick answer > solution
+    # Phase 3: Merge — inline > EBS quick answer + solution > legacy
     matched_count = 0
     for seg in segments:
         # Check if inline answer exists (예제, 대표기출)
@@ -327,7 +600,7 @@ async def _match(
             matched_count += 1
             continue
 
-        # Try EBS quick answer table
+        # Try EBS quick answer table + solution section
         chapter = seg.get("chapter", "")
         chapter_num = chapter[:2] if chapter else ""
         section_type = seg.get("section_type", "")
@@ -336,14 +609,33 @@ async def _match(
 
         if ebs_key in ebs_answers:
             seg["answer_text"] = ebs_answers[ebs_key]
-            seg["solution_text"] = None
-            seg["solution_latex"] = None
+            # Attach solution from 정답과 풀이 if available
+            sol = ebs_solutions.get(ebs_key)
+            seg["solution_latex"] = sol["solution_latex"] if sol else None
+            seg["solution_text"] = sol["solution_text"] if sol else None
             seg["answer_match_status"] = "matched"
-            seg["match_confidence"] = 0.9
+            seg["match_confidence"] = 0.95 if sol else 0.9
             matched_count += 1
             continue
 
-        # Fall back to legacy number-based matching
+        # EBS textbook but not in quick answer table — try solution section only
+        if ebs_answers:
+            sol = ebs_solutions.get(ebs_key)
+            if sol:
+                seg["answer_text"] = None
+                seg["solution_latex"] = sol["solution_latex"]
+                seg["solution_text"] = sol["solution_text"]
+                seg["answer_match_status"] = "matched"
+                seg["match_confidence"] = 0.7
+                matched_count += 1
+            else:
+                seg["answer_text"] = None
+                seg["solution_latex"] = None
+                seg["solution_text"] = None
+                seg["answer_match_status"] = "unmatched"
+                seg["match_confidence"] = 0.0
+            continue
+
         pnum = seg.get("problem_number")
         if not pnum:
             seg["answer_text"] = None
