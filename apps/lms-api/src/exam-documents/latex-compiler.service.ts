@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs/promises";
@@ -7,6 +8,13 @@ import * as os from "os";
 import * as ejs from "ejs";
 
 const execFileAsync = promisify(execFile);
+
+const XELATEX_PATHS = [
+  "/Library/TeX/texbin/xelatex",
+  "/usr/local/texlive/2026/bin/universal-darwin/xelatex",
+  "/usr/local/bin/xelatex",
+  "xelatex",
+];
 
 export interface CompileOptions {
   templateName: string;
@@ -17,6 +25,26 @@ export interface CompileOptions {
 export class LatexCompilerService {
   private readonly logger = new Logger(LatexCompilerService.name);
   private readonly templateDir = path.join(__dirname, "templates");
+  private xelatexPath: string;
+
+  constructor(private config: ConfigService) {
+    this.xelatexPath = this.config.get("XELATEX_PATH", "");
+  }
+
+  async onModuleInit() {
+    if (this.xelatexPath) return;
+
+    for (const p of XELATEX_PATHS) {
+      try {
+        await fs.access(p);
+        this.xelatexPath = p;
+        this.logger.log(`Found xelatex at ${p}`);
+        return;
+      } catch {}
+    }
+    this.xelatexPath = "xelatex";
+    this.logger.warn("xelatex not found at known paths, falling back to PATH lookup");
+  }
 
   async compile(options: CompileOptions): Promise<Buffer> {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "jsmath-latex-"));
@@ -36,7 +64,7 @@ export class LatexCompilerService {
       // Run xelatex twice for cross-references
       for (let i = 0; i < 2; i++) {
         await execFileAsync(
-          "xelatex",
+          this.xelatexPath,
           [
             "-interaction=nonstopmode",
             "-halt-on-error",

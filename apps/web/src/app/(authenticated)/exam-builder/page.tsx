@@ -937,20 +937,13 @@ export default function ExamBuilderPage() {
               </CardContent>
             </Card>
 
-            {/* Right — Selected problems */}
-            <Card>
-              <CardHeader>
-                <CardTitle>
-                  선택된 문제 ({selectedProblems.length}개)
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {selectedProblems.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-16 text-muted-foreground">
-                    <FileText className="mb-2 h-8 w-8" />
-                    <p className="text-sm">문제를 검색해서 추가하세요</p>
-                  </div>
-                ) : (
+            {/* Right — PDF-style preview */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium">
+                  미리보기 ({selectedProblems.length}개)
+                </h3>
+                {selectedProblems.length > 0 && (
                   <DndContext
                     sensors={sensors}
                     collisionDetection={closestCenter}
@@ -960,7 +953,7 @@ export default function ExamBuilderPage() {
                       items={selectedProblems.map((p) => p.id)}
                       strategy={verticalListSortingStrategy}
                     >
-                      <div className="space-y-2">
+                      <div className="flex gap-1 overflow-x-auto pb-1">
                         {selectedProblems.map((problem, index) => (
                           <SortableItem
                             key={problem.id}
@@ -973,8 +966,98 @@ export default function ExamBuilderPage() {
                     </SortableContext>
                   </DndContext>
                 )}
-              </CardContent>
-            </Card>
+              </div>
+
+              {/* PDF page preview */}
+              <div className="max-h-[70vh] overflow-y-auto rounded-lg border border-border bg-white shadow-lg">
+                {selectedProblems.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-32 text-gray-400">
+                    <FileText className="mb-3 h-12 w-12" />
+                    <p className="text-sm">문제를 추가하면 미리보기가 표시됩니다</p>
+                  </div>
+                ) : (
+                  <div className="p-8">
+                    {/* Header */}
+                    <div className="mb-4 border-b border-gray-300 pb-3">
+                      <h2 className="text-center text-base font-bold text-black">
+                        {title || "제목 없음"}
+                      </h2>
+                      {docType === "exam" && (schoolName || examDate) && (
+                        <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
+                          <span>{schoolName}</span>
+                          <span>{examDate}</span>
+                        </div>
+                      )}
+                      {docType === "exam" && duration && (
+                        <p className="mt-1 text-center text-xs text-gray-500">
+                          시험 시간: {duration}분
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Name field */}
+                    {docType === "exam" && showNameField && (
+                      <div className="mb-4 flex gap-4 text-xs text-black">
+                        <div className="flex items-center gap-1">
+                          <span className="font-medium">학년/반</span>
+                          <span className="inline-block w-20 border-b border-gray-400" />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className="font-medium">이름</span>
+                          <span className="inline-block w-20 border-b border-gray-400" />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 2-column layout */}
+                    <div className="columns-2 gap-6" style={{ columnRule: "1px solid #e5e7eb" }}>
+                      {selectedProblems.map((problem, idx) => (
+                        <div
+                          key={problem.id}
+                          className="mb-4 break-inside-avoid"
+                          style={
+                            problemsPerPage > 0 &&
+                            (idx + 1) % problemsPerPage === 0 &&
+                            idx + 1 < selectedProblems.length
+                              ? { breakAfter: "column" }
+                              : {}
+                          }
+                        >
+                          <div className="flex gap-2">
+                            <span className="shrink-0 text-sm font-bold text-black">
+                              {idx + 1}.
+                            </span>
+                            <div className="min-w-0 flex-1 text-sm text-black">
+                              <LatexRenderer
+                                content={problem.stemLatex || problem.stemText}
+                                className="text-black [&_*]:text-black"
+                              />
+                              {problem.choices && problem.choices.length > 0 && (
+                                <div className="mt-2 space-y-1">
+                                  {problem.choices.map((c) => (
+                                    <div key={c.label} className="flex gap-1.5 text-xs">
+                                      <span className="shrink-0 font-medium text-black">
+                                        {c.label}.
+                                      </span>
+                                      <span className="text-black">
+                                        <LatexRenderer
+                                          content={c.contentLatex || c.contentText}
+                                          className="text-black [&_*]:text-black"
+                                        />
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Navigation */}
