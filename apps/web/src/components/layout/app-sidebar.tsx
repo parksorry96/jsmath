@@ -11,6 +11,7 @@ import {
   BarChart3,
   Settings,
   GraduationCap,
+  Calendar,
 } from "lucide-react";
 import {
   Sidebar,
@@ -27,9 +28,10 @@ import {
 
 const mainNav = [
   { title: "대시보드", href: "/dashboard", icon: LayoutDashboard },
-  { title: "강좌 관리", href: "/courses", icon: BookOpen },
+  { title: "반 관리", href: "/classes", icon: BookOpen },
+  { title: "캘린더", href: "/calendar", icon: Calendar },
   { title: "문제은행", href: "/problems", icon: FileText },
-  { title: "퀴즈/과제", href: "/quizzes", icon: GraduationCap },
+  { title: "과제/채점", href: "/assignments", icon: GraduationCap },
 ];
 
 const ocrNav = [

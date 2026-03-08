@@ -18,9 +18,9 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import Link from "next/link";
 
-interface Course {
+interface ClassItem {
   id: string;
-  title: string;
+  name: string;
 }
 
 interface Problem {
@@ -59,9 +59,9 @@ interface StatsResponse {
 export default function DashboardPage() {
   const { user } = useAuth();
 
-  const coursesQuery = useQuery({
-    queryKey: ["courses"],
-    queryFn: () => api.get<Course[] | PaginatedResponse<Course>>("/courses"),
+  const classesQuery = useQuery({
+    queryKey: ["classes"],
+    queryFn: () => api.get<ClassItem[] | PaginatedResponse<ClassItem>>("/classes"),
   });
 
   const statsQuery = useQuery({
@@ -75,10 +75,10 @@ export default function DashboardPage() {
   });
 
   // Derive stat values from query results
-  const courseCount = coursesQuery.data
-    ? Array.isArray(coursesQuery.data)
-      ? coursesQuery.data.length
-      : coursesQuery.data.total
+  const classCount = classesQuery.data
+    ? Array.isArray(classesQuery.data)
+      ? classesQuery.data.length
+      : classesQuery.data.total
     : null;
 
   const problemCount = statsQuery.data?.problems.total ?? null;
@@ -89,12 +89,12 @@ export default function DashboardPage() {
 
   const stats = [
     {
-      title: "총 강좌",
-      value: courseCount,
-      description: "활성 강좌 수",
+      title: "총 반 수",
+      value: classCount,
+      description: "활성 반 수",
       icon: BookOpen,
-      isLoading: coursesQuery.isLoading,
-      isError: coursesQuery.isError,
+      isLoading: classesQuery.isLoading,
+      isError: classesQuery.isError,
     },
     {
       title: "문제은행",
@@ -299,9 +299,9 @@ export default function DashboardPage() {
               </Link>
             </Button>
             <Button className="justify-start" variant="secondary" asChild>
-              <Link href="/courses">
+              <Link href="/classes">
                 <BookOpen className="mr-2 h-4 w-4" />
-                새 강좌 만들기
+                반 만들기
               </Link>
             </Button>
             <Button className="justify-start" variant="secondary" asChild>
