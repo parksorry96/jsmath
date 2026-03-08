@@ -1,4 +1,4 @@
-export type Role = "admin" | "teacher" | "student";
+export type Role = "admin" | "teacher" | "student" | "parent";
 
 export interface User {
   id: string;
@@ -185,4 +185,113 @@ export interface AnalysisCompletedPayload {
   ocrJobId: string;
   analyzedCount: number;
   autoApprovedCount: number;
+}
+
+// ─── LMS Types ───
+
+export interface Class {
+  id: string;
+  title: string;
+  description: string | null;
+  organizationId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type LessonStatus = "scheduled" | "completed" | "cancelled";
+
+export interface Lesson {
+  id: string;
+  classId: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  recurrenceRule: string | null;
+  recurrenceParentId: string | null;
+  status: LessonStatus;
+  location: string | null;
+  memo: string | null;
+}
+
+export type AssignmentType = "problem_set" | "text_task";
+
+export interface Assignment {
+  id: string;
+  classId: string;
+  title: string;
+  description: string | null;
+  type: AssignmentType;
+  dueAt: string | null;
+  maxScore: number;
+  createdAt: string;
+}
+
+export type SubmissionType = "online" | "photo";
+export type SubmissionStatus = "submitted" | "grading" | "graded" | "returned";
+
+export interface Submission {
+  id: string;
+  assignmentId: string;
+  studentId: string;
+  type: SubmissionType;
+  status: SubmissionStatus;
+  score: number | null;
+  maxScore: number | null;
+  submittedAt: string;
+  gradedAt: string | null;
+}
+
+export interface SubmissionAnswer {
+  id: string;
+  submissionId: string;
+  problemId: string;
+  studentAnswer: string | null;
+  isCorrect: boolean | null;
+  score: number | null;
+  feedback: string | null;
+}
+
+export type PhotoAnalysisStatus = "pending" | "analyzing" | "completed" | "failed";
+
+export interface PhotoFeedback {
+  isCorrect: boolean;
+  score: number;
+  maxScore: number;
+  steps: {
+    step: number;
+    content: string;
+    correct: boolean;
+    feedback?: string;
+  }[];
+  errorType: string | null;
+  conceptHint: string | null;
+  overallFeedback: string;
+}
+
+export interface Notification {
+  id: string;
+  userId: string;
+  type: string;
+  title: string;
+  body: string;
+  referenceType: string | null;
+  referenceId: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+// ─── LMS Redis Event Payloads ───
+
+export interface PhotoAnalysisRequestPayload {
+  submissionPhotoId: string;
+  s3Key: string;
+  problemId: string;
+  problemStemLatex: string;
+  answerText: string | null;
+  answerLatex: string | null;
+}
+
+export interface PhotoAnalysisCompletedPayload {
+  submissionPhotoId: string;
+  feedback: PhotoFeedback;
 }
