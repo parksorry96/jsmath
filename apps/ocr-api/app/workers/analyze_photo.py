@@ -38,6 +38,61 @@ SYSTEM_PROMPT = (
 
 
 def _build_user_prompt(payload: dict) -> str:
+    problem_candidates = payload.get("problems")
+    if isinstance(problem_candidates, list) and problem_candidates:
+        candidate_sections: list[str] = []
+        for index, problem in enumerate(problem_candidates, start=1):
+            answer_info = (
+                problem.get("answerText")
+                or problem.get("answerLatex")
+                or "정답 정보 없음"
+            )
+
+            solution_context = ""
+            steps = problem.get("solutionSteps")
+            if steps and isinstance(steps, list):
+                lines = [
+                    f"  {s.get('step', i + 1)}. {s.get('description', '')}"
+                    for i, s in enumerate(steps)
+                    if isinstance(s, dict)
+                ]
+                if lines:
+                    solution_context = "\n풀이 단계:\n" + "\n".join(lines)
+
+            candidate_sections.append(
+                f"""[문항 후보 {index}]
+문항 ID: {problem.get("id", "알 수 없음")}
+문제: {problem.get("stemLatex", "문제 정보 없음")}
+정답: {answer_info}
+{solution_context}"""
+            )
+
+        return f"""다음은 수학 과제의 손글씨 풀이 사진입니다.
+
+아래 문항 후보 중에서 사진과 가장 잘 맞는 문제를 먼저 판단한 뒤, 그 문제 기준으로 풀이를 분석하세요.
+후보가 많아도 반드시 하나만 선택하세요.
+
+{chr(10).join(candidate_sections)}
+
+학생의 풀이를 분석하고 아래 JSON 형식으로만 응답하세요:
+{{
+    "matchedProblemId": "선택한 문항 ID",
+    "isCorrect": boolean,
+    "score": number (0-10),
+    "maxScore": 10,
+    "steps": [
+        {{
+            "step": number,
+            "content": "학생이 쓴 내용 요약",
+            "correct": boolean,
+            "feedback": "틀렸으면 왜 틀렸는지 설명 (맞으면 생략 가능)"
+        }}
+    ],
+    "errorType": "sign_error|calculation_error|concept_error|formula_error|logic_error|transcription_error|null",
+    "conceptHint": "관련 개념이나 공식 힌트 (틀렸을 경우)",
+    "overallFeedback": "전체적인 피드백 (한국어, 2-3문장)"
+}}"""
+
     answer_info = payload.get("answerText") or payload.get("answerLatex") or "정답 정보 없음"
 
     solution_context = ""
@@ -127,10 +182,7 @@ def analyze_submission_photo(self, payload: dict) -> dict:
     payload: {
         submissionPhotoId: str,
         s3Key: str,
-        problemStemLatex: str,
-        answerText: str | None,
-        answerLatex: str | None,
-        solutionSteps: list | None,
+        problems: list[dict] | None,
     }
     """
     photo_id = payload["submissionPhotoId"]
@@ -189,8 +241,10 @@ def analyze_submission_photo(self, payload: dict) -> dict:
         raise self.retry(exc=exc)
     except Exception as exc:
         logger.error("Photo analysis failed for %s: %s", photo_id, exc)
-        publish_sync("photo:analysis:failed", {
-            "submissionPhotoId": photo_id,
-            "reason": str(exc),
-        })
+        if self.request.retries >= self.max_retries:
+            publish_sync("photo:analysis:failed", {
+                "submissionPhotoId": photo_id,
+                "reason": str(exc),
+            })
+            raise
         raise self.retry(exc=exc)

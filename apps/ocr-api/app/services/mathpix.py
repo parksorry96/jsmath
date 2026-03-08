@@ -11,8 +11,6 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-MATHPIX_BASE_URL = "https://api.mathpix.com/v3"
-
 
 def _headers() -> dict[str, str]:
     return {
@@ -25,7 +23,7 @@ async def submit_pdf(s3_url: str) -> str:
     """Submit a PDF URL to Mathpix for processing. Returns the pdf_id."""
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
-            f"{MATHPIX_BASE_URL}/pdf",
+            f"{settings.mathpix_base_url}/pdf",
             headers={**_headers(), "Content-Type": "application/json"},
             json={
                 "url": s3_url,
@@ -52,7 +50,7 @@ async def get_status(pdf_id: str) -> dict[str, Any]:
     """
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(
-            f"{MATHPIX_BASE_URL}/pdf/{pdf_id}",
+            f"{settings.mathpix_base_url}/pdf/{pdf_id}",
             headers=_headers(),
         )
         resp.raise_for_status()
@@ -66,7 +64,7 @@ async def get_lines_json(pdf_id: str) -> dict[str, Any]:
     """
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.get(
-            f"{MATHPIX_BASE_URL}/pdf/{pdf_id}.lines.json",
+            f"{settings.mathpix_base_url}/pdf/{pdf_id}.lines.json",
             headers=_headers(),
         )
         resp.raise_for_status()
@@ -80,7 +78,7 @@ async def get_page_images_map(pdf_id: str) -> dict[int, str]:
     """
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.get(
-            f"{MATHPIX_BASE_URL}/pdf/{pdf_id}.lines.json",
+            f"{settings.mathpix_base_url}/pdf/{pdf_id}.lines.json",
             headers=_headers(),
         )
         resp.raise_for_status()
@@ -112,7 +110,7 @@ async def get_mmd(pdf_id: str) -> str:
     """Fetch the Mathpix Markdown result from a completed Mathpix PDF job."""
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.get(
-            f"{MATHPIX_BASE_URL}/pdf/{pdf_id}.mmd",
+            f"{settings.mathpix_base_url}/pdf/{pdf_id}.mmd",
             headers=_headers(),
         )
         resp.raise_for_status()

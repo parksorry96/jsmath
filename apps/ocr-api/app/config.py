@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     ai_api_base_url: str = "https://api.openai.com/v1"
     ai_model: str = "gpt-5-mini"
     anthropic_api_key: str = ""
+    internal_api_token: str = ""
+    enable_api_docs: bool = False
     celery_worker_concurrency: int = Field(default=16, ge=1)
     use_unified_analysis: bool = True
 

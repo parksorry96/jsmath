@@ -13,6 +13,9 @@ class OcrJobCreate(BaseModel):
     ocr_job_id: str
     source_file_id: str
     s3_key: str
+    document_type: str = "exam"
+    book_title: str | None = None
+    publisher: str | None = None
 
 
 class OcrJobResponse(BaseModel):

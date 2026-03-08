@@ -54,15 +54,26 @@ async def _handle_submit(raw: str) -> None:
     payload = json.loads(raw)
     ocr_job_id = payload.get("jobId") or payload.get("ocrJobId")
     source_file_id = payload.get("sourceFileId") or payload.get("fileId")
-    s3_key = payload["s3Key"]
+    s3_key = payload.get("s3Key")
     document_type = payload.get("documentType", "exam")
     book_title = payload.get("bookTitle")
     publisher = payload.get("publisher")
+
+    if not ocr_job_id or not source_file_id or not s3_key:
+        logger.warning("Ignoring malformed ocr:submit payload: %s", payload)
+        return
 
     logger.info("Received ocr:submit for job %s (file=%s, type=%s)", ocr_job_id, source_file_id, document_type)
 
     # Create tracking record in OCR schema
     async with async_session() as session:
+        existing = await session.execute(
+            select(OcrJobTracking.id).where(OcrJobTracking.id == ocr_job_id)
+        )
+        if existing.scalar_one_or_none():
+            logger.info("Ignoring duplicate ocr:submit for job %s", ocr_job_id)
+            return
+
         tracking = OcrJobTracking(
             id=ocr_job_id,
             source_file_id=source_file_id,
@@ -105,8 +116,7 @@ async def _handle_photo_analyze(data: dict) -> None:
     """Handle photo:analyze event from NestJS.
 
     Expected payload: {
-        submissionPhotoId, s3Key, problemStemLatex,
-        answerText, answerLatex, solutionSteps
+        submissionPhotoId, s3Key, problems
     }
     """
     photo_id = data.get("submissionPhotoId")

@@ -6,15 +6,20 @@ import logging
 
 import redis.asyncio as aioredis
 from celery.app.control import Inspect
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.security import verify_internal_api_token
 from app.celery_app import celery
 from app.config import settings
 from app.schemas.ocr import PipelineHealthResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/pipeline", tags=["pipeline"])
+router = APIRouter(
+    prefix="/pipeline",
+    tags=["pipeline"],
+    dependencies=[Depends(verify_internal_api_token)],
+)
 
 
 @router.get("/health")

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.security import verify_internal_api_token
 from app.database import get_db
 from app.models.job import JobStatus, OcrJobTracking
 from app.models.ocr import OcrLine, OcrPage
@@ -13,7 +16,11 @@ from app.schemas.ocr import OcrJobCreate, OcrJobResponse, OcrJobResultSummary, O
 from app.services.redis_events import notify_completed
 from app.workers.pipeline import start_ocr_pipeline
 
-router = APIRouter(prefix="/ocr", tags=["ocr"])
+router = APIRouter(
+    prefix="/ocr",
+    tags=["ocr"],
+    dependencies=[Depends(verify_internal_api_token)],
+)
 
 
 @router.post("/jobs", status_code=201)
@@ -37,13 +44,17 @@ async def create_ocr_job(
         source_file_id=body.source_file_id,
         s3_key=body.s3_key,
         status=JobStatus.pending,
+        document_type=body.document_type,
+        book_title=body.book_title,
+        publisher=body.publisher,
     )
     db.add(tracking)
     await db.commit()
     await db.refresh(tracking)
 
-    # Start the pipeline
-    start_ocr_pipeline(body.ocr_job_id)
+    # Celery submission is sync; offload it from the event loop.
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, start_ocr_pipeline, body.ocr_job_id, body.document_type)
 
     return OcrJobResponse.model_validate(tracking)
 

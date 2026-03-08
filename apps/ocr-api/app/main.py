@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app.api.health_routes import router as health_router
 from app.api.ocr_routes import router as ocr_router
+from app.config import settings
 from app.services.event_listener import listen_for_events
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -28,7 +29,9 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 app = FastAPI(
     title="JSMath OCR/AI Pipeline",
     version="0.0.1",
-    docs_url="/docs",
+    docs_url="/docs" if settings.enable_api_docs else None,
+    redoc_url="/redoc" if settings.enable_api_docs else None,
+    openapi_url="/openapi.json" if settings.enable_api_docs else None,
     root_path="/v1",
     lifespan=lifespan,
 )
