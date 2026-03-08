@@ -14,6 +14,7 @@ import { LessonsModule } from "./lessons/lessons.module";
 import { SubmissionsModule } from "./submissions/submissions.module";
 import { ParentLinksModule } from "./parent-links/parent-links.module";
 import { NotificationsModule } from "./notifications/notifications.module";
+import { AnalyticsModule } from "./analytics/analytics.module";
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { NotificationsModule } from "./notifications/notifications.module";
     SubmissionsModule,
     ParentLinksModule,
     NotificationsModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
 })
