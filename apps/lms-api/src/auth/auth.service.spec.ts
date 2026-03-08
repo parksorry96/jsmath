@@ -20,7 +20,7 @@ describe("AuthService", () => {
     jest.clearAllMocks();
   });
 
-  it("forces public registration to create student accounts only", async () => {
+  it("always creates student accounts on public registration", async () => {
     prisma.user.findUnique.mockResolvedValue(null);
     prisma.user.create.mockResolvedValue({
       id: "user-1",
@@ -34,7 +34,6 @@ describe("AuthService", () => {
       email: "student@example.com",
       name: "Student",
       password: "password123",
-      role: "teacher" as never,
     });
 
     expect(prisma.user.create).toHaveBeenCalledWith({

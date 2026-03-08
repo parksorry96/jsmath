@@ -46,6 +46,10 @@ export async function getAccessibleClassIds(
 
   if (isTeacherRole(requesterRole)) {
     const organizationId = await getRequesterOrganizationId(prisma, requesterId);
+    if (!organizationId) {
+      // Teacher without an organization cannot access any class
+      return [];
+    }
     const classes = await prisma.class.findMany({
       where: {
         deletedAt: null,
@@ -153,6 +157,7 @@ export async function canAccessSubmission(
 
   if (isTeacherRole(requesterRole)) {
     const organizationId = await getRequesterOrganizationId(prisma, requesterId);
+    if (!organizationId) return false;
     return submission.assignment.class.organizationId === organizationId;
   }
 
@@ -186,6 +191,7 @@ export async function canAccessStudentData(
         select: { organizationId: true },
       }),
     ]);
+    if (!teacherOrganizationId) return false;
     return student?.organizationId === teacherOrganizationId;
   }
 

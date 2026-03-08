@@ -530,6 +530,10 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
     requesterId: string,
     requesterRole: string,
   ): Promise<{ url: string }> {
+    if (!s3Key || s3Key.includes("..") || s3Key.startsWith("/")) {
+      throw new BadRequestException("Invalid asset key");
+    }
+
     const asset = await this.prisma.problemAsset.findFirst({
       where: {
         s3Key,

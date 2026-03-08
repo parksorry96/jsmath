@@ -408,6 +408,9 @@ export class SubmissionsService {
     graderId: string,
     requesterRole: string,
   ) {
+    if (!isPrivilegedRole(requesterRole)) {
+      throw new ForbiddenException("Not authorized to grade this submission");
+    }
     const allowed = await canAccessSubmission(
       this.prisma,
       graderId,
@@ -455,6 +458,9 @@ export class SubmissionsService {
   }
 
   async returnSubmission(id: string, requesterId: string, requesterRole: string) {
+    if (!isPrivilegedRole(requesterRole)) {
+      throw new ForbiddenException("Not authorized to return this submission");
+    }
     const allowed = await canAccessSubmission(
       this.prisma,
       requesterId,
