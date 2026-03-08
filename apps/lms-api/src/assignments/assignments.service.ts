@@ -11,23 +11,24 @@ import { UpdateAssignmentDto } from "./dto/update-assignment.dto";
 export class AssignmentsService {
   constructor(private prisma: PrismaService) {}
 
-  async create(courseId: string, dto: CreateAssignmentDto) {
-    await this.assertCourseExists(courseId);
+  async create(classId: string, dto: CreateAssignmentDto) {
+    await this.assertClassExists(classId);
     return this.prisma.assignment.create({
       data: {
         title: dto.title,
         description: dto.description,
-        courseId,
+        classId,
         dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
         maxScore: dto.maxScore,
+        type: dto.type as any,
       },
     });
   }
 
-  async findAll(courseId: string) {
-    await this.assertCourseExists(courseId);
+  async findAll(classId: string) {
+    await this.assertClassExists(classId);
     return this.prisma.assignment.findMany({
-      where: { courseId },
+      where: { classId },
       orderBy: { createdAt: "desc" },
     });
   }
@@ -54,12 +55,12 @@ export class AssignmentsService {
     await this.prisma.assignment.delete({ where: { id } });
   }
 
-  private async assertCourseExists(courseId: string) {
-    const course = await this.prisma.course.findFirst({
-      where: { id: courseId, deletedAt: null },
+  private async assertClassExists(classId: string) {
+    const cls = await this.prisma.class.findFirst({
+      where: { id: classId, deletedAt: null },
     });
-    if (!course) throw new NotFoundException("Course not found");
-    return course;
+    if (!cls) throw new NotFoundException("Class not found");
+    return cls;
   }
 
   private async assertAssignmentExists(id: string) {

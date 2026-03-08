@@ -20,33 +20,33 @@ interface AuthRequest {
   user: { id: string; email: string; role: string };
 }
 
-@Controller("courses/:courseId")
+@Controller("classes/:classId")
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class EnrollmentsController {
   constructor(private enrollments: EnrollmentsService) {}
 
   @Post("enroll")
   enroll(
-    @Param("courseId") courseId: string,
+    @Param("classId") classId: string,
     @Body() dto: EnrollDto,
     @Request() req: AuthRequest,
   ) {
-    return this.enrollments.enroll(courseId, req.user.id, req.user.role, dto.userId);
+    return this.enrollments.enroll(classId, req.user.id, req.user.role, dto.userId);
   }
 
   @Delete("enroll")
   @HttpCode(HttpStatus.NO_CONTENT)
   unenroll(
-    @Param("courseId") courseId: string,
+    @Param("classId") classId: string,
     @Body() dto: EnrollDto,
     @Request() req: AuthRequest,
   ) {
-    return this.enrollments.unenroll(courseId, req.user.id, req.user.role, dto.userId);
+    return this.enrollments.unenroll(classId, req.user.id, req.user.role, dto.userId);
   }
 
   @Get("students")
   @Roles("admin", "teacher")
-  findStudents(@Param("courseId") courseId: string) {
-    return this.enrollments.findStudents(courseId);
+  findStudents(@Param("classId") classId: string) {
+    return this.enrollments.findStudents(classId);
   }
 }

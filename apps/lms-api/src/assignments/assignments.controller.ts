@@ -27,18 +27,18 @@ interface AuthRequest {
 export class AssignmentsController {
   constructor(private assignments: AssignmentsService) {}
 
-  @Post("courses/:courseId/assignments")
+  @Post("classes/:classId/assignments")
   @Roles("admin", "teacher")
   create(
-    @Param("courseId") courseId: string,
+    @Param("classId") classId: string,
     @Body() dto: CreateAssignmentDto,
   ) {
-    return this.assignments.create(courseId, dto);
+    return this.assignments.create(classId, dto);
   }
 
-  @Get("courses/:courseId/assignments")
-  findAll(@Param("courseId") courseId: string) {
-    return this.assignments.findAll(courseId);
+  @Get("classes/:classId/assignments")
+  findAll(@Param("classId") classId: string) {
+    return this.assignments.findAll(classId);
   }
 
   @Patch("assignments/:id")

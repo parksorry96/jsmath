@@ -10,8 +10,8 @@ import { PrismaService } from "../prisma/prisma.service";
 export class EnrollmentsService {
   constructor(private prisma: PrismaService) {}
 
-  async enroll(courseId: string, requesterId: string, requesterRole: string, targetUserId?: string) {
-    await this.assertCourseExists(courseId);
+  async enroll(classId: string, requesterId: string, requesterRole: string, targetUserId?: string) {
+    await this.assertClassExists(classId);
 
     // Teachers/admins can enroll a specific student; students self-enroll
     const userId = (requesterRole === "teacher" || requesterRole === "admin") && targetUserId
@@ -19,21 +19,21 @@ export class EnrollmentsService {
       : requesterId;
 
     const existing = await this.prisma.enrollment.findUnique({
-      where: { userId_courseId: { userId, courseId } },
+      where: { userId_classId: { userId, classId } },
     });
     if (existing) throw new ConflictException("Already enrolled");
 
     return this.prisma.enrollment.create({
-      data: { userId, courseId },
+      data: { userId, classId },
       include: {
         user: { select: { id: true, name: true, email: true } },
-        course: { select: { id: true, title: true } },
+        class: { select: { id: true, title: true } },
       },
     });
   }
 
-  async unenroll(courseId: string, requesterId: string, requesterRole: string, targetUserId?: string) {
-    await this.assertCourseExists(courseId);
+  async unenroll(classId: string, requesterId: string, requesterRole: string, targetUserId?: string) {
+    await this.assertClassExists(classId);
 
     const userId = (requesterRole === "teacher" || requesterRole === "admin") && targetUserId
       ? targetUserId
@@ -45,19 +45,19 @@ export class EnrollmentsService {
     }
 
     const enrollment = await this.prisma.enrollment.findUnique({
-      where: { userId_courseId: { userId, courseId } },
+      where: { userId_classId: { userId, classId } },
     });
     if (!enrollment) throw new NotFoundException("Enrollment not found");
 
     await this.prisma.enrollment.delete({
-      where: { userId_courseId: { userId, courseId } },
+      where: { userId_classId: { userId, classId } },
     });
   }
 
-  async findStudents(courseId: string) {
-    await this.assertCourseExists(courseId);
+  async findStudents(classId: string) {
+    await this.assertClassExists(classId);
     return this.prisma.enrollment.findMany({
-      where: { courseId },
+      where: { classId },
       include: {
         user: { select: { id: true, name: true, email: true, role: true } },
       },
@@ -65,11 +65,11 @@ export class EnrollmentsService {
     });
   }
 
-  private async assertCourseExists(courseId: string) {
-    const course = await this.prisma.course.findFirst({
-      where: { id: courseId, deletedAt: null },
+  private async assertClassExists(classId: string) {
+    const cls = await this.prisma.class.findFirst({
+      where: { id: classId, deletedAt: null },
     });
-    if (!course) throw new NotFoundException("Course not found");
-    return course;
+    if (!cls) throw new NotFoundException("Class not found");
+    return cls;
   }
 }

@@ -17,4 +17,8 @@ export class CreateAssignmentDto {
   @Min(1)
   @IsOptional()
   maxScore?: number;
+
+  @IsString()
+  @IsOptional()
+  type?: string;
 }
