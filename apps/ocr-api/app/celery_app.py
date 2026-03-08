@@ -16,7 +16,7 @@ celery.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_acks_late=True,
-    worker_prefetch_multiplier=1,
+    worker_prefetch_multiplier=4,
     worker_concurrency=settings.celery_worker_concurrency,
 )
 
@@ -39,5 +39,6 @@ celery.conf.update(
         "app.workers.segment_textbook",
         "app.workers.match_answers",
         "app.workers.finalize_textbook",
+        "app.workers.analyze_photo",
     ],
 )

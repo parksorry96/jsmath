@@ -9,6 +9,9 @@ Channels:
   - analysis:failed    — FastAPI -> NestJS: AI analysis failed
   - analysis:request   — NestJS -> FastAPI: start AI analysis
   - pipeline:progress  — FastAPI -> NestJS: real-time pipeline progress
+  - photo:analyze      — NestJS -> FastAPI: analyze submission photo
+  - photo:analysis:completed — FastAPI -> NestJS: photo analysis done
+  - photo:analysis:failed    — FastAPI -> NestJS: photo analysis failed
 """
 
 from __future__ import annotations

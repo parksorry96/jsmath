@@ -23,8 +23,8 @@ async def listen_for_events() -> None:
     """Subscribe to Redis and process incoming OCR events."""
     r = aioredis.from_url(settings.redis_url, decode_responses=True)
     pubsub = r.pubsub()
-    await pubsub.subscribe("ocr:submit", "analysis:request")
-    logger.info("Listening for ocr:submit and analysis:request events on Redis")
+    await pubsub.subscribe("ocr:submit", "analysis:request", "photo:analyze")
+    logger.info("Listening for ocr:submit, analysis:request, photo:analyze events on Redis")
 
     try:
         async for message in pubsub.listen():
@@ -36,10 +36,12 @@ async def listen_for_events() -> None:
                     await _handle_submit(message["data"])
                 elif channel == "analysis:request":
                     await _handle_analysis_request(json.loads(message["data"]))
+                elif channel == "photo:analyze":
+                    await _handle_photo_analyze(json.loads(message["data"]))
             except Exception:
                 logger.exception("Error handling %s event", channel)
     finally:
-        await pubsub.unsubscribe("ocr:submit", "analysis:request")
+        await pubsub.unsubscribe("ocr:submit", "analysis:request", "photo:analyze")
         await r.aclose()
 
 
@@ -97,3 +99,23 @@ async def _handle_analysis_request(data: dict) -> None:
 
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, start_analysis_pipeline, ocr_job_id, problem_ids)
+
+
+async def _handle_photo_analyze(data: dict) -> None:
+    """Handle photo:analyze event from NestJS.
+
+    Expected payload: {
+        submissionPhotoId, s3Key, problemStemLatex,
+        answerText, answerLatex, solutionSteps
+    }
+    """
+    photo_id = data.get("submissionPhotoId")
+    if not photo_id:
+        logger.warning("photo:analyze missing submissionPhotoId")
+        return
+    logger.info("Received photo:analyze for %s", photo_id)
+
+    from app.workers.analyze_photo import analyze_submission_photo
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, analyze_submission_photo.delay, data)
