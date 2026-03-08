@@ -1,4 +1,13 @@
-import { IsString, IsOptional, IsNotEmpty, IsDateString, IsInt, Min } from "class-validator";
+import {
+  IsString,
+  IsOptional,
+  IsNotEmpty,
+  IsDateString,
+  IsInt,
+  Min,
+  IsIn,
+  IsArray,
+} from "class-validator";
 
 export class CreateAssignmentDto {
   @IsString()
@@ -9,6 +18,10 @@ export class CreateAssignmentDto {
   @IsOptional()
   description?: string;
 
+  @IsIn(["problem_set", "text_task"])
+  @IsOptional()
+  type?: "problem_set" | "text_task";
+
   @IsDateString()
   @IsOptional()
   dueAt?: string;
@@ -18,7 +31,8 @@ export class CreateAssignmentDto {
   @IsOptional()
   maxScore?: number;
 
-  @IsString()
+  @IsArray()
+  @IsString({ each: true })
   @IsOptional()
-  type?: string;
+  problemIds?: string[];
 }

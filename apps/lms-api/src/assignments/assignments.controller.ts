@@ -41,6 +41,11 @@ export class AssignmentsController {
     return this.assignments.findAll(classId);
   }
 
+  @Get("assignments/:id")
+  findOne(@Param("id") id: string) {
+    return this.assignments.findById(id);
+  }
+
   @Patch("assignments/:id")
   @Roles("admin", "teacher")
   update(
@@ -56,5 +61,32 @@ export class AssignmentsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param("id") id: string, @Request() req: AuthRequest) {
     return this.assignments.remove(id, req.user.role);
+  }
+
+  @Post("assignments/:id/problems")
+  @Roles("admin", "teacher")
+  addProblems(
+    @Param("id") id: string,
+    @Body() body: { problemIds: string[] },
+  ) {
+    return this.assignments.addProblems(id, body.problemIds);
+  }
+
+  @Delete("assignments/:id/problems/:problemId")
+  @Roles("admin", "teacher")
+  removeProblem(
+    @Param("id") id: string,
+    @Param("problemId") problemId: string,
+  ) {
+    return this.assignments.removeProblem(id, problemId);
+  }
+
+  @Patch("assignments/:id/problems/reorder")
+  @Roles("admin", "teacher")
+  reorderProblems(
+    @Param("id") id: string,
+    @Body() body: { problemIds: string[] },
+  ) {
+    return this.assignments.reorderProblems(id, body.problemIds);
   }
 }
