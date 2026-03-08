@@ -15,6 +15,7 @@ import { SubmissionsModule } from "./submissions/submissions.module";
 import { ParentLinksModule } from "./parent-links/parent-links.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { AnalyticsModule } from "./analytics/analytics.module";
+import { SubmissionPhotosModule } from "./submission-photos/submission-photos.module";
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { AnalyticsModule } from "./analytics/analytics.module";
     ParentLinksModule,
     NotificationsModule,
     AnalyticsModule,
+    SubmissionPhotosModule,
   ],
   controllers: [AppController],
 })
