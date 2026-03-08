@@ -40,6 +40,14 @@ export default function TeacherLayout() {
           tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 20 }}>✏️</Text>,
         }}
       />
+      <Tabs.Screen
+        name="class/[id]"
+        options={{ href: null, title: "반 상세" }}
+      />
+      <Tabs.Screen
+        name="assignment/new"
+        options={{ href: null, title: "과제 출제" }}
+      />
     </Tabs>
   );
 }
