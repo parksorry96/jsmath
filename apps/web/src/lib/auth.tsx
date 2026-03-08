@@ -15,9 +15,15 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: "admin" | "teacher" | "student";
+  role: UserRole;
   organizationId: string | null;
   createdAt: string;
+}
+
+export type UserRole = "admin" | "teacher" | "student" | "parent";
+
+export function isTeacherPortalRole(role: UserRole): boolean {
+  return role === "admin" || role === "teacher";
 }
 
 interface AuthContextValue {

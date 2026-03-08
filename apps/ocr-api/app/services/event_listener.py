@@ -17,32 +17,45 @@ from app.database import async_session
 from app.models.job import JobStatus, OcrJobTracking
 
 logger = logging.getLogger(__name__)
+RECONNECT_DELAY_SEC = 5
 
 
 async def listen_for_events() -> None:
     """Subscribe to Redis and process incoming OCR events."""
-    r = aioredis.from_url(settings.redis_url, decode_responses=True)
-    pubsub = r.pubsub()
-    await pubsub.subscribe("ocr:submit", "analysis:request", "photo:analyze")
-    logger.info("Listening for ocr:submit, analysis:request, photo:analyze events on Redis")
+    while True:
+        r = aioredis.from_url(settings.redis_url, decode_responses=True)
+        pubsub = r.pubsub()
+        try:
+            await pubsub.subscribe("ocr:submit", "analysis:request", "photo:analyze")
+            logger.info("Listening for ocr:submit, analysis:request, photo:analyze events on Redis")
 
-    try:
-        async for message in pubsub.listen():
-            if message["type"] != "message":
-                continue
-            channel = message["channel"]
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                channel = message["channel"]
+                try:
+                    if channel == "ocr:submit":
+                        await _handle_submit(message["data"])
+                    elif channel == "analysis:request":
+                        await _handle_analysis_request(json.loads(message["data"]))
+                    elif channel == "photo:analyze":
+                        await _handle_photo_analyze(json.loads(message["data"]))
+                except Exception:
+                    logger.exception("Error handling %s event", channel)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Redis event listener crashed; reconnecting in %s seconds",
+                RECONNECT_DELAY_SEC,
+            )
+            await asyncio.sleep(RECONNECT_DELAY_SEC)
+        finally:
             try:
-                if channel == "ocr:submit":
-                    await _handle_submit(message["data"])
-                elif channel == "analysis:request":
-                    await _handle_analysis_request(json.loads(message["data"]))
-                elif channel == "photo:analyze":
-                    await _handle_photo_analyze(json.loads(message["data"]))
+                await pubsub.unsubscribe("ocr:submit", "analysis:request", "photo:analyze")
             except Exception:
-                logger.exception("Error handling %s event", channel)
-    finally:
-        await pubsub.unsubscribe("ocr:submit", "analysis:request", "photo:analyze")
-        await r.aclose()
+                logger.debug("Redis unsubscribe failed during shutdown", exc_info=True)
+            await r.aclose()
 
 
 async def _handle_submit(raw: str) -> None:

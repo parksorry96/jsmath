@@ -28,18 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 def publish_sync(channel: str, payload: dict[str, Any]) -> None:
-    """Publish a JSON event to a Redis channel (sync, safe for Celery workers).
-
-    If no subscribers are listening, pushes to a fallback queue for later processing.
-    """
+    """Publish a JSON event to a Redis channel (sync, safe for Celery workers)."""
     r = redis.from_url(settings.redis_url, decode_responses=True)
     try:
         data = json.dumps(payload)
         receivers = r.publish(channel, data)
         if receivers == 0:
-            fallback_key = f"fallback:{channel}"
-            r.lpush(fallback_key, data)
-            logger.warning("No subscribers for %s — saved to %s", channel, fallback_key)
+            logger.warning("No subscribers listening on %s", channel)
         else:
             logger.info("Published to %s (%d receivers): %s", channel, receivers, payload.get("ocrJobId", ""))
     finally:

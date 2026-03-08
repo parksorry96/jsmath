@@ -25,6 +25,7 @@ import {
   SidebarMenuItem,
   SidebarFooter,
 } from "@/components/ui/sidebar";
+import { useAuth } from "@/lib/auth";
 
 const mainNav = [
   { title: "대시보드", href: "/dashboard", icon: LayoutDashboard },
@@ -42,6 +43,11 @@ const ocrNav = [
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const { user } = useAuth();
+
+  const pipelineNavigation = user?.role === "admin" || user?.role === "teacher"
+    ? ocrNav
+    : [];
 
   return (
     <Sidebar>
@@ -78,40 +84,44 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>OCR 파이프라인</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {ocrNav.map((item) => (
-                <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={pathname.startsWith(item.href)}
-                  >
-                    <Link href={item.href}>
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {pipelineNavigation.length > 0 && (
+          <SidebarGroup>
+            <SidebarGroupLabel>OCR 파이프라인</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {pipelineNavigation.map((item) => (
+                  <SidebarMenuItem key={item.href}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname.startsWith(item.href)}
+                    >
+                      <Link href={item.href}>
+                        <item.icon className="h-4 w-4" />
+                        <span>{item.title}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
 
-      <SidebarFooter className="border-t border-sidebar-border p-4">
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={pathname === "/admin"}>
-              <Link href="/admin">
-                <Settings className="h-4 w-4" />
-                <span>설정</span>
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarFooter>
+      {user?.role === "admin" && (
+        <SidebarFooter className="border-t border-sidebar-border p-4">
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={pathname === "/admin"}>
+                <Link href="/admin">
+                  <Settings className="h-4 w-4" />
+                  <span>설정</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarFooter>
+      )}
     </Sidebar>
   );
 }

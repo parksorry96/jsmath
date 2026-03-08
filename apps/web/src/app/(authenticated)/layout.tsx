@@ -5,14 +5,16 @@ import { useRouter } from "next/navigation";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { AppHeader } from "@/components/layout/app-header";
-import { useAuth } from "@/lib/auth";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { isTeacherPortalRole, useAuth } from "@/lib/auth";
 
 export default function AuthenticatedLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, logout } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -38,6 +40,26 @@ export default function AuthenticatedLayout({
 
   if (!user) {
     return null;
+  }
+
+  if (!isTeacherPortalRole(user.role)) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-brand-dark p-6">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>웹 접근 제한</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              현재 웹 포털은 교사와 관리자 계정만 지원합니다. 학생 또는 학부모 계정은 모바일 앱을 사용하세요.
+            </p>
+            <Button onClick={logout} className="w-full">
+              로그아웃
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (

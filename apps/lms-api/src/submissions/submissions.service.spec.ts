@@ -23,6 +23,7 @@ describe("SubmissionsService", () => {
       findUnique: jest.fn(),
       update: jest.fn(),
       findMany: jest.fn(),
+      findFirst: jest.fn(),
     },
     problem: {
       findMany: jest.fn(),
@@ -35,6 +36,7 @@ describe("SubmissionsService", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (canAccessAssignment as jest.Mock).mockResolvedValue(true);
+    prisma.submission.findFirst.mockResolvedValue(null);
   });
 
   it("rejects answers for problems that are not in the assignment", async () => {
@@ -87,6 +89,50 @@ describe("SubmissionsService", () => {
           create: [
             { problemId: "problem-1", studentAnswer: "42" },
             { problemId: "problem-2", studentAnswer: null },
+          ],
+        },
+      }),
+      include: { answers: true },
+    });
+  });
+
+  it("updates the existing submission instead of creating a duplicate", async () => {
+    prisma.assignment.findUnique.mockResolvedValue({
+      id: "assignment-1",
+      maxScore: 100,
+      assignmentProblems: [{ problemId: "problem-1" }, { problemId: "problem-2" }],
+    });
+    prisma.submission.findFirst.mockResolvedValue({
+      id: "submission-existing",
+      type: "online",
+    });
+    prisma.submission.update.mockResolvedValue({
+      id: "submission-existing",
+      answers: [{ id: "answer-1" }, { id: "answer-2" }],
+    });
+
+    const service = new SubmissionsService(prisma as never);
+    jest.spyOn(service, "autoGrade").mockResolvedValue({ id: "submission-existing" } as never);
+
+    await service.submit("student-1", {
+      assignmentId: "assignment-1",
+      type: "online",
+      answers: [{ problemId: "problem-2", studentAnswer: "7" }],
+    });
+
+    expect(prisma.submission.create).not.toHaveBeenCalled();
+    expect(prisma.submission.update).toHaveBeenCalledWith({
+      where: { id: "submission-existing" },
+      data: expect.objectContaining({
+        status: "submitted",
+        score: null,
+        gradedAt: null,
+        gradedBy: null,
+        answers: {
+          deleteMany: {},
+          create: [
+            { problemId: "problem-1", studentAnswer: null },
+            { problemId: "problem-2", studentAnswer: "7" },
           ],
         },
       }),

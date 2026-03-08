@@ -90,24 +90,64 @@ export class SubmissionsService {
       }
     }
 
-    const submission = await this.prisma.submission.create({
-      data: {
+    const existingSubmission = await this.prisma.submission.findFirst({
+      where: {
         assignmentId: dto.assignmentId,
         studentId,
-        type: dto.type,
-        maxScore: assignment.maxScore,
-        answers:
-          dto.type === "online" && assignment.assignmentProblems.length > 0
-            ? {
-                create: assignment.assignmentProblems.map((problem) => ({
-                  problemId: problem.problemId,
-                  studentAnswer: providedAnswers.get(problem.problemId) ?? null,
-                })),
-              }
-            : undefined,
       },
-      include: { answers: true },
+      orderBy: { submittedAt: "desc" },
+      select: {
+        id: true,
+        type: true,
+      },
     });
+
+    if (existingSubmission && existingSubmission.type !== dto.type) {
+      throw new BadRequestException("Submission type does not match the existing submission");
+    }
+
+    const answerOperations =
+      dto.type === "online" && assignment.assignmentProblems.length > 0
+        ? {
+            create: assignment.assignmentProblems.map((problem) => ({
+              problemId: problem.problemId,
+              studentAnswer: providedAnswers.get(problem.problemId) ?? null,
+            })),
+          }
+        : undefined;
+
+    const submission = existingSubmission
+      ? await this.prisma.submission.update({
+          where: { id: existingSubmission.id },
+          data: {
+            type: dto.type,
+            maxScore: assignment.maxScore,
+            status: "submitted",
+            score: null,
+            feedback: null,
+            gradedAt: null,
+            gradedBy: null,
+            submittedAt: new Date(),
+            answers:
+              dto.type === "online"
+                ? {
+                    deleteMany: {},
+                    ...answerOperations,
+                  }
+                : undefined,
+          },
+          include: { answers: true },
+        })
+      : await this.prisma.submission.create({
+          data: {
+            assignmentId: dto.assignmentId,
+            studentId,
+            type: dto.type,
+            maxScore: assignment.maxScore,
+            answers: answerOperations,
+          },
+          include: { answers: true },
+        });
 
     if (dto.type === "online" && submission.answers.length > 0) {
       return this.autoGrade(submission.id);
