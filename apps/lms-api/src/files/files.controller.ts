@@ -15,13 +15,16 @@ import {
 import { FileInterceptor } from "@nestjs/platform-express";
 import { FilesService } from "./files.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { RolesGuard } from "../auth/roles.guard";
+import { Roles } from "../auth/roles.decorator";
 
 interface AuthRequest {
   user: { id: string; email: string; role: string };
 }
 
 @Controller("files")
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles("admin", "teacher")
 export class FilesController {
   constructor(private files: FilesService) {}
 

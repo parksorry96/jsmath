@@ -26,6 +26,10 @@ export class CreateAssignmentDto {
   @IsOptional()
   dueAt?: string;
 
+  @IsDateString()
+  @IsOptional()
+  dueDate?: string;
+
   @IsInt()
   @Min(1)
   @IsOptional()

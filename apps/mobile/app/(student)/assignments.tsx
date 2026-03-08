@@ -67,7 +67,7 @@ export default function StudentAssignments() {
 
   const { data: assignments = [], isLoading, isRefetching } = useQuery({
     queryKey: ["assignments", "all"],
-    queryFn: () => api.get<Assignment[]>("/submissions?studentId=me"),
+    queryFn: () => api.get<Assignment[]>("/assignments/my"),
   });
 
   // Group by class

@@ -35,13 +35,16 @@ export class ClassesController {
   }
 
   @Get()
-  findAll(@Query("organizationId") organizationId?: string) {
-    return this.classes.findAll(organizationId);
+  findAll(
+    @Query("organizationId") organizationId: string | undefined,
+    @Request() req: AuthRequest,
+  ) {
+    return this.classes.findAll(organizationId, req.user.id, req.user.role);
   }
 
   @Get(":id")
-  findOne(@Param("id") id: string) {
-    return this.classes.findById(id);
+  findOne(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.classes.findById(id, req.user.id, req.user.role);
   }
 
   @Patch(":id")

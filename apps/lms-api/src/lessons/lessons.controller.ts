@@ -38,10 +38,16 @@ export class LessonsController {
   getCalendar(
     @Query("start") start: string,
     @Query("end") end: string,
+    @Request() req: AuthRequest,
     @Query("classId") classId?: string,
-    @Request() req?: AuthRequest,
   ) {
-    return this.lessons.findByDateRange(start, end, classId, req?.user.id);
+    return this.lessons.findByDateRange(
+      start,
+      end,
+      classId,
+      req.user.id,
+      req.user.role,
+    );
   }
 
   @Patch(":id")

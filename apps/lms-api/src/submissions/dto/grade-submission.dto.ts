@@ -30,6 +30,10 @@ export class GradeSubmissionDto {
   score?: number;
 
   @IsOptional()
+  @IsString()
+  feedback?: string;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => GradeAnswerDto)

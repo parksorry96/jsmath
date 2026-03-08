@@ -6,13 +6,21 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateClassDto } from "./dto/create-class.dto";
 import { UpdateClassDto } from "./dto/update-class.dto";
+import { canAccessClass, getAccessibleClassIds } from "../common/access-control";
 
 @Injectable()
 export class ClassesService {
   constructor(private prisma: PrismaService) {}
 
+  private serializeClass<T extends { title: string }>(cls: T) {
+    return {
+      ...cls,
+      name: cls.title,
+    };
+  }
+
   async create(dto: CreateClassDto) {
-    return this.prisma.class.create({
+    const created = await this.prisma.class.create({
       data: {
         title: dto.title,
         description: dto.description,
@@ -22,13 +30,24 @@ export class ClassesService {
         organization: { select: { id: true, name: true } },
       },
     });
+    return this.serializeClass(created);
   }
 
-  async findAll(organizationId?: string) {
-    return this.prisma.class.findMany({
+  async findAll(
+    organizationId?: string,
+    requesterId?: string,
+    requesterRole?: string,
+  ) {
+    const accessibleClassIds =
+      requesterId && requesterRole
+        ? await getAccessibleClassIds(this.prisma, requesterId, requesterRole)
+        : null;
+
+    const classes = await this.prisma.class.findMany({
       where: {
         deletedAt: null,
         ...(organizationId ? { organizationId } : {}),
+        ...(accessibleClassIds !== null ? { id: { in: accessibleClassIds } } : {}),
       },
       include: {
         organization: { select: { id: true, name: true } },
@@ -36,9 +55,23 @@ export class ClassesService {
       },
       orderBy: { createdAt: "desc" },
     });
+
+    return classes.map((cls) => this.serializeClass(cls));
   }
 
-  async findById(id: string) {
+  async findById(id: string, requesterId?: string, requesterRole?: string) {
+    if (requesterId && requesterRole) {
+      const allowed = await canAccessClass(
+        this.prisma,
+        requesterId,
+        requesterRole,
+        id,
+      );
+      if (!allowed) {
+        throw new ForbiddenException("Not authorized to access this class");
+      }
+    }
+
     const cls = await this.prisma.class.findFirst({
       where: { id, deletedAt: null },
       include: {
@@ -52,7 +85,7 @@ export class ClassesService {
       },
     });
     if (!cls) throw new NotFoundException("Class not found");
-    return cls;
+    return this.serializeClass(cls);
   }
 
   async update(id: string, dto: UpdateClassDto, requesterId: string, requesterRole: string) {
@@ -60,13 +93,14 @@ export class ClassesService {
     if (requesterRole === "student") {
       throw new ForbiddenException("Students cannot update classes");
     }
-    return this.prisma.class.update({
+    const updated = await this.prisma.class.update({
       where: { id },
       data: dto,
       include: {
         organization: { select: { id: true, name: true } },
       },
     });
+    return this.serializeClass(updated);
   }
 
   async softDelete(id: string, requesterRole: string) {

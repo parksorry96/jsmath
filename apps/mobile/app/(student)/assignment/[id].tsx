@@ -27,6 +27,35 @@ interface Problem {
   correctAnswer?: string;
 }
 
+interface AssignmentDetailResponse {
+  id: string;
+  title: string;
+  type: "problem_set" | "text_task";
+  description?: string;
+  class?: { id: string; title: string };
+  className: string;
+  dueAt?: string | null;
+  dueDate?: string | null;
+  problems?: Array<{
+    id: string;
+    order: number;
+    problem: {
+      id: string;
+      displayNumber?: string | null;
+      problemNumber?: string | null;
+      stemText: string;
+      stemLatex: string;
+      problemType: "multiple_choice" | "short_answer";
+      choices?: Array<{
+        label: string;
+        contentText?: string;
+        contentLatex?: string;
+      }>;
+      answerText?: string | null;
+    };
+  }>;
+}
+
 interface AssignmentDetail {
   id: string;
   title: string;
@@ -78,7 +107,37 @@ export default function AssignmentDetailScreen() {
 
   const { data: assignment, isLoading: loadingAssignment } = useQuery({
     queryKey: ["assignment", id],
-    queryFn: () => api.get<AssignmentDetail>(`/assignments/${id}`),
+    queryFn: async () => {
+      const res = await api.get<AssignmentDetailResponse>(`/assignments/${id}`);
+      const problems: Problem[] = (res.problems ?? []).map((item, index) => {
+        const raw = item.problem;
+        const parsedNumber = parseInt(
+          raw.displayNumber ?? raw.problemNumber ?? `${index + 1}`,
+          10,
+        );
+
+        return {
+          id: raw.id,
+          number: Number.isFinite(parsedNumber) ? parsedNumber : index + 1,
+          stem: raw.stemLatex || raw.stemText,
+          type: raw.problemType,
+          choices: raw.choices?.map(
+            (choice) => choice.contentText || choice.contentLatex || choice.label,
+          ),
+          correctAnswer: raw.answerText ?? undefined,
+        };
+      });
+
+      return {
+        id: res.id,
+        title: res.title,
+        type: res.type,
+        description: res.description,
+        className: res.className || res.class?.title || "",
+        dueDate: res.dueDate || res.dueAt || "",
+        problems,
+      };
+    },
     enabled: !!id,
   });
 
@@ -86,13 +145,17 @@ export default function AssignmentDetailScreen() {
     queryKey: ["submission", id],
     queryFn: () =>
       api
-        .get<{ data: SubmissionDetail[] }>(`/submissions?studentId=me&assignmentId=${id}`)
-        .then((res) => res.data?.[0] ?? null),
+        .get<SubmissionDetail[]>(`/submissions?assignmentId=${id}`)
+        .then((res) => res[0] ?? null),
     enabled: !!id,
   });
 
   const submitMutation = useMutation({
-    mutationFn: (payload: { assignmentId: string; type: string; answers?: Record<string, string> }) =>
+    mutationFn: (payload: {
+      assignmentId: string;
+      type: string;
+      answers?: Array<{ problemId: string; studentAnswer: string }>;
+    }) =>
       api.post("/submissions", payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["submission", id] });
@@ -130,7 +193,12 @@ export default function AssignmentDetailScreen() {
                 submitMutation.mutate({
                   assignmentId: id!,
                   type: assignment.type,
-                  answers,
+                  answers: Object.entries(answers).map(
+                    ([problemId, studentAnswer]) => ({
+                      problemId,
+                      studentAnswer,
+                    }),
+                  ),
                 }),
             },
           ],
@@ -142,7 +210,13 @@ export default function AssignmentDetailScreen() {
     submitMutation.mutate({
       assignmentId: id!,
       type: assignment.type,
-      answers: assignment.type === "problem_set" ? answers : undefined,
+      answers:
+        assignment.type === "problem_set"
+          ? Object.entries(answers).map(([problemId, studentAnswer]) => ({
+              problemId,
+              studentAnswer,
+            }))
+          : undefined,
     });
   }, [assignment, answers, id, submitMutation]);
 

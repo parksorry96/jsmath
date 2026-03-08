@@ -26,6 +26,7 @@ export class SubmissionsController {
   constructor(private submissions: SubmissionsService) {}
 
   @Post()
+  @Roles("student")
   submit(@Body() dto: CreateSubmissionDto, @Request() req: AuthRequest) {
     return this.submissions.submit(req.user.id, dto);
   }
@@ -35,16 +36,49 @@ export class SubmissionsController {
     @Query("assignmentId") assignmentId?: string,
     @Query("studentId") studentId?: string,
     @Query("classId") classId?: string,
+    @Query("status") status?: string,
+    @Query("limit") limit?: string,
     @Request() req?: AuthRequest,
   ) {
-    if (assignmentId) return this.submissions.findByAssignment(assignmentId);
-    const sid = studentId ?? req?.user.id;
-    return this.submissions.findByStudent(sid!, classId);
+    if (!req) {
+      return [];
+    }
+
+    if (assignmentId) {
+      return this.submissions.findByAssignment(
+        assignmentId,
+        req.user.id,
+        req.user.role,
+        status,
+      );
+    }
+
+    const normalizedStudentId =
+      studentId === "me" ? req.user.id : studentId;
+
+    if (normalizedStudentId) {
+      return this.submissions.findByStudent(
+        normalizedStudentId,
+        req.user.id,
+        req.user.role,
+        classId,
+        status,
+        limit ? parseInt(limit, 10) : undefined,
+      );
+    }
+
+    return this.submissions.findVisibleToRequester(
+      req.user.id,
+      req.user.role,
+      classId,
+      status,
+      limit ? parseInt(limit, 10) : undefined,
+    );
   }
 
   @Get(":id")
-  findOne(@Param("id") id: string) {
-    return this.submissions.getDetail(id);
+  findOne(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.submissions.getDetail(id, req.user.id, req.user.role);
   }
 
   @Post(":id/grade")

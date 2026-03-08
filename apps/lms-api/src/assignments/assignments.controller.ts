@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   Request,
   HttpCode,
@@ -36,14 +37,32 @@ export class AssignmentsController {
     return this.assignments.create(classId, dto);
   }
 
+  @Get("classes/assignments")
+  @Roles("admin", "teacher")
+  findAcrossClasses(@Query("hasPending") hasPending?: string) {
+    return this.assignments.findAcrossClasses(hasPending === "true");
+  }
+
+  @Get("assignments/pending")
+  @Roles("admin", "teacher")
+  findPendingAssignments() {
+    return this.assignments.findAcrossClasses(true);
+  }
+
   @Get("classes/:classId/assignments")
-  findAll(@Param("classId") classId: string) {
-    return this.assignments.findAll(classId);
+  findAll(@Param("classId") classId: string, @Request() req: AuthRequest) {
+    return this.assignments.findAll(classId, req.user.id, req.user.role);
+  }
+
+  @Get("assignments/my")
+  @Roles("student")
+  findMine(@Request() req: AuthRequest) {
+    return this.assignments.findMine(req.user.id);
   }
 
   @Get("assignments/:id")
-  findOne(@Param("id") id: string) {
-    return this.assignments.findById(id);
+  findOne(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.assignments.findById(id, req.user.id, req.user.role);
   }
 
   @Patch("assignments/:id")
@@ -61,6 +80,12 @@ export class AssignmentsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param("id") id: string, @Request() req: AuthRequest) {
     return this.assignments.remove(id, req.user.role);
+  }
+
+  @Post("assignments/:id/return-all")
+  @Roles("admin", "teacher")
+  returnAll(@Param("id") id: string) {
+    return this.assignments.returnAll(id);
   }
 
   @Post("assignments/:id/problems")

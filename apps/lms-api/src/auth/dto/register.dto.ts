@@ -1,5 +1,12 @@
-import { IsEmail, IsString, MinLength, IsOptional, IsEnum } from "class-validator";
-import { Role } from "@prisma/client";
+import { IsEmail, IsString, MinLength, IsOptional, IsIn } from "class-validator";
+
+export const PUBLIC_REGISTRATION_ROLES = [
+  "teacher",
+  "student",
+  "parent",
+] as const;
+
+export type PublicRegistrationRole = (typeof PUBLIC_REGISTRATION_ROLES)[number];
 
 export class RegisterDto {
   @IsEmail()
@@ -14,6 +21,6 @@ export class RegisterDto {
   password: string;
 
   @IsOptional()
-  @IsEnum(Role)
-  role?: Role;
+  @IsIn(PUBLIC_REGISTRATION_ROLES)
+  role?: PublicRegistrationRole;
 }

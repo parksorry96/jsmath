@@ -29,7 +29,11 @@ export class UsersController {
   }
 
   @Patch(":id")
-  update(@Param("id") id: string, @Body() body: { name?: string }) {
-    return this.users.update(id, body);
+  update(
+    @Param("id") id: string,
+    @Body() body: { name?: string },
+    @Request() req: { user: { id: string; role: string } },
+  ) {
+    return this.users.update(id, body, req.user.id, req.user.role);
   }
 }

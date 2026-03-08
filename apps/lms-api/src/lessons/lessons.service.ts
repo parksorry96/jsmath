@@ -1,28 +1,93 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateLessonDto } from "./dto/create-lesson.dto";
 import { UpdateLessonDto } from "./dto/update-lesson.dto";
 import { RRule } from "rrule";
+import { canAccessClass, getAccessibleClassIds } from "../common/access-control";
 
 @Injectable()
 export class LessonsService {
   constructor(private prisma: PrismaService) {}
 
-  async create(dto: CreateLessonDto) {
-    if (dto.recurrenceRule) {
-      return this.expandRecurrence(dto);
+  private serializeLesson(lesson: {
+    id: string;
+    classId: string;
+    title: string;
+    startAt: Date;
+    endAt: Date;
+    recurrenceRule: string | null;
+    status: string;
+    location: string | null;
+    memo: string | null;
+    class?: { id: string; title: string } | null;
+  }) {
+    return {
+      ...lesson,
+      startTime: lesson.startAt.toISOString(),
+      endTime: lesson.endAt.toISOString(),
+      date: lesson.startAt.toISOString().slice(0, 10),
+      className: lesson.class?.title ?? null,
+      rrule: lesson.recurrenceRule ?? null,
+      class: lesson.class
+        ? {
+            ...lesson.class,
+            name: lesson.class.title,
+          }
+        : undefined,
+    };
+  }
+
+  private normalizeCreate(dto: CreateLessonDto) {
+    const startAt = dto.startAt ?? dto.startTime;
+    const endAt = dto.endAt ?? dto.endTime;
+    const recurrenceRule = dto.recurrenceRule ?? dto.rrule;
+
+    if (!startAt || !endAt) {
+      throw new ForbiddenException("Lesson start/end time is required");
     }
 
-    return this.prisma.lesson.create({
+    return {
+      ...dto,
+      startAt,
+      endAt,
+      recurrenceRule,
+    };
+  }
+
+  private normalizeUpdate(dto: UpdateLessonDto) {
+    return {
+      ...dto,
+      startAt: dto.startAt ?? dto.startTime,
+      endAt: dto.endAt ?? dto.endTime,
+      recurrenceRule: dto.rrule,
+    };
+  }
+
+  async create(dto: CreateLessonDto) {
+    const normalized = this.normalizeCreate(dto);
+
+    if (normalized.recurrenceRule) {
+      return this.expandRecurrence(normalized);
+    }
+
+    const created = await this.prisma.lesson.create({
       data: {
-        classId: dto.classId,
-        title: dto.title,
-        startAt: new Date(dto.startAt),
-        endAt: new Date(dto.endAt),
-        location: dto.location,
-        memo: dto.memo,
+        classId: normalized.classId,
+        title: normalized.title,
+        startAt: new Date(normalized.startAt),
+        endAt: new Date(normalized.endAt),
+        location: normalized.location,
+        memo: normalized.memo,
+      },
+      include: {
+        class: { select: { id: true, title: true } },
       },
     });
+    return this.serializeLesson(created);
   }
 
   async findByDateRange(
@@ -30,6 +95,7 @@ export class LessonsService {
     end: string,
     classId?: string,
     userId?: string,
+    userRole?: string,
   ) {
     const where: any = {
       startAt: { gte: new Date(start) },
@@ -37,54 +103,81 @@ export class LessonsService {
     };
 
     if (classId) {
+      if (userId && userRole) {
+        const allowed = await canAccessClass(this.prisma, userId, userRole, classId);
+        if (!allowed) {
+          throw new ForbiddenException("Not authorized to access this class");
+        }
+      }
       where.classId = classId;
-    } else if (userId) {
-      const enrollments = await this.prisma.enrollment.findMany({
-        where: { userId },
-        select: { classId: true },
-      });
-      where.classId = { in: enrollments.map((e) => e.classId) };
+    } else if (userId && userRole) {
+      const accessibleClassIds = await getAccessibleClassIds(
+        this.prisma,
+        userId,
+        userRole,
+      );
+      if (accessibleClassIds !== null) {
+        where.classId = { in: accessibleClassIds };
+      }
     }
 
-    return this.prisma.lesson.findMany({
+    const lessons = await this.prisma.lesson.findMany({
       where,
       include: {
         class: { select: { id: true, title: true } },
       },
       orderBy: { startAt: "asc" },
     });
+
+    return lessons.map((lesson) => this.serializeLesson(lesson));
   }
 
   async update(id: string, dto: UpdateLessonDto) {
     await this.assertLessonExists(id);
+    const normalized = this.normalizeUpdate(dto);
 
     const data: any = {};
-    if (dto.title !== undefined) data.title = dto.title;
-    if (dto.startAt !== undefined) data.startAt = new Date(dto.startAt);
-    if (dto.endAt !== undefined) data.endAt = new Date(dto.endAt);
-    if (dto.location !== undefined) data.location = dto.location;
-    if (dto.memo !== undefined) data.memo = dto.memo;
+    if (normalized.title !== undefined) data.title = normalized.title;
+    if (normalized.startAt !== undefined) data.startAt = new Date(normalized.startAt);
+    if (normalized.endAt !== undefined) data.endAt = new Date(normalized.endAt);
+    if (normalized.location !== undefined) data.location = normalized.location;
+    if (normalized.memo !== undefined) data.memo = normalized.memo;
+    if (normalized.recurrenceRule !== undefined) {
+      data.recurrenceRule = normalized.recurrenceRule;
+    }
 
-    return this.prisma.lesson.update({
+    const updated = await this.prisma.lesson.update({
       where: { id },
       data,
+      include: {
+        class: { select: { id: true, title: true } },
+      },
     });
+    return this.serializeLesson(updated);
   }
 
   async cancel(id: string) {
     await this.assertLessonExists(id);
-    return this.prisma.lesson.update({
+    const updated = await this.prisma.lesson.update({
       where: { id },
       data: { status: "cancelled" },
+      include: {
+        class: { select: { id: true, title: true } },
+      },
     });
+    return this.serializeLesson(updated);
   }
 
   async complete(id: string) {
     await this.assertLessonExists(id);
-    return this.prisma.lesson.update({
+    const updated = await this.prisma.lesson.update({
       where: { id },
       data: { status: "completed" },
+      include: {
+        class: { select: { id: true, title: true } },
+      },
     });
+    return this.serializeLesson(updated);
   }
 
   async deleteSeries(recurrenceParentId: string) {
@@ -102,9 +195,9 @@ export class LessonsService {
 
   private async expandRecurrence(dto: CreateLessonDto) {
     const rule = RRule.fromString(dto.recurrenceRule!);
-    const startDate = new Date(dto.startAt);
+    const startDate = new Date(dto.startAt!);
     const duration =
-      new Date(dto.endAt).getTime() - startDate.getTime();
+      new Date(dto.endAt!).getTime() - startDate.getTime();
 
     // Generate occurrences for next 12 weeks
     const endDate = new Date(startDate);
@@ -118,10 +211,13 @@ export class LessonsService {
         classId: dto.classId,
         title: dto.title,
         startAt: startDate,
-        endAt: new Date(dto.endAt),
+        endAt: new Date(dto.endAt!),
         recurrenceRule: dto.recurrenceRule,
         location: dto.location,
         memo: dto.memo,
+      },
+      include: {
+        class: { select: { id: true, title: true } },
       },
     });
 
@@ -140,7 +236,7 @@ export class LessonsService {
       await this.prisma.lesson.createMany({ data: children });
     }
 
-    return parent;
+    return this.serializeLesson(parent);
   }
 
   private async assertLessonExists(id: string) {

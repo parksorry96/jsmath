@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   InternalServerErrorException,
+  ForbiddenException,
   Logger,
   OnModuleInit,
   OnModuleDestroy,
@@ -11,6 +12,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Redis } from "ioredis";
+import { canAccessSubmission } from "../common/access-control";
 
 @Injectable()
 export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
@@ -88,7 +90,22 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async uploadPhoto(submissionId: string, file: Express.Multer.File) {
+  async uploadPhoto(
+    submissionId: string,
+    file: Express.Multer.File,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const allowed = await canAccessSubmission(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      submissionId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to upload to this submission");
+    }
+
     const submission = await this.prisma.submission.findUnique({
       where: { id: submissionId },
       include: {
@@ -165,11 +182,25 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
     return photo;
   }
 
-  async getPhoto(photoId: string) {
+  async getPhoto(photoId: string, requesterId: string, requesterRole: string) {
     const photo = await this.prisma.submissionPhoto.findUnique({
       where: { id: photoId },
+      include: {
+        submission: {
+          select: { id: true, studentId: true },
+        },
+      },
     });
     if (!photo) throw new NotFoundException("Photo not found");
+    const allowed = await canAccessSubmission(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      photo.submission.id,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to access this photo");
+    }
 
     const command = new GetObjectCommand({
       Bucket: this.bucket,

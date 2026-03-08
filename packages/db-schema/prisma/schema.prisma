@@ -177,6 +177,7 @@ model Submission {
   status       SubmissionStatus @default(submitted)
   score        Float?
   maxScore     Float?           @map("max_score")
+  feedback     String?
   submittedAt  DateTime         @default(now()) @map("submitted_at")
   gradedAt     DateTime?        @map("graded_at")
   gradedBy     String?          @map("graded_by")
@@ -269,9 +270,10 @@ model Notification {
 
 model SourceFile {
   id           String   @id @default(cuid())
+  uploaderId   String?  @map("uploader_id")
   filename     String
   s3Key        String   @map("s3_key")
-  fileHash     String   @unique @map("file_hash")
+  fileHash     String   @map("file_hash")
   sizeBytes    Int      @map("size_bytes")
   documentType String   @default("exam") @map("document_type")
   bookTitle    String?  @map("book_title")
@@ -279,6 +281,8 @@ model SourceFile {
   ocrJobs      OcrJob[]
   createdAt    DateTime @default(now()) @map("created_at")
 
+  @@unique([uploaderId, fileHash])
+  @@index([uploaderId])
   @@map("source_files")
   @@schema("ocr")
 }

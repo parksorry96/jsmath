@@ -13,6 +13,11 @@ export class EnrollmentsService {
   async enroll(classId: string, requesterId: string, requesterRole: string, targetUserId?: string) {
     await this.assertClassExists(classId);
 
+    // Only students can self-enroll; parents cannot enroll
+    if (requesterRole === "parent") {
+      throw new ForbiddenException("Parents cannot enroll in classes");
+    }
+
     // Teachers/admins can enroll a specific student; students self-enroll
     const userId = (requesterRole === "teacher" || requesterRole === "admin") && targetUserId
       ? targetUserId

@@ -301,8 +301,8 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
 
     // Idempotency: same file + same document type → return existing
     const docType = meta?.documentType ?? "exam";
-    const existing = await this.prisma.sourceFile.findUnique({
-      where: { fileHash },
+    const existing = await this.prisma.sourceFile.findFirst({
+      where: { uploaderId, fileHash },
       include: { ocrJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
     });
     if (existing && existing.documentType === docType) {
@@ -365,6 +365,7 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
     const sourceFile = await this.prisma.sourceFile.create({
       data: {
         filename: file.originalname.normalize("NFC"),
+        uploaderId,
         s3Key,
         fileHash,
         sizeBytes: file.size,

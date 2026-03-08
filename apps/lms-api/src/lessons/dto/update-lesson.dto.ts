@@ -13,6 +13,18 @@ export class UpdateLessonDto {
   @IsOptional()
   endAt?: string;
 
+  @IsDateString()
+  @IsOptional()
+  startTime?: string;
+
+  @IsDateString()
+  @IsOptional()
+  endTime?: string;
+
+  @IsString()
+  @IsOptional()
+  rrule?: string;
+
   @IsString()
   @IsOptional()
   location?: string;

@@ -10,14 +10,28 @@ export class CreateLessonDto {
   title: string;
 
   @IsDateString()
-  startAt: string;
+  @IsOptional()
+  startAt?: string;
 
   @IsDateString()
-  endAt: string;
+  @IsOptional()
+  endAt?: string;
+
+  @IsDateString()
+  @IsOptional()
+  startTime?: string;
+
+  @IsDateString()
+  @IsOptional()
+  endTime?: string;
 
   @IsString()
   @IsOptional()
   recurrenceRule?: string; // RFC 5545 RRULE e.g. "FREQ=WEEKLY;BYDAY=TU,TH"
+
+  @IsString()
+  @IsOptional()
+  rrule?: string;
 
   @IsString()
   @IsOptional()

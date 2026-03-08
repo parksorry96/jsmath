@@ -44,6 +44,7 @@ export class AnalyticsController {
       if (!link) throw new ForbiddenException();
     }
 
+    // Teachers and admins have full access (consistent with isPrivilegedRole)
     return this.analytics.getStudentReport(studentId, classId);
   }
 

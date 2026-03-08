@@ -39,6 +39,10 @@ interface Notification {
   read: boolean;
 }
 
+interface NotificationsResponse {
+  items: Notification[];
+}
+
 function todayRange() {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -87,17 +91,14 @@ export default function StudentHome() {
 
   const assignmentsQuery = useQuery({
     queryKey: ["assignments", "pending"],
-    queryFn: () =>
-      api.get<{ data: Assignment[] }>("/submissions?studentId=me").then(
-        (res) => res.data,
-      ),
+    queryFn: () => api.get<Assignment[]>("/assignments/my"),
   });
 
   const notificationsQuery = useQuery({
     queryKey: ["notifications", "recent"],
     queryFn: () =>
-      api.get<{ data: Notification[] }>("/notifications").then((res) =>
-        res.data.slice(0, 3),
+      api.get<NotificationsResponse>("/notifications").then((res) =>
+        res.items.slice(0, 3),
       ),
   });
 

@@ -18,8 +18,8 @@ interface Assignment {
   title: string;
   type: string;
   maxScore: number;
-  dueDate: string;
-  class?: { id: string; name: string };
+  dueAt: string | null;
+  class?: { id: string; title: string };
 }
 
 interface Submission {
@@ -28,9 +28,8 @@ interface Submission {
   studentId: string;
   status: string;
   score: number | null;
-  feedback: string | null;
   submittedAt: string;
-  answers?: Record<string, string>;
+  answers?: Array<{ problemId: string; answer?: string | null }>;
   student?: { id: string; name: string };
 }
 
@@ -56,8 +55,7 @@ export default function TeacherGrading() {
 
   const assignmentsQuery = useQuery({
     queryKey: ["assignments", "pending"],
-    queryFn: () =>
-      api.get<Assignment[]>("/classes/assignments?hasPending=true"),
+    queryFn: () => api.get<Assignment[]>("/assignments/pending"),
   });
 
   const submissionsQuery = useQuery({
@@ -86,13 +84,6 @@ export default function TeacherGrading() {
     onError: (err) => Alert.alert("오류", err.message),
   });
 
-  const returnMutation = useMutation({
-    mutationFn: (id: string) => api.patch(`/submissions/${id}/return`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["submissions"] });
-    },
-    onError: (err) => Alert.alert("오류", err.message),
-  });
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -129,12 +120,23 @@ export default function TeacherGrading() {
     });
   }
 
+  const returnAllMutation = useMutation({
+    mutationFn: (assignmentId: string) =>
+      api.post(`/assignments/${assignmentId}/return-all`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["submissions"] });
+      queryClient.invalidateQueries({ queryKey: ["assignments"] });
+    },
+    onError: (err) => Alert.alert("오류", err.message),
+  });
+
   function handleBulkReturn() {
     const graded = submissions.filter((s) => s.status === "graded");
     if (graded.length === 0) {
       Alert.alert("알림", "반환할 채점 완료 과제가 없습니다");
       return;
     }
+    if (!expandedId) return;
     Alert.alert(
       "전체 반환",
       `채점 완료된 ${graded.length}건을 반환하시겠습니까?`,
@@ -142,7 +144,7 @@ export default function TeacherGrading() {
         { text: "취소", style: "cancel" },
         {
           text: "반환",
-          onPress: () => graded.forEach((s) => returnMutation.mutate(s.id)),
+          onPress: () => returnAllMutation.mutate(expandedId),
         },
       ]
     );
@@ -191,7 +193,7 @@ export default function TeacherGrading() {
                     </Text>
                     {assignment.class && (
                       <Text className="text-[#888] text-xs mt-0.5">
-                        {assignment.class.name}
+                        {assignment.class.title}
                       </Text>
                     )}
                   </View>
@@ -207,7 +209,7 @@ export default function TeacherGrading() {
                   </View>
                 </View>
                 <Text className="text-[#666] text-xs mt-1">
-                  마감: {formatDate(assignment.dueDate)}
+                  {assignment.dueAt ? `마감: ${formatDate(assignment.dueAt)}` : "마감 미설정"}
                 </Text>
               </Pressable>
 
@@ -237,20 +239,18 @@ export default function TeacherGrading() {
                           </View>
 
                           {/* Answer grid for online submissions */}
-                          {sub.answers && (
+                          {sub.answers && sub.answers.length > 0 && (
                             <View className="flex-row flex-wrap gap-1 mb-2">
-                              {Object.entries(sub.answers).map(
-                                ([key, val]) => (
+                              {sub.answers.map((answer) => (
                                   <View
-                                    key={key}
+                                    key={answer.problemId}
                                     className="bg-[#3a3a3a] rounded px-2 py-1"
                                   >
                                     <Text className="text-[#aaa] text-xs">
-                                      {key}: {val}
+                                      {answer.problemId}: {answer.answer ?? "-"}
                                     </Text>
                                   </View>
-                                )
-                              )}
+                                ))}
                             </View>
                           )}
 

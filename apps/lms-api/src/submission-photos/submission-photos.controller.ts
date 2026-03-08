@@ -6,6 +6,7 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
+  Request,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
@@ -21,12 +22,21 @@ export class SubmissionPhotosController {
   upload(
     @Param("submissionId") submissionId: string,
     @UploadedFile() file: Express.Multer.File,
+    @Request() req: { user: { id: string; role: string } },
   ) {
-    return this.submissionPhotos.uploadPhoto(submissionId, file);
+    return this.submissionPhotos.uploadPhoto(
+      submissionId,
+      file,
+      req.user.id,
+      req.user.role,
+    );
   }
 
   @Get(":photoId")
-  getPhoto(@Param("photoId") photoId: string) {
-    return this.submissionPhotos.getPhoto(photoId);
+  getPhoto(
+    @Param("photoId") photoId: string,
+    @Request() req: { user: { id: string; role: string } },
+  ) {
+    return this.submissionPhotos.getPhoto(photoId, req.user.id, req.user.role);
   }
 }

@@ -1,8 +1,19 @@
-import { Controller, Sse, Param, MessageEvent } from "@nestjs/common";
+import {
+  Controller,
+  Sse,
+  Param,
+  MessageEvent,
+  UseGuards,
+} from "@nestjs/common";
 import { Observable, filter, map } from "rxjs";
 import { FilesService } from "./files.service";
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { RolesGuard } from "../auth/roles.guard";
+import { Roles } from "../auth/roles.decorator";
 
 @Controller("files")
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles("admin", "teacher")
 export class FilesSseController {
   constructor(private readonly filesService: FilesService) {}
 

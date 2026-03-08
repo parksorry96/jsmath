@@ -27,11 +27,13 @@ export class ProblemsController {
   constructor(private problems: ProblemsService) {}
 
   @Get("stats")
+  @Roles("admin", "teacher")
   getStats() {
     return this.problems.getStats();
   }
 
   @Get()
+  @Roles("admin", "teacher")
   findAll(
     @Query("ocrJobId") ocrJobId?: string,
     @Query("reviewStatus") reviewStatus?: ReviewStatus,
@@ -43,6 +45,7 @@ export class ProblemsController {
     @Query("analysisStatus") analysisStatus?: string,
     @Query("bookTitle") bookTitle?: string,
     @Query("q") q?: string,
+    @Query("search") search?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
   ) {
@@ -56,7 +59,7 @@ export class ProblemsController {
       problemType,
       analysisStatus,
       bookTitle,
-      q,
+      q: q ?? search,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
     });

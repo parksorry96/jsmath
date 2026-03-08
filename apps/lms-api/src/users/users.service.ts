@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 
 @Injectable()
@@ -34,7 +38,16 @@ export class UsersService {
     });
   }
 
-  async update(id: string, data: { name?: string }) {
+  async update(
+    id: string,
+    data: { name?: string },
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    if (requesterRole !== "admin" && requesterId !== id) {
+      throw new ForbiddenException("Cannot update another user");
+    }
+
     return this.prisma.user.update({
       where: { id },
       data,
