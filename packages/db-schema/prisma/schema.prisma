@@ -18,7 +18,12 @@ model User {
   role           Role         @default(student)
   organizationId String?      @map("organization_id")
   organization   Organization? @relation(fields: [organizationId], references: [id])
+  pushToken      String?      @map("push_token")
   enrollments    Enrollment[]
+  parentLinks    ParentStudent[] @relation("ParentRelation")
+  childLinks     ParentStudent[] @relation("StudentRelation")
+  notifications  Notification[]
+  submissions    Submission[]
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
@@ -30,14 +35,14 @@ model Organization {
   id        String   @id @default(cuid())
   name      String
   users     User[]
-  courses   Course[]
+  classes   Class[]
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("organizations")
   @@schema("public")
 }
 
-model Course {
+model Class {
   id             String       @id @default(cuid())
   title          String
   description    String?
@@ -45,40 +50,44 @@ model Course {
   organization   Organization @relation(fields: [organizationId], references: [id])
   enrollments    Enrollment[]
   assignments    Assignment[]
+  lessons        Lesson[]
   deletedAt      DateTime?    @map("deleted_at")
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
-  @@map("courses")
+  @@map("classes")
   @@schema("public")
 }
 
 model Enrollment {
   id        String   @id @default(cuid())
   userId    String   @map("user_id")
-  courseId   String   @map("course_id")
+  classId   String   @map("class_id")
   role      Role     @default(student)
   user      User     @relation(fields: [userId], references: [id])
-  course    Course   @relation(fields: [courseId], references: [id])
+  class     Class    @relation(fields: [classId], references: [id])
   createdAt DateTime @default(now()) @map("created_at")
 
-  @@unique([userId, courseId])
+  @@unique([userId, classId])
   @@map("enrollments")
   @@schema("public")
 }
 
 model Assignment {
-  id          String    @id @default(cuid())
-  title       String
-  description String?
-  courseId    String    @map("course_id")
-  course      Course    @relation(fields: [courseId], references: [id])
-  dueAt       DateTime? @map("due_at")
-  maxScore    Int       @default(100) @map("max_score")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  id                 String              @id @default(cuid())
+  title              String
+  description        String?
+  classId            String              @map("class_id")
+  class              Class               @relation(fields: [classId], references: [id])
+  type               AssignmentType      @default(text_task)
+  dueAt              DateTime?           @map("due_at")
+  maxScore           Int                 @default(100) @map("max_score")
+  assignmentProblems AssignmentProblem[]
+  submissions        Submission[]
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
 
-  @@index([courseId])
+  @@index([classId])
   @@map("assignments")
   @@schema("public")
 }
@@ -87,7 +96,172 @@ enum Role {
   admin
   teacher
   student
+  parent
 
+  @@schema("public")
+}
+
+// ─── New LMS Models ───
+
+model ParentStudent {
+  id        String   @id @default(cuid())
+  parentId  String   @map("parent_id")
+  studentId String   @map("student_id")
+  parent    User     @relation("ParentRelation", fields: [parentId], references: [id])
+  student   User     @relation("StudentRelation", fields: [studentId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([parentId, studentId])
+  @@map("parent_students")
+  @@schema("public")
+}
+
+model Lesson {
+  id                 String       @id @default(cuid())
+  classId            String       @map("class_id")
+  class              Class        @relation(fields: [classId], references: [id])
+  title              String
+  startAt            DateTime     @map("start_at")
+  endAt              DateTime     @map("end_at")
+  recurrenceRule     String?      @map("recurrence_rule")
+  recurrenceParentId String?      @map("recurrence_parent_id")
+  recurrenceParent   Lesson?      @relation("RecurringLessons", fields: [recurrenceParentId], references: [id])
+  recurrenceChildren Lesson[]     @relation("RecurringLessons")
+  status             LessonStatus @default(scheduled)
+  location           String?
+  memo               String?
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+
+  @@index([classId, startAt])
+  @@index([recurrenceParentId])
+  @@map("lessons")
+  @@schema("public")
+}
+
+enum LessonStatus {
+  scheduled
+  completed
+  cancelled
+
+  @@schema("public")
+}
+
+enum AssignmentType {
+  problem_set
+  text_task
+
+  @@schema("public")
+}
+
+model AssignmentProblem {
+  id           String     @id @default(cuid())
+  assignmentId String     @map("assignment_id")
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  problemId    String     @map("problem_id")
+  orderIndex   Int        @map("order_index")
+
+  @@unique([assignmentId, problemId])
+  @@index([assignmentId])
+  @@map("assignment_problems")
+  @@schema("public")
+}
+
+model Submission {
+  id           String           @id @default(cuid())
+  assignmentId String           @map("assignment_id")
+  assignment   Assignment       @relation(fields: [assignmentId], references: [id])
+  studentId    String           @map("student_id")
+  student      User             @relation(fields: [studentId], references: [id])
+  type         SubmissionType
+  status       SubmissionStatus @default(submitted)
+  score        Float?
+  maxScore     Float?           @map("max_score")
+  submittedAt  DateTime         @default(now()) @map("submitted_at")
+  gradedAt     DateTime?        @map("graded_at")
+  gradedBy     String?          @map("graded_by")
+  answers      SubmissionAnswer[]
+  photos       SubmissionPhoto[]
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  @@index([assignmentId, studentId])
+  @@index([studentId])
+  @@map("submissions")
+  @@schema("public")
+}
+
+enum SubmissionType {
+  online
+  photo
+
+  @@schema("public")
+}
+
+enum SubmissionStatus {
+  submitted
+  grading
+  graded
+  returned
+
+  @@schema("public")
+}
+
+model SubmissionAnswer {
+  id            String     @id @default(cuid())
+  submissionId  String     @map("submission_id")
+  submission    Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  problemId     String     @map("problem_id")
+  studentAnswer String?    @map("student_answer")
+  isCorrect     Boolean?   @map("is_correct")
+  score         Float?
+  feedback      String?
+  createdAt     DateTime   @default(now()) @map("created_at")
+
+  @@unique([submissionId, problemId])
+  @@map("submission_answers")
+  @@schema("public")
+}
+
+model SubmissionPhoto {
+  id             String                @id @default(cuid())
+  submissionId   String                @map("submission_id")
+  submission     Submission            @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  s3Key          String                @map("s3_key")
+  originalName   String?               @map("original_name")
+  analysisStatus SubmissionPhotoStatus @default(pending) @map("analysis_status")
+  aiFeedback     Json?                 @map("ai_feedback")
+  analyzedAt     DateTime?             @map("analyzed_at")
+  createdAt      DateTime              @default(now()) @map("created_at")
+
+  @@index([submissionId])
+  @@map("submission_photos")
+  @@schema("public")
+}
+
+enum SubmissionPhotoStatus {
+  pending
+  analyzing
+  completed
+  failed
+
+  @@schema("public")
+}
+
+model Notification {
+  id            String    @id @default(cuid())
+  userId        String    @map("user_id")
+  user          User      @relation(fields: [userId], references: [id])
+  type          String
+  title         String
+  body          String
+  referenceType String?   @map("reference_type")
+  referenceId   String?   @map("reference_id")
+  readAt        DateTime? @map("read_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, readAt])
+  @@map("notifications")
   @@schema("public")
 }
 
