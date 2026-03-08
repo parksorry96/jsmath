@@ -40,6 +40,13 @@ export default function StudentLayout() {
           tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 20 }}>📊</Text>,
         }}
       />
+      <Tabs.Screen
+        name="assignment/[id]"
+        options={{
+          href: null,
+          title: "과제 상세",
+        }}
+      />
     </Tabs>
   );
 }
