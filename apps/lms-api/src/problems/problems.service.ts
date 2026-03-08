@@ -73,6 +73,61 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  async getFilterOptions(requesterId: string, requesterRole: string) {
+    const where = this.getProblemScopeWhere(requesterId, requesterRole);
+
+    const [subjects, gradeLevels, textbooks, difficulties, problemTypes] = await Promise.all([
+      this.prisma.problem.findMany({
+        where: { ...where, subject: { not: null } },
+        select: { subject: true },
+        distinct: ["subject"],
+        orderBy: { subject: "asc" },
+      }),
+      this.prisma.problem.findMany({
+        where: { ...where, gradeLevel: { not: null } },
+        select: { gradeLevel: true },
+        distinct: ["gradeLevel"],
+        orderBy: { gradeLevel: "asc" },
+      }),
+      this.prisma.problem.findMany({
+        where: { ...where, sourceFileId: { not: null } },
+        select: {
+          sourceFileId: true,
+          ocrJob: {
+            select: {
+              sourceFile: { select: { filename: true, bookTitle: true } },
+            },
+          },
+        },
+        distinct: ["sourceFileId"],
+      }),
+      this.prisma.problem.findMany({
+        where: { ...where, difficulty: { not: null } },
+        select: { difficulty: true },
+        distinct: ["difficulty"],
+        orderBy: { difficulty: "asc" },
+      }),
+      this.prisma.problem.findMany({
+        where,
+        select: { problemType: true },
+        distinct: ["problemType"],
+      }),
+    ]);
+
+    return {
+      subjects: subjects.map((s) => s.subject).filter(Boolean),
+      gradeLevels: gradeLevels.map((g) => g.gradeLevel).filter(Boolean),
+      textbooks: textbooks
+        .map((t) => ({
+          filename: t.ocrJob?.sourceFile?.filename ?? null,
+          bookTitle: t.ocrJob?.sourceFile?.bookTitle ?? null,
+        }))
+        .filter((t) => t.filename),
+      difficulties: difficulties.map((d) => d.difficulty).filter((d): d is number => d !== null),
+      problemTypes: problemTypes.map((p) => p.problemType),
+    };
+  }
+
   async findAll(query: ProblemsQuery) {
     const page = query.page ?? 1;
     const limit = Math.min(query.limit ?? 20, 100);

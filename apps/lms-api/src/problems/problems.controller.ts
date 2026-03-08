@@ -26,6 +26,12 @@ interface AuthRequest {
 export class ProblemsController {
   constructor(private problems: ProblemsService) {}
 
+  @Get("filter-options")
+  @Roles("admin", "teacher")
+  getFilterOptions(@Request() req: AuthRequest) {
+    return this.problems.getFilterOptions(req.user.id, req.user.role);
+  }
+
   @Get("stats")
   @Roles("admin", "teacher")
   getStats(@Request() req: AuthRequest) {

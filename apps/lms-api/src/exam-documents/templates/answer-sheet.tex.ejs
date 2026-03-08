@@ -1,0 +1,66 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage{kotex}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{multicol}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+
+\geometry{top=2cm, bottom=2cm, left=1.5cm, right=1.5cm}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\textbf{<%= header.title %> \textemdash{} 해설지}}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\setlength{\columnsep}{1.5cm}
+\setlength{\columnseprule}{0.2pt}
+
+\begin{document}
+
+\begin{multicols}{2}
+
+<% problems.forEach((p, idx) => { %>
+\noindent\textbf{<%= idx + 1 %>.}
+<%= p.stemLatex %>
+
+<% if (p.choices && p.choices.length > 0) { %>
+\begin{enumerate}[label=\textcircled{\small\arabic*}, itemsep=2pt, parsep=0pt]
+<% p.choices.forEach((c) => { %>
+\item <%= c.contentLatex %>
+<% }); %>
+\end{enumerate}
+<% } %>
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!50, title=정답 및 해설]
+<% if (p.answerText || p.answerLatex) { %>
+\textbf{정답:} <%= p.answerLatex || p.answerText %>
+
+<% } %>
+<% if (p.solutionSteps && Array.isArray(p.solutionSteps) && p.solutionSteps.length > 0) { %>
+\textbf{풀이:}
+\begin{enumerate}[itemsep=1pt, parsep=0pt]
+<% p.solutionSteps.forEach((step) => { %>
+\item <%= typeof step === 'string' ? step : (step.explanation || JSON.stringify(step)) %>
+<% }); %>
+\end{enumerate}
+<% } else if (p.solutionLatex) { %>
+\textbf{풀이:}
+<%= p.solutionLatex %>
+
+<% } %>
+<% if (p.solutionStrategy) { %>
+\small\textit{풀이 전략: <%= p.solutionStrategy %>}
+<% } %>
+\end{tcolorbox}
+
+\vspace{0.5cm}
+
+<% }); %>
+
+\end{multicols}
+
+\end{document}

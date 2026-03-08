@@ -24,6 +24,7 @@ model User {
   childLinks     ParentStudent[] @relation("StudentRelation")
   notifications  Notification[]
   submissions    Submission[]
+  examDocuments  ExamDocument[]
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
@@ -167,6 +168,58 @@ model AssignmentProblem {
   @@schema("public")
 }
 
+model ExamDocument {
+  id              String               @id @default(cuid())
+  title           String
+  type            ExamDocumentType
+  creatorId       String               @map("creator_id")
+  creator         User                 @relation(fields: [creatorId], references: [id])
+  headerConfig    Json?                @map("header_config")
+  layoutConfig    Json                 @map("layout_config")
+  coverConfig     Json?                @map("cover_config")
+  pdfS3Key        String?              @map("pdf_s3_key")
+  answerPdfS3Key  String?              @map("answer_pdf_s3_key")
+  status          ExamDocumentStatus   @default(draft)
+  errorMessage    String?              @map("error_message")
+  problems        ExamDocumentProblem[]
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+
+  @@index([creatorId])
+  @@index([status])
+  @@map("exam_documents")
+  @@schema("public")
+}
+
+model ExamDocumentProblem {
+  id             String       @id @default(cuid())
+  examDocumentId String       @map("exam_document_id")
+  examDocument   ExamDocument @relation(fields: [examDocumentId], references: [id], onDelete: Cascade)
+  problemId      String       @map("problem_id")
+  orderIndex     Int          @map("order_index")
+
+  @@unique([examDocumentId, problemId])
+  @@index([examDocumentId])
+  @@map("exam_document_problems")
+  @@schema("public")
+}
+
+enum ExamDocumentType {
+  exam
+  workbook
+
+  @@schema("public")
+}
+
+enum ExamDocumentStatus {
+  draft
+  generating
+  completed
+  failed
+
+  @@schema("public")
+}
+
 model Submission {
   id           String           @id @default(cuid())
   assignmentId String           @map("assignment_id")
@@ -186,6 +239,7 @@ model Submission {
   createdAt    DateTime         @default(now()) @map("created_at")
   updatedAt    DateTime         @updatedAt @map("updated_at")
 
+  @@unique([assignmentId, studentId])
   @@index([assignmentId, studentId])
   @@index([studentId])
   @@map("submissions")

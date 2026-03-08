@@ -106,18 +106,39 @@ export default function ProblemsPage() {
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [reviewFilter, setReviewFilter] = useState<string>("");
+  const [subjectFilter, setSubjectFilter] = useState<string>("");
+  const [gradeLevelFilter, setGradeLevelFilter] = useState<string>("");
+  const [difficultyFilter, setDifficultyFilter] = useState<string>("");
+  const [bookTitleFilter, setBookTitleFilter] = useState<string>("");
+  const [problemTypeFilter, setProblemTypeFilter] = useState<string>("");
+
+  const { data: filterOptions } = useQuery({
+    queryKey: ["problem-filter-options"],
+    queryFn: () => api.get<{
+      subjects: string[];
+      gradeLevels: string[];
+      textbooks: { filename: string; bookTitle: string | null }[];
+      difficulties: number[];
+      problemTypes: string[];
+    }>("/problems/filter-options"),
+  });
 
   const queryString = [
     `page=${page}`,
     `limit=${PAGE_SIZE}`,
     searchQuery && `q=${encodeURIComponent(searchQuery)}`,
     reviewFilter && `reviewStatus=${reviewFilter}`,
+    subjectFilter && `subject=${encodeURIComponent(subjectFilter)}`,
+    gradeLevelFilter && `gradeLevel=${encodeURIComponent(gradeLevelFilter)}`,
+    difficultyFilter && `difficulty=${difficultyFilter}`,
+    bookTitleFilter && `bookTitle=${encodeURIComponent(bookTitleFilter)}`,
+    problemTypeFilter && `problemType=${problemTypeFilter}`,
   ]
     .filter(Boolean)
     .join("&");
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["problems", page, searchQuery, reviewFilter],
+    queryKey: ["problems", page, searchQuery, reviewFilter, subjectFilter, gradeLevelFilter, difficultyFilter, bookTitleFilter, problemTypeFilter],
     queryFn: () =>
       api.get<PaginatedResponse>(`/problems?${queryString}`),
   });
@@ -157,6 +178,97 @@ export default function ProblemsPage() {
           검색
         </Button>
       </form>
+
+      {/* Advanced Filters */}
+      <div className="flex flex-wrap items-center gap-3">
+        {filterOptions?.subjects && filterOptions.subjects.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={subjectFilter}
+            onChange={(e) => { setSubjectFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">과목 전체</option>
+            {filterOptions.subjects.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        )}
+
+        {filterOptions?.gradeLevels && filterOptions.gradeLevels.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={gradeLevelFilter}
+            onChange={(e) => { setGradeLevelFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">학년 전체</option>
+            {filterOptions.gradeLevels.map((g) => (
+              <option key={g} value={g}>{g}</option>
+            ))}
+          </select>
+        )}
+
+        {filterOptions?.difficulties && filterOptions.difficulties.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={difficultyFilter}
+            onChange={(e) => { setDifficultyFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">난이도 전체</option>
+            {filterOptions.difficulties.map((d) => (
+              <option key={d} value={String(d)}>
+                {d <= 2 ? `${d} (하)` : d <= 4 ? `${d} (중)` : `${d} (상)`}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {filterOptions?.textbooks && filterOptions.textbooks.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={bookTitleFilter}
+            onChange={(e) => { setBookTitleFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">교재 전체</option>
+            {filterOptions.textbooks.map((t) => (
+              <option key={t.filename} value={t.bookTitle || t.filename}>
+                {t.bookTitle || t.filename}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {filterOptions?.problemTypes && filterOptions.problemTypes.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={problemTypeFilter}
+            onChange={(e) => { setProblemTypeFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">유형 전체</option>
+            {filterOptions.problemTypes.map((pt) => (
+              <option key={pt} value={pt}>
+                {PROBLEM_TYPE_LABELS[pt] ?? pt}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {(subjectFilter || gradeLevelFilter || difficultyFilter || bookTitleFilter || problemTypeFilter) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSubjectFilter("");
+              setGradeLevelFilter("");
+              setDifficultyFilter("");
+              setBookTitleFilter("");
+              setProblemTypeFilter("");
+              setPage(1);
+            }}
+          >
+            필터 초기화
+          </Button>
+        )}
+      </div>
 
       {/* Review status filter */}
       <div className="flex items-center gap-2">

@@ -1,0 +1,53 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage{kotex}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{multicol}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{tikz}
+\usepackage{setspace}
+
+\geometry{top=2cm, bottom=2cm, left=1.5cm, right=1.5cm}
+
+\pagestyle{fancy}
+\fancyhf{}
+<% if (header.title) { %>
+\fancyhead[C]{\textbf{<%= header.title %>}}
+<% } %>
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\setlength{\columnsep}{1.5cm}
+\setlength{\columnseprule}{0.2pt}
+
+\begin{document}
+
+\begin{multicols}{2}
+
+<% problems.forEach((p, idx) => { %>
+\noindent\textbf{<%= idx + 1 %>.}
+<%= p.stemLatex %>
+
+<% if (p.choices && p.choices.length > 0) { %>
+\begin{enumerate}[label=\textcircled{\small\arabic*}, itemsep=2pt, parsep=0pt]
+<% p.choices.forEach((c) => { %>
+\item <%= c.contentLatex %>
+<% }); %>
+\end{enumerate}
+<% } %>
+
+<% if (layout.problemsPerPage && (idx + 1) % layout.problemsPerPage === 0 && idx + 1 < problems.length) { %>
+\end{multicols}
+\newpage
+\begin{multicols}{2}
+<% } else { %>
+\vspace{0.5cm}
+<% } %>
+
+<% }); %>
+
+\end{multicols}
+
+\end{document}

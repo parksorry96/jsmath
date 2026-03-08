@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
-import { ConfigModule } from "@nestjs/config";
+import { ConfigModule, ConfigService } from "@nestjs/config";
+import { BullModule } from "@nestjs/bullmq";
 import { AppController } from "./app.controller";
 import { PrismaModule } from "./prisma/prisma.module";
 import { AuthModule } from "./auth/auth.module";
@@ -16,10 +17,20 @@ import { ParentLinksModule } from "./parent-links/parent-links.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { AnalyticsModule } from "./analytics/analytics.module";
 import { SubmissionPhotosModule } from "./submission-photos/submission-photos.module";
+import { ExamDocumentsModule } from "./exam-documents/exam-documents.module";
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        connection: {
+          url: config.get("REDIS_URL", "redis://localhost:6379/0"),
+        },
+      }),
+    }),
     PrismaModule,
     AuthModule,
     UsersModule,
@@ -35,6 +46,7 @@ import { SubmissionPhotosModule } from "./submission-photos/submission-photos.mo
     NotificationsModule,
     AnalyticsModule,
     SubmissionPhotosModule,
+    ExamDocumentsModule,
   ],
   controllers: [AppController],
 })

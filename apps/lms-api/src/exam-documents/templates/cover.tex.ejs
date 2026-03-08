@@ -1,0 +1,36 @@
+\documentclass[a4paper]{article}
+\usepackage{kotex}
+\usepackage{geometry}
+\usepackage{tikz}
+\usepackage{xcolor}
+\usepackage{setspace}
+
+\geometry{margin=0pt}
+\pagestyle{empty}
+
+\begin{document}
+
+\begin{tikzpicture}[remember picture, overlay]
+  \fill[<%= cover.backgroundColor || 'blue!80!black' %>]
+    (current page.south west) rectangle (current page.north east);
+
+  \node[text=white, font=\Huge\bfseries, text width=14cm, align=center]
+    at ([yshift=3cm]current page.center) {<%= cover.title || header.title || 'Untitled' %>};
+
+<% if (cover.subtitle) { %>
+  \node[text=white!80, font=\Large, text width=14cm, align=center]
+    at ([yshift=1cm]current page.center) {<%= cover.subtitle %>};
+<% } %>
+
+<% if (cover.author) { %>
+  \node[text=white!70, font=\large]
+    at ([yshift=-2cm]current page.center) {<%= cover.author %>};
+<% } %>
+
+<% if (cover.year) { %>
+  \node[text=white!50, font=\normalsize]
+    at ([yshift=-4cm]current page.center) {<%= cover.year %>};
+<% } %>
+\end{tikzpicture}
+
+\end{document}

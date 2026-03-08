@@ -12,6 +12,7 @@ import {
   Settings,
   GraduationCap,
   Calendar,
+  Printer,
 } from "lucide-react";
 import {
   Sidebar,
@@ -33,6 +34,7 @@ const mainNav = [
   { title: "캘린더", href: "/calendar", icon: Calendar },
   { title: "문제은행", href: "/problems", icon: FileText },
   { title: "과제/채점", href: "/assignments", icon: GraduationCap },
+  { title: "시험지 제작", href: "/exam-builder", icon: Printer },
 ];
 
 const ocrNav = [
