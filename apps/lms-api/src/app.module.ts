@@ -12,6 +12,8 @@ import { FilesModule } from "./files/files.module";
 import { ProblemsModule } from "./problems/problems.module";
 import { LessonsModule } from "./lessons/lessons.module";
 import { SubmissionsModule } from "./submissions/submissions.module";
+import { ParentLinksModule } from "./parent-links/parent-links.module";
+import { NotificationsModule } from "./notifications/notifications.module";
 
 @Module({
   imports: [
@@ -27,6 +29,8 @@ import { SubmissionsModule } from "./submissions/submissions.module";
     ProblemsModule,
     LessonsModule,
     SubmissionsModule,
+    ParentLinksModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
 })
