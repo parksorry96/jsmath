@@ -166,7 +166,7 @@ export function LatexRenderer({ content, className }: LatexRendererProps) {
   }
 
   return (
-    <div className={className}>
+    <div className={className} style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
       {rendered.map((segment, i) => {
         if (segment.type === "image") {
           return (
@@ -174,7 +174,7 @@ export function LatexRenderer({ content, className }: LatexRendererProps) {
               <img
                 src={segment.value}
                 alt={segment.alt || "문제 이미지"}
-                className="max-h-[400px] rounded-lg border border-border object-contain"
+                className="max-h-[400px] max-w-full rounded-lg border border-border object-contain"
                 loading="lazy"
               />
             </div>
@@ -200,7 +200,7 @@ export function LatexRenderer({ content, className }: LatexRendererProps) {
           return (
             <div
               key={i}
-              className="my-3"
+              className="my-3 overflow-x-auto"
               dangerouslySetInnerHTML={{
                 __html: renderKatex(segment.value, true),
               }}

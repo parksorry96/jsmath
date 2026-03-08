@@ -16,7 +16,6 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { LatexRenderer } from "@/components/math/latex-renderer";
 import { api } from "@/lib/api";
 
 interface Problem {
@@ -87,6 +86,17 @@ function difficultyColor(d: number | null): string {
   if (d <= 2) return "bg-green-900/30 text-green-400";
   if (d <= 4) return "bg-yellow-900/30 text-yellow-400";
   return "bg-red-900/30 text-red-400";
+}
+
+function stripLatexForPreview(text: string): string {
+  return text
+    .replace(/\$\$[\s\S]*?\$\$/g, '[수식]')  // block math
+    .replace(/\$[^$]+?\$/g, '[수식]')          // inline math
+    .replace(/\\[a-zA-Z]+\{[^}]*\}/g, '')     // \command{...}
+    .replace(/\\[a-zA-Z]+/g, '')               // \command
+    .replace(/[{}]/g, '')                       // stray braces
+    .replace(/\s+/g, ' ')                       // collapse whitespace
+    .trim();
 }
 
 const PAGE_SIZE = 20;
@@ -241,16 +251,11 @@ export default function ProblemsPage() {
                       (page - 1) * PAGE_SIZE + index + 1}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">
-                      <LatexRenderer
-                        content={
-                          (problem.stemText || problem.stemLatex || "")
-                            .split("\n")[0]
-                            .slice(0, 120)
-                        }
-                        className="inline"
-                      />
-                    </div>
+                    <p className="truncate text-sm font-medium">
+                      {stripLatexForPreview(
+                        (problem.stemText || problem.stemLatex || "").split("\n")[0].slice(0, 120)
+                      )}
+                    </p>
                     <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                       {problem.subject && <span>{problem.subject}</span>}
                       {problem.unitMajor && (

@@ -299,12 +299,13 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
   }) {
     const fileHash = createHash("sha256").update(file.buffer).digest("hex");
 
-    // Idempotency: return existing record if same file already uploaded
+    // Idempotency: same file + same document type → return existing
+    const docType = meta?.documentType ?? "exam";
     const existing = await this.prisma.sourceFile.findUnique({
       where: { fileHash },
       include: { ocrJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
     });
-    if (existing) {
+    if (existing && existing.documentType === docType) {
       return {
         id: existing.id,
         filename: existing.filename,
@@ -312,8 +313,41 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
         jobId: existing.ocrJobs[0]?.id ?? null,
       };
     }
+    // Same file but different type → update source and re-process
+    if (existing) {
+      await this.prisma.sourceFile.update({
+        where: { id: existing.id },
+        data: { documentType: docType, bookTitle: meta?.bookTitle, publisher: meta?.publisher },
+      });
+      const ocrJob = await this.prisma.ocrJob.create({
+        data: {
+          sourceFileId: existing.id,
+          documentType: docType,
+          bookTitle: meta?.bookTitle ?? null,
+          publisher: meta?.publisher ?? null,
+        },
+      });
+      await this.redisPublisher.publish(
+        "ocr:submit",
+        JSON.stringify({
+          jobId: ocrJob.id,
+          sourceFileId: existing.id,
+          s3Key: existing.s3Key,
+          filename: existing.filename,
+          documentType: docType,
+          bookTitle: meta?.bookTitle ?? null,
+          publisher: meta?.publisher ?? null,
+        }),
+      );
+      return {
+        id: existing.id,
+        filename: existing.filename,
+        status: "pending",
+        jobId: ocrJob.id,
+      };
+    }
 
-    const s3Key = `uploads/${uploaderId}/${Date.now()}-${file.originalname}`;
+    const s3Key = `uploads/${uploaderId}/${crypto.randomUUID()}.pdf`;
 
     try {
       await this.s3.send(
@@ -330,7 +364,7 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
 
     const sourceFile = await this.prisma.sourceFile.create({
       data: {
-        filename: file.originalname,
+        filename: file.originalname.normalize("NFC"),
         s3Key,
         fileHash,
         sizeBytes: file.size,

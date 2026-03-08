@@ -61,11 +61,11 @@ interface Assignment {
   title: string;
   description: string | null;
   type: string;
-  dueDate: string | null;
+  dueAt: string | null;
   maxScore: number;
   status: string;
   createdAt: string;
-  class?: { id: string; name: string; _count?: { enrollments: number } };
+  class?: { id: string; title: string; _count?: { enrollments: number } };
   problems?: AssignmentProblem[];
 }
 
@@ -767,14 +767,14 @@ export default function AssignmentDetailPage() {
           {assignment.class && (
             <span className="flex items-center gap-1">
               <Users className="h-3.5 w-3.5" />
-              {assignment.class.name}
+              {assignment.class.title}
             </span>
           )}
           <Badge variant="outline">{typeLabel}</Badge>
-          {assignment.dueDate && (
+          {assignment.dueAt && (
             <span className="flex items-center gap-1">
               <Calendar className="h-3.5 w-3.5" />
-              {formatDate(assignment.dueDate)}
+              {formatDate(assignment.dueAt)}
             </span>
           )}
           <span>배점: {assignment.maxScore}점</span>

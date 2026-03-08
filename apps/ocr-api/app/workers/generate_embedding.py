@@ -79,6 +79,88 @@ async def generate_embedding_async(
     return await _generate(problem_id, stage1_result)
 
 
+async def generate_embeddings_batch(
+    items: list[tuple[str, dict | None]],
+) -> list[dict]:
+    """Batch embedding generation — single API call for multiple problems.
+
+    Args:
+        items: list of (problem_id, stage1_result) tuples.
+
+    Returns:
+        list of result dicts with problem_id and embedding_generated.
+    """
+    if not items:
+        return []
+
+    if not settings.ai_api_key:
+        logger.warning("AI_API_KEY missing; skipping batch embedding")
+        return [{"problem_id": pid, "embedding_generated": False} for pid, _ in items]
+
+    # Build texts for all problems in one DB query
+    problem_ids = [pid for pid, _ in items]
+    stage1_map = {pid: s1 for pid, s1 in items}
+
+    async with worker_session() as session:
+        result = await session.execute(
+            select(Problem)
+            .options(selectinload(Problem.choices))
+            .where(Problem.id.in_(problem_ids))
+        )
+        problems = {p.id: p for p in result.scalars().all()}
+
+    texts: list[str] = []
+    valid_ids: list[str] = []
+    for pid in problem_ids:
+        problem = problems.get(pid)
+        if not problem:
+            logger.warning("Problem %s not found for embedding", pid)
+            continue
+        s1 = stage1_map.get(pid)
+        strategy = None
+        if s1 and isinstance(s1, dict):
+            strategy = s1.get("solution_strategy")
+        if not strategy:
+            strategy = problem.solution_strategy
+        texts.append(_build_embedding_text(problem, strategy))
+        valid_ids.append(pid)
+
+    if not texts:
+        return [{"problem_id": pid, "embedding_generated": False} for pid in problem_ids]
+
+    client = get_openai_client()
+
+    try:
+        response = await client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=texts,
+        )
+    except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
+        logger.warning("Batch embedding API error: %s", exc)
+        raise
+    except Exception:
+        logger.exception("Batch embedding failed for %d problems", len(texts))
+        return [{"problem_id": pid, "embedding_generated": False} for pid in problem_ids]
+
+    # Store all embeddings in one DB session
+    embeddings = {valid_ids[i]: response.data[i].embedding for i in range(len(valid_ids))}
+    async with worker_session() as session:
+        result = await session.execute(
+            select(Problem).where(Problem.id.in_(valid_ids))
+        )
+        for problem in result.scalars().all():
+            emb = embeddings.get(problem.id)
+            if emb:
+                problem.embedding = emb
+        await session.commit()
+
+    logger.info("Batch generated embeddings for %d problems", len(valid_ids))
+    return [
+        {"problem_id": pid, "embedding_generated": pid in embeddings}
+        for pid in problem_ids
+    ]
+
+
 async def _generate(problem_id: str, stage1_result: dict | None) -> dict:
     async with worker_session() as session:
         result = await session.execute(

@@ -37,7 +37,7 @@ import {
 
 interface ClassItem {
   id: string;
-  name: string;
+  title: string;
 }
 
 interface Lesson {
@@ -587,7 +587,7 @@ export default function CalendarPage() {
                 <SelectContent>
                   {classes.map((cls) => (
                     <SelectItem key={cls.id} value={cls.id}>
-                      {cls.name}
+                      {cls.title}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import {
   Upload,
   FileUp,
@@ -62,6 +62,7 @@ export default function UploadPage() {
   const [publisher, setPublisher] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sseRef = useRef<Map<string, EventSource>>(new Map());
+  const reconnectTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const updateFile = useCallback(
     (id: string, updates: Partial<UploadedFile>) => {
@@ -74,7 +75,9 @@ export default function UploadPage() {
 
   const startSSE = useCallback(
     (uploadId: string, jobId: string) => {
-      const es = new EventSource(`${API_URL}/files/${jobId}/events`);
+      // Close existing connection for this upload if any
+      const existing = sseRef.current.get(uploadId);
+      if (existing) existing.close();
 
       const stageProgress: Record<string, number> = documentType === 'textbook'
         ? {
@@ -88,36 +91,50 @@ export default function UploadPage() {
             analysis_complete: 100,
           };
 
-      es.addEventListener("progress", (e) => {
-        try {
-          const data = JSON.parse(e.data) as {
-            stage: string;
-            current: number;
-            total: number;
-            message: string;
-          };
+      let reconnectDelay = 1000;
 
-          const percent = stageProgress[data.stage] ?? 50;
+      function connect() {
+        const es = new EventSource(`${API_URL}/files/${jobId}/events`);
+        sseRef.current.set(uploadId, es);
 
-          if (data.stage === "analysis_complete") {
-            updateFile(uploadId, { status: "completed", progress: 100 });
-            toast.success("분석 완료! 검수 페이지에서 확인하세요.");
-            es.close();
-            sseRef.current.delete(uploadId);
-          } else {
-            updateFile(uploadId, { status: "processing", progress: percent });
+        es.addEventListener("progress", (e) => {
+          try {
+            const data = JSON.parse(e.data) as {
+              stage: string;
+              current: number;
+              total: number;
+              message: string;
+            };
+
+            reconnectDelay = 1000; // reset on success
+            const percent = stageProgress[data.stage] ?? 50;
+
+            if (data.stage === "analysis_complete") {
+              updateFile(uploadId, { status: "completed", progress: 100 });
+              toast.success("분석 완료! 검수 페이지에서 확인하세요.");
+              es.close();
+              sseRef.current.delete(uploadId);
+            } else {
+              updateFile(uploadId, { status: "processing", progress: percent });
+            }
+          } catch {
+            // Ignore parse errors
           }
-        } catch {
-          // Ignore parse errors
-        }
-      });
+        });
 
-      es.onerror = () => {
-        es.close();
-        sseRef.current.delete(uploadId);
-      };
+        es.onerror = () => {
+          es.close();
+          sseRef.current.delete(uploadId);
+          // Auto-reconnect with backoff (up to 10s)
+          const timer = setTimeout(() => {
+            reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
+            connect();
+          }, reconnectDelay);
+          reconnectTimers.current.set(uploadId, timer);
+        };
+      }
 
-      sseRef.current.set(uploadId, es);
+      connect();
     },
     [updateFile, documentType],
   );
@@ -299,6 +316,53 @@ export default function UploadPage() {
     [processFiles],
   );
 
+  // Restore in-progress jobs on page mount
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    fetch(`${API_URL}/files`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((res) => res.json())
+      .then((data: Array<{
+        id: string;
+        filename: string;
+        ocrJobId: string | null;
+        ocrStatus: string | null;
+        problemCount: number;
+        documentType: string;
+      }>) => {
+        const inProgress = data.filter(
+          (f) => f.ocrStatus === "pending" || f.ocrStatus === "processing",
+        );
+        if (inProgress.length === 0) return;
+
+        const restored: UploadedFile[] = inProgress.map((f) => ({
+          id: `restored-${f.ocrJobId ?? f.id}`,
+          name: f.filename,
+          size: 0,
+          status: "processing" as UploadStatus,
+          progress: 30,
+          fileId: f.id,
+        }));
+
+        setFiles((prev) => {
+          const existingIds = new Set(prev.map((p) => p.fileId));
+          const newOnes = restored.filter((r) => !existingIds.has(r.fileId));
+          return [...newOnes, ...prev];
+        });
+
+        for (const f of inProgress) {
+          if (f.ocrJobId) {
+            startSSE(`restored-${f.ocrJobId}`, f.ocrJobId);
+          }
+        }
+      })
+      .catch(() => {
+        // Silently ignore — non-critical
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const removeFile = (index: number) => {
     const file = files[index];
     // Cancel ongoing upload
@@ -310,6 +374,12 @@ export default function UploadPage() {
     if (es) {
       es.close();
       sseRef.current.delete(file.id);
+    }
+    // Clear reconnect timer
+    const timer = reconnectTimers.current.get(file.id);
+    if (timer) {
+      clearTimeout(timer);
+      reconnectTimers.current.delete(file.id);
     }
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
@@ -330,14 +400,14 @@ export default function UploadPage() {
               <input type="radio" name="docType" value="exam"
                 checked={documentType === 'exam'}
                 onChange={() => setDocumentType('exam')}
-                className="accent-blue-600" />
+                className="accent-[#DFD0B8]" />
               <span className="text-sm font-medium">시험지</span>
             </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="radio" name="docType" value="textbook"
                 checked={documentType === 'textbook'}
                 onChange={() => setDocumentType('textbook')}
-                className="accent-blue-600" />
+                className="accent-[#DFD0B8]" />
               <span className="text-sm font-medium">교재</span>
             </label>
           </div>
@@ -349,14 +419,14 @@ export default function UploadPage() {
                 placeholder="책 제목 (필수)"
                 value={bookTitle}
                 onChange={e => setBookTitle(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-border rounded-lg bg-brand-charcoal text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-brand-beige focus:border-brand-beige"
               />
               <input
                 type="text"
                 placeholder="출판사 (선택)"
                 value={publisher}
                 onChange={e => setPublisher(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-border rounded-lg bg-brand-charcoal text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-brand-beige focus:border-brand-beige"
               />
             </div>
           )}

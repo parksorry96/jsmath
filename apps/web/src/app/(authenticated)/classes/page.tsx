@@ -6,7 +6,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
@@ -21,52 +21,32 @@ import { Textarea } from "@/components/ui/textarea";
 
 interface ClassItem {
   id: string;
-  name: string;
+  title: string;
   description: string | null;
-  grade: number | null;
-  status: string;
   _count?: {
     enrollments: number;
   };
 }
 
-interface PaginatedResponse<T> {
-  data: T[];
-  total: number;
-  page: number;
-  limit: number;
-}
-
-const statusMap: Record<
-  string,
-  { label: string; variant: "default" | "secondary" }
-> = {
-  active: { label: "진행중", variant: "default" },
-  inactive: { label: "비활성", variant: "secondary" },
-};
-
 export default function ClassesPage() {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
+  const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [grade, setGrade] = useState("");
 
   const classesQuery = useQuery({
     queryKey: ["classes"],
-    queryFn: () =>
-      api.get<ClassItem[] | PaginatedResponse<ClassItem>>("/classes"),
+    queryFn: () => api.get<ClassItem[]>("/classes"),
   });
 
   const createMutation = useMutation({
-    mutationFn: (body: { name: string; description?: string; grade?: number }) =>
+    mutationFn: (body: { title: string; description?: string }) =>
       api.post("/classes", body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["classes"] });
       setOpen(false);
-      setName("");
+      setTitle("");
       setDescription("");
-      setGrade("");
     },
   });
 
@@ -77,18 +57,13 @@ export default function ClassesPage() {
     },
   });
 
-  const classes: ClassItem[] = classesQuery.data
-    ? Array.isArray(classesQuery.data)
-      ? classesQuery.data
-      : classesQuery.data.data
-    : [];
+  const classes: ClassItem[] = classesQuery.data ?? [];
 
   const handleCreate = () => {
-    if (!name.trim()) return;
+    if (!title.trim()) return;
     createMutation.mutate({
-      name: name.trim(),
+      title: title.trim(),
       description: description.trim() || undefined,
-      grade: grade ? Number(grade) : undefined,
     });
   };
 
@@ -112,12 +87,12 @@ export default function ClassesPage() {
             </DialogHeader>
             <div className="space-y-4 pt-2">
               <div className="space-y-2">
-                <Label htmlFor="class-name">반 이름</Label>
+                <Label htmlFor="class-title">반 이름</Label>
                 <Input
-                  id="class-name"
+                  id="class-title"
                   placeholder="예: 고1-A반"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
                 />
               </div>
               <div className="space-y-2">
@@ -129,22 +104,10 @@ export default function ClassesPage() {
                   onChange={(e) => setDescription(e.target.value)}
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="class-grade">학년</Label>
-                <Input
-                  id="class-grade"
-                  type="number"
-                  min={1}
-                  max={12}
-                  placeholder="예: 10"
-                  value={grade}
-                  onChange={(e) => setGrade(e.target.value)}
-                />
-              </div>
               <Button
                 className="w-full"
                 onClick={handleCreate}
-                disabled={!name.trim() || createMutation.isPending}
+                disabled={!title.trim() || createMutation.isPending}
               >
                 {createMutation.isPending ? "생성 중..." : "생성"}
               </Button>
@@ -187,20 +150,14 @@ export default function ClassesPage() {
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {classes.map((cls) => {
-            const status = statusMap[cls.status] ?? {
-              label: cls.status,
-              variant: "secondary" as const,
-            };
-            return (
+          {classes.map((cls) => (
               <Card
                 key={cls.id}
                 className="cursor-pointer transition-colors hover:border-brand-beige"
               >
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between">
-                    <h3 className="font-semibold">{cls.name}</h3>
-                    <Badge variant={status.variant}>{status.label}</Badge>
+                    <h3 className="font-semibold">{cls.title}</h3>
                   </div>
                   {cls.description && (
                     <p className="mt-2 text-sm text-muted-foreground">
@@ -226,8 +183,7 @@ export default function ClassesPage() {
                   </div>
                 </CardContent>
               </Card>
-            );
-          })}
+          ))}
         </div>
       )}
     </div>

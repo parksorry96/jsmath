@@ -122,6 +122,7 @@ _PAST_EXAM_YEAR_PATTERN = re.compile(r"(\d{4}학년도\s*(?:수능|6월모의평
 
 _INLINE_BLOCK_PATTERNS = [
     re.compile(r"^\s*잠깐이?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*길잡이"),  # hint block (may have content on same line)
     re.compile(r"^\s*풀이\s"),  # "풀이 " followed by content (not standalone)
     re.compile(r"^\s*풀이\s*$"),  # standalone "풀이"
     re.compile(r"^\s*[답달뎔]\s*[①②③④⑤\d(]"),  # "답 ④" or "답 (3)" — includes OCR variants 달/뎔
@@ -191,8 +192,13 @@ def segment_textbook(
     problem_pages = prev_result.get("problem_pages") if prev_result else None
     answer_pages = prev_result.get("answer_pages") if prev_result else None
     has_quick_answers = prev_result.get("has_quick_answers", False) if prev_result else False
+    quick_answer_pages = prev_result.get("quick_answer_pages") if prev_result else None
 
-    return asyncio.run(_segment(ocr_job_id, problem_pages, answer_pages, has_quick_answers))
+    result = asyncio.run(_segment(ocr_job_id, problem_pages, answer_pages, has_quick_answers))
+    # Forward quick_answer_pages for match_answers
+    if quick_answer_pages is not None:
+        result["quick_answer_pages"] = quick_answer_pages
+    return result
 
 
 async def _segment(
@@ -530,6 +536,13 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
 
     # Stop processing after quick_answer or answer_detail sections
     stop_processing = False
+    # Track last flushed local number per (chapter_prefix, section_type)
+    # so practice numbering persists across multiple "유제" sub-sections in a chapter
+    _last_flushed: dict[tuple[str, str], str] = {}
+
+    def _last_key() -> tuple[str, str]:
+        ch_prefix = (current_chapter or "")[:2]
+        return (ch_prefix, current_section_type or "practice")
 
     def _flush_problem(end_page: int) -> None:
         """Flush the current problem into segments."""
@@ -544,6 +557,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
         if inline_solution_parts:
             current_inline_solution = "\n".join(inline_solution_parts)
 
+        key = _last_key()
         if current_stem_lines and current_local_number is not None:
             segments.append(_build_ebs_segment(
                 current_stem_lines,
@@ -559,6 +573,30 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 inline_answer=current_inline_answer,
                 inline_hint=current_inline_hint,
             ))
+            _last_flushed[key] = current_local_number
+        elif current_stem_lines and current_item_code is not None:
+            # Has item_code and content but no local_number —
+            # infer from last flushed problem in this (chapter, type) group
+            prev = _last_flushed.get(key)
+            if prev is not None and prev.isdigit():
+                inferred = str(int(prev) + 1)
+            else:
+                inferred = "1"
+            segments.append(_build_ebs_segment(
+                current_stem_lines,
+                current_page_start,
+                end_page,
+                item_code=current_item_code,
+                section_type=current_section_type or "practice",
+                section_label=current_section_label,
+                local_number=inferred,
+                display_number=f"{current_section_label} {inferred}",
+                chapter=current_chapter,
+                inline_solution=current_inline_solution,
+                inline_answer=current_inline_answer,
+                inline_hint=current_inline_hint,
+            ))
+            _last_flushed[key] = inferred
 
         # Reset problem state
         current_item_code = None
@@ -593,6 +631,8 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     or current_section_type == "level_pending"
                     or _EBS_CHAPTER_PATTERN.match(stripped_pi) is not None
                     or _EXAMPLE_PATTERN.match(stripped_pi) is not None
+                    # Allow item codes through — they mark problem boundaries
+                    or _match_item_code(stripped_pi) is not None
                     # Allow "답" lines through for inline answer capture on examples/past_exam
                     or (current_section_type in ("example", "past_exam")
                         and current_local_number is not None
@@ -680,11 +720,46 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
             # 3. Check for item code [XXXXX-XXXX]
             item_code = _match_item_code(text)
             if item_code:
+                # Extract local number from the item code line itself
+                # e.g. "$\mathbf{6}$\n[26008-0006]$" → number "6"
+                code_line_number: str | None = None
+                text_before_code = _ITEM_CODE_PATTERN.split(text)[0].strip()
+                if text_before_code:
+                    m_code_num = re.search(r"(\d{1,3})", text_before_code)
+                    if m_code_num:
+                        code_line_number = str(int(m_code_num.group(1)))
+
                 if current_item_code is not None:
-                    # Previous item-code problem exists — flush it
+                    # Text-first ordering: check if tail lines belong to next problem.
+                    # Walk backwards past choice lines, find a line with leading number.
+                    next_problem_lines: list[OcrLine] = []
+                    if current_stem_lines and current_local_number is not None:
+                        cur_int = int(current_local_number) if current_local_number.isdigit() else 0
+                        # Find split point: line starting with number > current
+                        # Use lenient pattern (no space required) — sequential check prevents false positives
+                        for i in range(len(current_stem_lines) - 1, max(0, len(current_stem_lines) - 6) - 1, -1):
+                            sl_text = current_stem_lines[i].text.strip()
+                            m_split = re.match(r"^\$?(\d{1,3})(?!\d)", sl_text)
+                            if m_split:
+                                candidate = int(m_split.group(1))
+                                if cur_int < candidate <= cur_int + 3:
+                                    next_problem_lines = current_stem_lines[i:]
+                                    current_stem_lines = current_stem_lines[:i]
+                                break
                     _flush_problem(page.page_number)
                     current_item_code = item_code
                     current_page_start = page.page_number
+                    # Use number from this item code line
+                    if code_line_number:
+                        current_local_number = code_line_number
+                        current_display = f"{current_section_label} {code_line_number}"
+                    # Or carry over retroactive lines to the new problem
+                    elif next_problem_lines:
+                        current_stem_lines = next_problem_lines
+                        m_next = _LEADING_NUMBER.match(next_problem_lines[0].text.strip())
+                        if m_next:
+                            current_local_number = str(int(m_next.group(1)))
+                            current_display = f"{current_section_label} {current_local_number}"
                 elif current_stem_lines and current_local_number is not None:
                     # Lines with local number accumulated before item code (text-first ordering)
                     # Attach item code to current problem
@@ -714,6 +789,20 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     if re.match(r"^\s*잠깐이?\s*$", stripped, re.IGNORECASE):
                         inline_block_mode = "hint"
                         continue
+                    elif re.match(r"^\s*길잡이", stripped):
+                        inline_block_mode = "hint"
+                        # Capture content on same line after "길잡이"
+                        hint_content = re.sub(r"^\s*길잡이\s*", "", stripped)
+                        if hint_content:
+                            inline_hint_parts.append(hint_content)
+                        continue
+                    elif re.match(r"^\s*풀이\s", stripped):
+                        inline_block_mode = "solution"
+                        # Capture content on same line after "풀이"
+                        sol_content = re.sub(r"^\s*풀이\s+", "", stripped)
+                        if sol_content:
+                            inline_solution_parts.append(sol_content)
+                        continue
                     elif re.match(r"^\s*풀이\s*$", stripped):
                         inline_block_mode = "solution"
                         continue
@@ -722,8 +811,8 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                         inline_block_mode = None
                         continue
                     else:
-                        # 출제의도, 출제경향 — skip
-                        inline_block_mode = None
+                        # 출제의도, 출제경향 — skip content (don't leak into stem)
+                        inline_block_mode = "skip"
                         continue
 
                 # Accumulate into current inline block
@@ -733,31 +822,63 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 if inline_block_mode == "solution":
                     inline_solution_parts.append(text)
                     continue
+                if inline_block_mode == "skip":
+                    continue
 
             # 5. Check for EBS chapter headers ("01 지수와 로그") — before number extraction
             ebs_ch = _EBS_CHAPTER_PATTERN.match(text)
             if ebs_ch:
+                _flush_problem(page.page_number)
                 current_chapter = text.strip()
+                # Reset section state — concept text follows chapter header
+                current_section_type = None
+                current_section_label = ""
                 continue
 
             # 6. If we just got an item code but no local number yet, check for it
             if current_item_code is not None and current_local_number is None:
-                # Try standalone number first
+                # Try standalone number first (very reliable)
                 m = _LOCAL_NUMBER_PATTERN.match(text)
                 if m:
-                    current_local_number = str(int(m.group(1)))  # Strip leading zeros
+                    current_local_number = str(int(m.group(1)))
                     current_display = f"{current_section_label} {current_local_number}"
                     continue
                 # Try leading number embedded in text (e.g. "$1 \sqrt...")
+                # Validate against sequence to avoid OCR false positives like "$1 a>1$"
                 m2 = _LEADING_NUMBER.match(text)
                 if m2:
-                    current_local_number = str(int(m2.group(1)))  # Strip leading zeros
-                    current_display = f"{current_section_label} {current_local_number}"
-                    current_stem_lines.append(line)
-                    continue
+                    candidate = int(m2.group(1))
+                    prev = _last_flushed.get(_last_key())
+                    prev_int = int(prev) if prev and prev.isdigit() else 0
+                    if candidate >= prev_int:
+                        current_local_number = str(candidate)
+                        current_display = f"{current_section_label} {current_local_number}"
+                        current_stem_lines.append(line)
+                        continue
+                    # else: false positive — fall through to accumulate without local_number
 
             # 7. Accumulate line into current problem stem
             if current_local_number is not None:
+                # Check if this line starts a NEW problem (different leading number)
+                # Only for practice/level sections where problems are number-delimited
+                # Use strict pattern: bare number at line start (no $ prefix),
+                # and number must be sequential (within +5 of current)
+                if current_section_type in ("practice", "level1", "level2", "level3"):
+                    m_new = re.match(
+                        r"^\$?(\d{1,3})\s+(?!\\leq|\\geq|\\le(?![a-z])|\\ge(?![a-z])|[<>]|이상|이하)", text
+                    )
+                    if m_new:
+                        new_num = str(int(m_new.group(1)))
+                        cur_int = int(current_local_number) if current_local_number.isdigit() else 0
+                        new_int = int(new_num)
+                        if cur_int < new_int <= cur_int + 5:
+                            _flush_problem(page.page_number)
+                            current_local_number = new_num
+                            current_display = f"{current_section_label} {current_local_number}"
+                            current_stem_lines = [line]
+                            current_page_start = page.page_number
+                            inline_block_mode = None
+                            continue
                 current_stem_lines.append(line)
             elif current_section_type in ("practice", "level1", "level2", "level3", "past_exam"):
                 # Accumulate even without local number (text-first ordering)
@@ -765,10 +886,15 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 if current_page_start == 0:
                     current_page_start = page.page_number
                 # Try to extract local number from this line
+                # Validate against sequence to avoid OCR false positives
                 m3 = _LEADING_NUMBER.match(text)
                 if m3:
-                    current_local_number = str(int(m3.group(1)))  # Strip leading zeros
-                    current_display = f"{current_section_label} {current_local_number}"
+                    candidate = int(m3.group(1))
+                    prev = _last_flushed.get(_last_key())
+                    prev_int = int(prev) if prev and prev.isdigit() else 0
+                    if candidate >= prev_int:
+                        current_local_number = str(candidate)
+                        current_display = f"{current_section_label} {current_local_number}"
 
     # Flush last problem
     last_page = pages[-1].page_number if pages else 0

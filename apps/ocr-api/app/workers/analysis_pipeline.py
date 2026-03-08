@@ -1,8 +1,12 @@
-"""Analysis pipeline orchestration — batch processing with batched GPT calls.
+"""Analysis pipeline orchestration — maximum throughput parallel processing.
 
-Groups problems into batches of BATCH_SIZE (default 5, textbook 10),
-sends each batch as a single GPT call, then runs downstream steps
-(rules, embedding, similarity, auto-review) for each successful result.
+Speed optimizations:
+1. Per-problem streaming pipeline (no batch gating)
+   — Each problem flows GPT→rules→embed→similar→review independently
+   — Fast problems don't wait for slow problems
+2. Semaphore-controlled concurrency (avoid API rate limits)
+3. Individual embedding (skip batching to enable pipelining)
+4. Increased Celery batch size (50) to minimize task overhead
 """
 
 from __future__ import annotations
@@ -20,8 +24,12 @@ from app.services.redis_events import notify_analysis_completed, notify_analysis
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 10
-TEXTBOOK_BATCH_SIZE = 10
+BATCH_SIZE = 50
+TEXTBOOK_BATCH_SIZE = 50
+
+# Max concurrent GPT calls per Celery task
+# High value to maximize parallelism — OpenAI handles rate limiting server-side
+MAX_CONCURRENT_GPT = 100
 
 # ─── Pipeline entry point ───
 
@@ -31,9 +39,7 @@ def start_analysis_pipeline(
 ) -> str:
     """Kick off AI analysis for problems in batches.
 
-    Each batch fires concurrent GPT calls, then processes
-    downstream steps (rules, embedding, similarity, auto-review).
-    Uses larger batch size for textbooks (simpler problems).
+    Each batch fires concurrent per-problem pipelines with no stage gating.
     """
     batch_size = TEXTBOOK_BATCH_SIZE if is_textbook else BATCH_SIZE
     batches = [
@@ -68,79 +74,81 @@ def start_analysis_pipeline(
     time_limit=660,
 )
 def batch_analyze(self, *, problem_ids: list[str]) -> list[dict]:
-    """Process a batch of problems: batch GPT → rules → embedding → similar → review."""
+    """Process a batch: per-problem streaming pipeline with no stage gating."""
     return asyncio.run(_process_batch(problem_ids))
 
 
 async def _process_batch(problem_ids: list[str]) -> list[dict]:
-    """Full pipeline for a batch. Single GPT call for all problems."""
+    """Stream each problem through the full pipeline independently.
+
+    No stage gating: as soon as a problem's GPT call completes,
+    it immediately flows through rules→embed→similar→review
+    without waiting for other problems.
+    """
+    logger.info("Batch start: %d problems", len(problem_ids))
+
+    sem = asyncio.Semaphore(MAX_CONCURRENT_GPT)
+    results = await asyncio.gather(
+        *[_process_single(pid, sem) for pid in problem_ids],
+        return_exceptions=True,
+    )
+
+    final: list[dict] = []
+    for pid, result in zip(problem_ids, results):
+        if isinstance(result, Exception):
+            logger.error("Pipeline failed for %s: %s", pid, result)
+            await _mark_problem_failed(pid, str(result))
+            final.append({"problem_id": pid, "decision": "failed", "error": str(result)})
+        elif isinstance(result, dict):
+            final.append(result)
+        else:
+            final.append({"problem_id": pid, "decision": "failed", "error": "Unknown error"})
+
+    ok = sum(1 for r in final if r.get("decision") != "failed")
+    logger.info("Batch done: %d/%d succeeded", ok, len(problem_ids))
+    return final
+
+
+async def _process_single(problem_id: str, sem: asyncio.Semaphore) -> dict:
+    """Full pipeline for a single problem — no waiting on other problems.
+
+    GPT call is semaphore-gated; downstream steps run immediately after.
+    """
     from app.workers.detect_exam_pattern import _apply_rules
     from app.workers.generate_embedding import generate_embedding_async
     from app.workers.find_similar import _find
     from app.workers.auto_review import _review
-    from app.workers.unified_analysis import analyze_problems_batch
+    from app.workers.unified_analysis import analyze_problem
 
-    logger.info("Batch start: %d problems %s", len(problem_ids), problem_ids)
+    # Stage 1: GPT analysis (semaphore-controlled)
+    async with sem:
+        gpt_result = await analyze_problem(problem_id)
 
-    # ── Stage 1: Batch GPT analysis (single API call for all problems) ──
-    succeeded: list[tuple[str, dict]] = []
-    failed_results: list[dict] = []
+    if not gpt_result.get("problem_id"):
+        return {"problem_id": problem_id, "decision": "failed", "error": "GPT returned no result"}
+
+    # Stage 2-5: Run immediately, no waiting for other problems
+    try:
+        await _apply_rules(problem_id, gpt_result)
+    except Exception as exc:
+        logger.warning("Rules failed for %s: %s", problem_id, exc)
 
     try:
-        batch_results = await analyze_problems_batch(problem_ids)
-        result_map = {r["problem_id"]: r for r in batch_results}
-        for pid in problem_ids:
-            if pid in result_map:
-                succeeded.append((pid, result_map[pid]))
-            else:
-                logger.error("Problem %s missing from batch GPT result", pid)
-                await _mark_problem_failed(pid, "Missing from batch GPT result")
-                failed_results.append({"problem_id": pid, "decision": "failed", "error": "Missing from batch result"})
+        await generate_embedding_async(problem_id, gpt_result)
     except Exception as exc:
-        logger.error("Batch GPT analysis failed for %d problems: %s", len(problem_ids), exc)
-        for pid in problem_ids:
-            await _mark_problem_failed(pid, str(exc))
-            failed_results.append({"problem_id": pid, "decision": "failed", "error": str(exc)})
-        return failed_results
+        logger.warning("Embedding failed for %s: %s", problem_id, exc)
 
-    if not succeeded:
-        return failed_results
+    try:
+        await _find(problem_id)
+    except Exception as exc:
+        logger.warning("Similarity failed for %s: %s", problem_id, exc)
 
-    # ── Stage 2: Apply deterministic rules + save to DB (concurrent, fast) ──
-    await asyncio.gather(
-        *[_apply_rules(pid, result) for pid, result in succeeded],
-        return_exceptions=True,
-    )
-
-    # ── Stage 3: Generate embeddings (concurrent API calls) ──
-    await asyncio.gather(
-        *[generate_embedding_async(pid, result) for pid, result in succeeded],
-        return_exceptions=True,
-    )
-
-    # ── Stage 4: Find similar problems (concurrent pgvector queries) ──
-    await asyncio.gather(
-        *[_find(pid) for pid, _ in succeeded],
-        return_exceptions=True,
-    )
-
-    # ── Stage 5: Auto review (concurrent, fast) ──
-    review_results = await asyncio.gather(
-        *[_review(pid) for pid, _ in succeeded],
-        return_exceptions=True,
-    )
-
-    final_results = list(failed_results)
-    for (pid, _), review in zip(succeeded, review_results):
-        if isinstance(review, dict):
-            final_results.append(review)
-        else:
-            logger.error("Review failed for %s: %s", pid, review)
-            final_results.append({"problem_id": pid, "decision": "failed", "error": str(review)})
-
-    ok = sum(1 for r in final_results if r.get("decision") != "failed")
-    logger.info("Batch done: %d/%d succeeded", ok, len(problem_ids))
-    return final_results
+    try:
+        review_result = await _review(problem_id)
+        return review_result
+    except Exception as exc:
+        logger.warning("Review failed for %s: %s", problem_id, exc)
+        return {"problem_id": problem_id, "decision": "failed", "error": str(exc)}
 
 
 # ─── Helper: mark problem as failed ───
@@ -173,7 +181,6 @@ async def _mark_problem_failed(problem_id: str, error_msg: str) -> None:
 )
 def finalize_analysis(self, batch_results: list, *, ocr_job_id: str, total: int) -> dict:
     """Finalize analysis — flatten batch results, count, and notify NestJS."""
-    # Flatten: batch_results is list[list[dict]]
     results: list[dict] = []
     for batch in batch_results:
         if isinstance(batch, list):
@@ -223,7 +230,7 @@ def finalize_analysis(self, batch_results: list, *, ocr_job_id: str, total: int)
     }
 
 
-# ─── Legacy support: merge_stage1_results (kept for backwards compatibility) ──
+# ─── Legacy support: merge_stage1_results ──
 
 
 @celery.task(

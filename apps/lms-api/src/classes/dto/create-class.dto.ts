@@ -10,6 +10,6 @@ export class CreateClassDto {
   description?: string;
 
   @IsString()
-  @IsNotEmpty()
-  organizationId: string;
+  @IsOptional()
+  organizationId?: string;
 }

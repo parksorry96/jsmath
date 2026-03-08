@@ -41,7 +41,7 @@ pnpm --filter @jsmath/db-schema db:migrate
 pnpm --filter @jsmath/db-schema db:generate
 
 # OCR workers
-cd apps/ocr-api && .venv/bin/celery -A app.celery_app worker -l info
+cd apps/ocr-api && .venv/bin/celery -A app.celery_app worker -l info --concurrency=5
 
 # Install
 pnpm install                              # Node deps

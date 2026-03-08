@@ -9,7 +9,6 @@ import {
   ChevronDown,
   Code,
   FileText,
-  Keyboard,
   Inbox,
   Loader2,
   AlertCircle,
@@ -119,15 +118,6 @@ function getConfidence(problem: Problem): number {
   return problem.classificationConfidence ?? 0;
 }
 
-function getFirstAssetS3Key(problem: Problem): string | null {
-  if (!problem.assets || problem.assets.length === 0) return null;
-  // Prefer cropped problem image over full page image
-  const cropAsset = problem.assets.find((a) => a.kind === "problem_crop");
-  if (cropAsset?.s3Key) return cropAsset.s3Key;
-  const pageAsset = problem.assets.find((a) => a.kind === "page_image");
-  return pageAsset?.s3Key ?? problem.assets[0]?.s3Key ?? null;
-}
-
 function getDisplayContent(problem: Problem): string {
   return problem.stemLatex || problem.stemText || "";
 }
@@ -144,19 +134,6 @@ function difficultyBadgeClass(d: number): string {
   if (d <= 2) return "bg-green-500/20 text-green-400 border-green-500/30";
   if (d <= 3) return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
   return "bg-red-500/20 text-red-400 border-red-500/30";
-}
-
-function useAssetUrl(s3Key: string | null) {
-  const { data } = useQuery({
-    queryKey: ["asset-url", s3Key],
-    queryFn: () =>
-      api.get<{ url: string }>(
-        `/files/assets/url?key=${encodeURIComponent(s3Key!)}`,
-      ),
-    enabled: !!s3Key,
-    staleTime: 10 * 60 * 1000,
-  });
-  return data?.url ?? null;
 }
 
 const STATUS_LABELS: Record<string, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
@@ -200,6 +177,9 @@ function formatDate(dateStr: string): string {
     day: "numeric",
   });
 }
+
+type ConfidenceFilter = "all" | "high" | "medium" | "low";
+type StatusFilter = "all" | "pending_review" | "approved" | "rejected";
 
 // --- File List Component ---
 
@@ -306,8 +286,8 @@ function FileListView({
                       <p className="truncate text-sm font-medium">{file.filename}</p>
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                         file.documentType === 'textbook'
-                          ? 'bg-blue-100 text-blue-700'
-                          : 'bg-gray-100 text-gray-600'
+                          ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                          : 'bg-brand-charcoal text-muted-foreground'
                       }`}>
                         {file.documentType === 'textbook' ? '교재' : '시험지'}
                       </span>
@@ -317,7 +297,7 @@ function FileListView({
                       {file.problemCount > 0 && ` · ${file.problemCount}문제`}
                     </p>
                     {file.bookTitle && (
-                      <span className="text-sm text-gray-500">{file.bookTitle}</span>
+                      <span className="text-sm text-muted-foreground">{file.bookTitle}</span>
                     )}
                   </div>
                   <Badge variant={status.variant}>{status.label}</Badge>
@@ -343,6 +323,62 @@ function FileListView({
   );
 }
 
+// --- Compact Problem Strip ---
+
+function ProblemStrip({
+  problems,
+  currentIndex,
+  onSelect,
+}: {
+  problems: Problem[];
+  currentIndex: number;
+  onSelect: (index: number) => void;
+}) {
+  const stripRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const btn = strip.children[currentIndex] as HTMLElement | undefined;
+    if (!btn) return;
+    btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [currentIndex]);
+
+  return (
+    <div
+      ref={stripRef}
+      className="flex gap-1 overflow-x-auto py-1"
+      style={{ scrollbarWidth: "thin" }}
+    >
+      {problems.map((p, i) => {
+        const isActive = i === currentIndex;
+        const statusClass =
+          p.reviewStatus === "approved"
+            ? "bg-green-500/70 text-white"
+            : p.reviewStatus === "rejected"
+              ? "bg-red-500/70 text-white"
+              : p.reviewStatus === "auto_approved"
+                ? "bg-blue-500/70 text-white"
+                : "bg-brand-charcoal text-muted-foreground";
+
+        return (
+          <button
+            key={p.id}
+            onClick={() => onSelect(i)}
+            className={`flex h-7 min-w-[1.75rem] shrink-0 items-center justify-center rounded text-[11px] font-medium transition-all ${statusClass} ${
+              isActive
+                ? "ring-2 ring-brand-beige ring-offset-1 ring-offset-background scale-110 z-10"
+                : "hover:brightness-125"
+            }`}
+          >
+            {i + 1}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // --- Analysis Section Component ---
 
 function AnalysisSection({
@@ -353,10 +389,9 @@ function AnalysisSection({
   ocrJobId: string;
 }) {
   const queryClient = useQueryClient();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const prevStatusRef = useRef(problem.analysisStatus);
 
-  // Auto-expand when status transitions to completed
   useEffect(() => {
     if (prevStatusRef.current !== "completed" && problem.analysisStatus === "completed") {
       setExpanded(true);
@@ -419,17 +454,8 @@ function AnalysisSection({
                 size="sm"
                 onClick={() => analyzeMutation.mutate()}
               >
-                {isFailed ? (
-                  <>
-                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                    다시 분석
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                    AI 분석 시작
-                  </>
-                )}
+                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                {isFailed ? "다시 분석" : "AI 분석 시작"}
               </Button>
             )}
           </div>
@@ -438,7 +464,6 @@ function AnalysisSection({
       {expanded && isCompleted && analysis && (
         <CardContent>
           <div className="space-y-4 rounded-lg border border-border bg-brand-dark p-4 text-sm">
-            {/* Difficulty */}
             {analysis.difficultyRefined != null && (
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">정밀 난이도:</span>
@@ -448,7 +473,6 @@ function AnalysisSection({
               </div>
             )}
 
-            {/* Answer */}
             {analysis.answerText && (
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">정답:</span>
@@ -456,7 +480,6 @@ function AnalysisSection({
               </div>
             )}
 
-            {/* Solution strategy */}
             {analysis.solutionStrategy && (
               <div>
                 <p className="mb-1 font-medium text-muted-foreground">풀이 전략</p>
@@ -464,7 +487,6 @@ function AnalysisSection({
               </div>
             )}
 
-            {/* Required concepts */}
             {analysis.requiredConcepts && analysis.requiredConcepts.length > 0 && (
               <div>
                 <p className="mb-1.5 font-medium text-muted-foreground">필요 개념</p>
@@ -476,7 +498,6 @@ function AnalysisSection({
               </div>
             )}
 
-            {/* Solution steps */}
             {analysis.solutionSteps && analysis.solutionSteps.length > 0 && (
               <div>
                 <p className="mb-1.5 font-medium text-muted-foreground">풀이 단계</p>
@@ -497,7 +518,6 @@ function AnalysisSection({
               </div>
             )}
 
-            {/* Estimated time */}
             {analysis.estimatedTimeSec != null && (
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">예상 풀이시간:</span>
@@ -505,7 +525,6 @@ function AnalysisSection({
               </div>
             )}
 
-            {/* Common mistakes */}
             {analysis.commonMistakes && analysis.commonMistakes.length > 0 && (
               <div>
                 <p className="mb-1.5 font-medium text-muted-foreground">흔한 실수</p>
@@ -519,7 +538,6 @@ function AnalysisSection({
               </div>
             )}
 
-            {/* CSAT info */}
             {(analysis.isCommon != null || analysis.pointValue != null || analysis.positionType || analysis.questionFormat) && (
               <div>
                 <p className="mb-1.5 font-medium text-muted-foreground">수능 정보</p>
@@ -562,12 +580,11 @@ function ProblemReviewView({
   const queryClient = useQueryClient();
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showRawLatex, setShowRawLatex] = useState(false);
-  const [actionFeedback, setActionFeedback] = useState<
-    "approved" | "rejected" | null
-  >(null);
+  const [actionFeedback, setActionFeedback] = useState<"approved" | "rejected" | null>(null);
   const [editingLatex, setEditingLatex] = useState<string | null>(null);
+  const [confidenceFilter, setConfidenceFilter] = useState<ConfidenceFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
-  // Fetch problems for this OCR job
   const {
     data: response,
     isLoading,
@@ -588,14 +605,42 @@ function ProblemReviewView({
     },
   });
 
-  const problems = response?.data ?? [];
+  const allProblems = response?.data ?? [];
   const total = response?.total ?? 0;
+
+  // Client-side filtering
+  const filteredProblems = useMemo(() => {
+    return allProblems.filter((p) => {
+      if (statusFilter !== "all" && p.reviewStatus !== statusFilter) return false;
+      if (confidenceFilter !== "all") {
+        const c = getConfidence(p);
+        if (confidenceFilter === "high" && c < 0.9) return false;
+        if (confidenceFilter === "medium" && (c < 0.75 || c >= 0.9)) return false;
+        if (confidenceFilter === "low" && c >= 0.75) return false;
+      }
+      return true;
+    });
+  }, [allProblems, statusFilter, confidenceFilter]);
+
+  // Use filtered problems for display, but currentIndex refers to filteredProblems
+  const problems = filteredProblems;
   const current = problems[currentIndex] ?? null;
+
+  // Clamp currentIndex when filters change
+  useEffect(() => {
+    setCurrentIndex((i) => Math.min(i, Math.max(0, problems.length - 1)));
+  }, [problems.length]);
 
   // Reset editing state when switching problems
   useEffect(() => {
     setEditingLatex(null);
   }, [currentIndex]);
+
+  // Progress stats (from all problems, not filtered)
+  const reviewedCount = allProblems.filter((p) => p.reviewStatus !== "pending_review").length;
+  const approvedCount = allProblems.filter((p) => p.reviewStatus === "approved" || p.reviewStatus === "auto_approved").length;
+  const rejectedCount = allProblems.filter((p) => p.reviewStatus === "rejected").length;
+  const progressPercent = allProblems.length > 0 ? Math.round((reviewedCount / allProblems.length) * 100) : 0;
 
   // Save LaTeX mutation
   const saveMutation = useMutation({
@@ -620,10 +665,16 @@ function ProblemReviewView({
       setTimeout(() => {
         setActionFeedback(null);
         queryClient.invalidateQueries({ queryKey: ["review-queue", ocrJobId] });
-        if (currentIndex < problems.length - 1) {
+        // Auto-advance to next unreviewed in filtered list
+        const nextIdx = problems.findIndex(
+          (p, i) => i > currentIndex && p.reviewStatus === "pending_review"
+        );
+        if (nextIdx >= 0) {
+          setCurrentIndex(nextIdx);
+        } else if (currentIndex < problems.length - 1) {
           setCurrentIndex((i) => i + 1);
         }
-      }, 600);
+      }, 400);
     },
   });
 
@@ -644,13 +695,6 @@ function ProblemReviewView({
     if (!current || reviewMutation.isPending) return;
     reviewMutation.mutate({ problemId: current.id, action: "rejected" });
   }, [current, reviewMutation]);
-
-  // Asset URL for current problem
-  const currentAssetKey = useMemo(
-    () => (current ? getFirstAssetS3Key(current) : null),
-    [current],
-  );
-  const imageUrl = useAssetUrl(currentAssetKey);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -689,21 +733,10 @@ function ProblemReviewView({
   // --- Loading state ---
   if (isLoading) {
     return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-            PDF 목록
-          </Button>
-          <h1 className="text-2xl font-bold tracking-tight">문제 검수</h1>
-        </div>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Skeleton className="h-[500px] rounded-xl" />
-          <div className="space-y-4">
-            <Skeleton className="h-[300px] rounded-xl" />
-            <Skeleton className="h-[150px] rounded-xl" />
-          </div>
-        </div>
+      <div className="space-y-4">
+        <Skeleton className="h-12 rounded-lg" />
+        <Skeleton className="h-10 rounded-lg" />
+        <Skeleton className="h-[400px] rounded-xl" />
       </div>
     );
   }
@@ -745,7 +778,7 @@ function ProblemReviewView({
   }
 
   // --- Empty state ---
-  if (problems.length === 0) {
+  if (allProblems.length === 0) {
     return (
       <div className="space-y-6">
         <div className="flex items-center gap-3">
@@ -767,356 +800,422 @@ function ProblemReviewView({
     );
   }
 
+  // --- Filter results empty ---
+  if (problems.length === 0) {
+    return (
+      <div className="space-y-4">
+        <StickyHeader
+          filename={filename}
+          onBack={onBack}
+          problems={problems}
+          allProblems={allProblems}
+          currentIndex={0}
+          reviewedCount={reviewedCount}
+          progressPercent={progressPercent}
+          approvedCount={approvedCount}
+          rejectedCount={rejectedCount}
+          confidenceFilter={confidenceFilter}
+          statusFilter={statusFilter}
+          onConfidenceFilter={setConfidenceFilter}
+          onStatusFilter={setStatusFilter}
+          onSelect={setCurrentIndex}
+          onApprove={handleApprove}
+          onReject={handleReject}
+          isPending={reviewMutation.isPending}
+          actionFeedback={actionFeedback}
+        />
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <Inbox className="h-12 w-12 text-muted-foreground" />
+            <p className="mt-4 text-sm text-muted-foreground">
+              필터 조건에 맞는 문제가 없습니다
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-2"
+              onClick={() => { setConfidenceFilter("all"); setStatusFilter("all"); }}
+            >
+              필터 초기화
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const rawLatex = current!.stemLatex || current!.stemText || "";
   const displayContent = editingLatex ?? getDisplayContent(current!);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-            PDF 목록
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">문제 검수</h1>
-            <p className="text-muted-foreground text-sm">{filename}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon">
-                <Keyboard className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">
-              <div className="space-y-1">
-                <p>Enter: 승인</p>
-                <p>Backspace: 거부</p>
-                <p>Arrow Left/Right: 이동</p>
-                <p>Esc: PDF 목록</p>
-              </div>
-            </TooltipContent>
-          </Tooltip>
-        </div>
-      </div>
+    <div className="space-y-4">
+      {/* Sticky header with nav, actions, filters */}
+      <StickyHeader
+        filename={filename}
+        onBack={onBack}
+        problems={problems}
+        allProblems={allProblems}
+        currentIndex={currentIndex}
+        reviewedCount={reviewedCount}
+        progressPercent={progressPercent}
+        approvedCount={approvedCount}
+        rejectedCount={rejectedCount}
+        confidenceFilter={confidenceFilter}
+        statusFilter={statusFilter}
+        onConfidenceFilter={setConfidenceFilter}
+        onStatusFilter={setStatusFilter}
+        onSelect={setCurrentIndex}
+        onApprove={handleApprove}
+        onReject={handleReject}
+        isPending={reviewMutation.isPending}
+        actionFeedback={actionFeedback}
+        goNext={goNext}
+        goPrev={goPrev}
+        current={current!}
+      />
 
-      {/* Navigation bar */}
-      <div className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={goPrev}
-          disabled={currentIndex === 0}
-        >
-          <ChevronLeft className="h-4 w-4" />
-          <span className="hidden sm:inline">이전</span>
-        </Button>
-
-        <div className="flex items-center gap-4">
-          <Badge variant="outline" className="text-sm">
-            문제 {currentIndex + 1} / {problems.length}
-            {total > problems.length && (
-              <span className="text-muted-foreground">
-                {" "}
-                (전체 {total})
-              </span>
-            )}
+      {/* Metadata chips */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="secondary" className="text-xs">
+          {PROBLEM_TYPE_LABELS[current!.problemType] ?? current!.problemType}
+        </Badge>
+        {current!.bookSource?.chapter && (
+          <Badge variant="outline" className="text-xs">
+            {current!.bookSource.chapter}
+            {current!.bookSource.section && ` ${current!.bookSource.section}`}
           </Badge>
-
-          <div
-            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${confidenceBg(getConfidence(current!))}`}
+        )}
+        {current!.answerMatchStatus && current!.answerMatchStatus !== "no_answer_key" && (
+          <span
+            className={`text-xs px-2 py-0.5 rounded-full border ${
+              current!.answerMatchStatus === "matched"
+                ? "bg-green-500/20 text-green-400 border-green-500/30"
+                : "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+            }`}
           >
-            <span className={confidenceColor(getConfidence(current!))}>
-              신뢰도 {Math.round(getConfidence(current!) * 100)}%
-            </span>
-          </div>
-        </div>
-
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={goNext}
-          disabled={currentIndex === problems.length - 1}
+            {current!.answerMatchStatus === "matched" ? "해설 매칭" : "매칭 안됨"}
+          </span>
+        )}
+        {current!.sourceFile && (
+          <span className="text-xs text-muted-foreground">
+            {current!.sourceFile}
+            {current!.startPage != null && ` p.${current!.startPage}`}
+          </span>
+        )}
+        <div
+          className={`ml-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${confidenceBg(getConfidence(current!))}`}
         >
-          <span className="hidden sm:inline">다음</span>
-          <ChevronRight className="h-4 w-4" />
-        </Button>
+          <span className={confidenceColor(getConfidence(current!))}>
+            신뢰도 {Math.round(getConfidence(current!) * 100)}%
+          </span>
+        </div>
       </div>
 
-      {/* Main content: two-column layout */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* Left panel: Original PDF image */}
-        <Card className="overflow-hidden">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2 text-sm">
-                <FileText className="h-4 w-4 text-brand-beige" />
-                원본 이미지
-              </CardTitle>
-              {current!.sourceFile && (
-                <span className="text-xs text-muted-foreground">
-                  {current!.sourceFile}
-                  {current!.startPage != null && ` - p.${current!.startPage}`}
-                </span>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="relative flex aspect-[3/4] items-center justify-center overflow-hidden rounded-lg border border-border bg-brand-dark">
-              {imageUrl ? (
-                <img
-                  src={imageUrl}
-                  alt={`Problem ${currentIndex + 1} original`}
-                  className="h-full w-full object-contain"
-                />
-              ) : (
-                <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                  <FileText className="h-10 w-10" />
-                  <p className="text-sm">원본 이미지 없음</p>
-                  <p className="text-xs">
-                    문제 #{currentIndex + 1}
-                  </p>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+      {/* OCR Result — full width */}
+      <Card>
+        <CardContent className="p-5">
+          <div className="min-h-[200px] rounded-lg border border-border bg-brand-dark p-5">
+            <LatexRenderer
+              content={displayContent}
+              className="text-sm leading-relaxed text-foreground"
+            />
 
-        {/* Right panel: OCR result + raw source */}
-        <div className="flex flex-col gap-4">
-          {/* Right top: KaTeX rendered result */}
-          <Card className="flex-1">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <span className="text-brand-beige">
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      className="h-4 w-4"
-                    >
-                      <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
-                    </svg>
-                  </span>
-                  변환 결과
-                </CardTitle>
-                <div className="flex items-center gap-2">
-                  {current!.bookSource && (
-                    <span className="text-xs text-gray-500">
-                      {current!.bookSource.chapter && `${current!.bookSource.chapter}장`}
-                      {current!.bookSource.section && ` ${current!.bookSource.section}절`}
+            {current!.choices && current!.choices.length > 0 && (
+              <div className="mt-5 space-y-2.5 border-t border-border pt-4">
+                {current!.choices.map((choice, i) => (
+                  <div key={i} className="flex items-start gap-2 text-sm">
+                    <span className="shrink-0 font-medium text-brand-beige">
+                      {choice.label || CIRCLE_NUMBERS[i] || `(${i + 1})`}
                     </span>
-                  )}
-                  {current!.answerMatchStatus && current!.answerMatchStatus !== 'no_answer_key' && (
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      current!.answerMatchStatus === 'matched'
-                        ? 'bg-green-100 text-green-700'
-                        : 'bg-yellow-100 text-yellow-700'
-                    }`}>
-                      {current!.answerMatchStatus === 'matched' ? '해설 매칭' : '매칭 안됨'}
-                    </span>
-                  )}
-                  <Badge variant="secondary" className="text-xs">
-                    {PROBLEM_TYPE_LABELS[current!.problemType] ?? current!.problemType}
-                  </Badge>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="min-h-[200px] rounded-lg border border-border bg-brand-dark p-5">
-                <LatexRenderer
-                  content={displayContent}
-                  className="text-sm leading-relaxed text-foreground"
-                />
-
-                {current!.choices && current!.choices.length > 0 && (
-                  <div className="mt-5 space-y-2.5 border-t border-border pt-4">
-                    {current!.choices.map((choice, i) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-2 text-sm"
-                      >
-                        <span className="shrink-0 font-medium text-brand-beige">
-                          {choice.label || CIRCLE_NUMBERS[i] || `(${i + 1})`}
-                        </span>
-                        <LatexRenderer
-                          content={choice.contentLatex || choice.contentText || ""}
-                          className="leading-relaxed"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {current!.solutionLatex && (
-                  <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-                    <h4 className="text-sm font-medium text-blue-800 mb-1">해설지 풀이</h4>
                     <LatexRenderer
-                      content={current!.solutionLatex}
-                      className="text-sm text-gray-700"
+                      content={choice.contentLatex || choice.contentText || ""}
+                      className="leading-relaxed"
                     />
                   </div>
-                )}
+                ))}
               </div>
-            </CardContent>
-          </Card>
-
-          {/* Right bottom: Raw LaTeX source (editable) */}
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <Code className="h-4 w-4 text-brand-beige" />
-                  원본 LaTeX 소스
-                </CardTitle>
-                <div className="flex items-center gap-2">
-                  {editingLatex !== null && editingLatex !== rawLatex && (
-                    <Button
-                      variant="default"
-                      size="xs"
-                      disabled={saveMutation.isPending}
-                      onClick={() => {
-                        if (!current) return;
-                        saveMutation.mutate({
-                          id: current.id,
-                          stemLatex: editingLatex,
-                        });
-                      }}
-                    >
-                      {saveMutation.isPending ? (
-                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                      ) : null}
-                      저장
-                    </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    onClick={() => setShowRawLatex((v) => !v)}
-                  >
-                    {showRawLatex ? "숨기기" : "보기"}
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-            {showRawLatex && (
-              <CardContent>
-                <textarea
-                  className="max-h-[300px] min-h-[150px] w-full resize-y overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-brand-dark p-4 font-mono text-xs leading-relaxed text-muted-foreground focus:border-brand-beige focus:outline-none focus:ring-1 focus:ring-brand-beige"
-                  value={editingLatex ?? rawLatex}
-                  onChange={(e) => setEditingLatex(e.target.value)}
-                />
-              </CardContent>
             )}
-          </Card>
 
-          {/* AI Analysis */}
-          <AnalysisSection problem={current!} ocrJobId={ocrJobId} />
+            {current!.solutionLatex && (
+              <div className="mt-4 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
+                <h4 className="text-sm font-medium text-blue-400 mb-2">해설지 풀이</h4>
+                <LatexRenderer
+                  content={current!.solutionLatex}
+                  className="text-sm text-foreground"
+                />
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* AI Analysis — default expanded */}
+      <AnalysisSection problem={current!} ocrJobId={ocrJobId} />
+
+      {/* Raw LaTeX source — collapsed by default */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Code className="h-4 w-4 text-brand-beige" />
+              원본 LaTeX 소스
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              {editingLatex !== null && editingLatex !== rawLatex && (
+                <Button
+                  variant="default"
+                  size="xs"
+                  disabled={saveMutation.isPending}
+                  onClick={() => {
+                    if (!current) return;
+                    saveMutation.mutate({
+                      id: current.id,
+                      stemLatex: editingLatex,
+                    });
+                  }}
+                >
+                  {saveMutation.isPending ? (
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  ) : null}
+                  저장
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => setShowRawLatex((v) => !v)}
+              >
+                <ChevronDown className={`mr-1 h-3 w-3 transition-transform ${showRawLatex ? "rotate-180" : ""}`} />
+                {showRawLatex ? "숨기기" : "보기"}
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        {showRawLatex && (
+          <CardContent>
+            <textarea
+              className="max-h-[300px] min-h-[150px] w-full resize-y overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-brand-dark p-4 font-mono text-xs leading-relaxed text-muted-foreground focus:border-brand-beige focus:outline-none focus:ring-1 focus:ring-brand-beige"
+              value={editingLatex ?? rawLatex}
+              onChange={(e) => setEditingLatex(e.target.value)}
+            />
+          </CardContent>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// --- Sticky Header Component ---
+
+function StickyHeader({
+  filename,
+  onBack,
+  problems,
+  allProblems,
+  currentIndex,
+  reviewedCount,
+  progressPercent,
+  approvedCount,
+  rejectedCount,
+  confidenceFilter,
+  statusFilter,
+  onConfidenceFilter,
+  onStatusFilter,
+  onSelect,
+  onApprove,
+  onReject,
+  isPending,
+  actionFeedback,
+  goNext,
+  goPrev,
+  current,
+}: {
+  filename: string;
+  onBack: () => void;
+  problems: Problem[];
+  allProblems: Problem[];
+  currentIndex: number;
+  reviewedCount: number;
+  progressPercent: number;
+  approvedCount: number;
+  rejectedCount: number;
+  confidenceFilter: ConfidenceFilter;
+  statusFilter: StatusFilter;
+  onConfidenceFilter: (f: ConfidenceFilter) => void;
+  onStatusFilter: (f: StatusFilter) => void;
+  onSelect: (i: number) => void;
+  onApprove: () => void;
+  onReject: () => void;
+  isPending: boolean;
+  actionFeedback: "approved" | "rejected" | null;
+  goNext?: () => void;
+  goPrev?: () => void;
+  current?: Problem;
+}) {
+  return (
+    <div className="sticky top-0 z-20 -mx-6 -mt-6 mb-4 space-y-0 border-b border-border bg-background px-6 pb-3 pt-6">
+      {/* Row 1: Back + filename + actions + progress */}
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" size="sm" onClick={onBack} className="shrink-0">
+          <ArrowLeft className="h-4 w-4" />
+          <span className="hidden sm:inline">목록</span>
+        </Button>
+
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{filename}</p>
         </div>
-      </div>
 
-      {/* Action buttons */}
-      <div
-        className={`flex items-center justify-center gap-4 rounded-lg border p-4 transition-colors ${
+        {/* Keyboard hint */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="hidden text-[10px] text-muted-foreground sm:inline">
+              ← → 이동 · Enter 승인 · Backspace 반려
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-xs">
+            <div className="space-y-1">
+              <p>Enter: 승인</p>
+              <p>Backspace: 반려</p>
+              <p>Arrow Left/Right: 이동</p>
+              <p>Esc: PDF 목록</p>
+            </div>
+          </TooltipContent>
+        </Tooltip>
+
+        {/* Action buttons */}
+        <div className={`flex items-center gap-2 rounded-lg border px-2 py-1 transition-colors ${
           actionFeedback === "approved"
             ? "border-green-400/50 bg-green-400/10"
             : actionFeedback === "rejected"
               ? "border-red-400/50 bg-red-400/10"
-              : "border-border bg-card"
-        }`}
-      >
-        <Button
-          variant="destructive"
-          size="lg"
-          className="min-w-[140px]"
-          onClick={handleReject}
-          disabled={reviewMutation.isPending}
-        >
-          {reviewMutation.isPending &&
-          reviewMutation.variables?.action === "rejected" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <X className="h-4 w-4" />
-          )}
-          반려 (Backspace)
-        </Button>
-
-        <Button
-          size="lg"
-          className="min-w-[140px]"
-          onClick={handleApprove}
-          disabled={reviewMutation.isPending}
-        >
-          {reviewMutation.isPending &&
-          reviewMutation.variables?.action === "approved" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Check className="h-4 w-4" />
-          )}
-          승인 (Enter)
-        </Button>
+              : "border-transparent"
+        }`}>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={onReject}
+            disabled={isPending || !current}
+          >
+            {isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <X className="h-3.5 w-3.5" />
+            )}
+            <span className="hidden sm:inline ml-1">반려</span>
+          </Button>
+          <Button
+            size="sm"
+            onClick={onApprove}
+            disabled={isPending || !current}
+          >
+            {isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Check className="h-3.5 w-3.5" />
+            )}
+            <span className="hidden sm:inline ml-1">승인</span>
+          </Button>
+        </div>
       </div>
 
-      {/* Review queue list */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">검수 대기열</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-2">
-            {problems.map((item, index) => (
-              <button
-                key={item.id}
-                onClick={() => setCurrentIndex(index)}
-                className={`flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors ${
-                  index === currentIndex
-                    ? "border-brand-beige bg-brand-beige/5"
-                    : "border-border hover:border-brand-warm"
-                }`}
-              >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-brand-dark text-xs font-bold text-brand-beige">
-                  {index + 1}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm">
-                    {(item.stemText || item.stemLatex || "").split("\n")[0]}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {item.sourceFile ?? "Unknown source"}
-                    {item.startPage != null && ` p.${item.startPage}`}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {item.reviewStatus !== "pending_review" && (
-                    <Badge
-                      variant={
-                        item.reviewStatus === "approved"
-                          ? "default"
-                          : item.reviewStatus === "rejected"
-                            ? "destructive"
-                            : "secondary"
-                      }
-                      className="text-xs"
-                    >
-                      {REVIEW_STATUS_LABELS[item.reviewStatus] ?? item.reviewStatus}
-                    </Badge>
-                  )}
-                  <span
-                    className={`text-xs font-medium ${confidenceColor(getConfidence(item))}`}
-                  >
-                    {Math.round(getConfidence(item) * 100)}%
-                  </span>
-                </div>
-              </button>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Row 2: Progress bar */}
+      <div className="mt-2 flex items-center gap-3">
+        <div className="flex-1 h-1.5 rounded-full bg-brand-charcoal overflow-hidden">
+          <div
+            className="h-full rounded-full bg-brand-beige transition-all"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {reviewedCount}/{allProblems.length}
+          <span className="ml-1.5 text-green-400">{approvedCount}승인</span>
+          {rejectedCount > 0 && (
+            <span className="ml-1 text-red-400">{rejectedCount}반려</span>
+          )}
+        </span>
+      </div>
+
+      {/* Row 3: Problem strip with nav */}
+      <div className="mt-2 flex items-center gap-2">
+        {goPrev && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={goPrev}
+            disabled={currentIndex === 0}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+        )}
+        <div className="min-w-0 flex-1">
+          <ProblemStrip
+            problems={problems}
+            currentIndex={currentIndex}
+            onSelect={onSelect}
+          />
+        </div>
+        {goNext && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={goNext}
+            disabled={currentIndex === problems.length - 1}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        )}
+      </div>
+
+      {/* Row 4: Filters */}
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-muted-foreground">상태:</span>
+        {([
+          ["all", "전체"],
+          ["pending_review", "미검수"],
+          ["approved", "승인"],
+          ["rejected", "반려"],
+        ] as [StatusFilter, string][]).map(([val, label]) => (
+          <button
+            key={val}
+            onClick={() => onStatusFilter(val)}
+            className={`rounded-full px-2.5 py-1 transition-colors ${
+              statusFilter === val
+                ? "bg-brand-beige text-brand-dark font-medium"
+                : "bg-brand-charcoal text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+
+        <span className="ml-2 text-muted-foreground">신뢰도:</span>
+        {([
+          ["all", "전체"],
+          ["high", "≥90%"],
+          ["medium", "75-90%"],
+          ["low", "<75%"],
+        ] as [ConfidenceFilter, string][]).map(([val, label]) => (
+          <button
+            key={val}
+            onClick={() => onConfidenceFilter(val)}
+            className={`rounded-full px-2.5 py-1 transition-colors ${
+              confidenceFilter === val
+                ? "bg-brand-beige text-brand-dark font-medium"
+                : "bg-brand-charcoal text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+
+        {(statusFilter !== "all" || confidenceFilter !== "all") && (
+          <span className="ml-auto text-muted-foreground">
+            {problems.length}개 표시
+          </span>
+        )}
+      </div>
     </div>
   );
 }

@@ -20,12 +20,22 @@ const STAGE_PROGRESS: Record<string, number> = {
   analysis_complete: 100,
 };
 
+const MAX_RECONNECT_DELAY = 10_000;
+
 export function usePipelineSSE(ocrJobId: string | null) {
   const [progress, setProgress] = useState<PipelineProgress | null>(null);
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectDelay = useRef(1000);
+  const closed = useRef(false);
 
   const close = useCallback(() => {
+    closed.current = true;
+    if (reconnectTimer.current) {
+      clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+    }
     if (esRef.current) {
       esRef.current.close();
       esRef.current = null;
@@ -35,30 +45,55 @@ export function usePipelineSSE(ocrJobId: string | null) {
 
   useEffect(() => {
     if (!ocrJobId) return;
+    closed.current = false;
+    reconnectDelay.current = 1000;
 
-    const apiUrl =
-      process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
-    const es = new EventSource(`${apiUrl}/files/${ocrJobId}/events`);
-    esRef.current = es;
+    function connect() {
+      if (closed.current) return;
 
-    es.onopen = () => setConnected(true);
-    es.addEventListener("progress", (e) => {
-      try {
-        const data = JSON.parse(e.data) as PipelineProgress;
-        setProgress(data);
-      } catch {
-        // Ignore parse errors
-      }
-    });
-    es.onerror = () => {
-      setConnected(false);
-    };
+      const apiUrl =
+        process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
+      const es = new EventSource(`${apiUrl}/files/${ocrJobId}/events`);
+      esRef.current = es;
+
+      es.onopen = () => {
+        setConnected(true);
+        reconnectDelay.current = 1000; // reset backoff on success
+      };
+
+      es.addEventListener("progress", (e) => {
+        try {
+          const data = JSON.parse(e.data) as PipelineProgress;
+          setProgress(data);
+        } catch {
+          // Ignore parse errors
+        }
+      });
+
+      es.onerror = () => {
+        es.close();
+        esRef.current = null;
+        setConnected(false);
+
+        // Auto-reconnect with exponential backoff
+        if (!closed.current) {
+          reconnectTimer.current = setTimeout(() => {
+            reconnectDelay.current = Math.min(
+              reconnectDelay.current * 2,
+              MAX_RECONNECT_DELAY,
+            );
+            connect();
+          }, reconnectDelay.current);
+        }
+      };
+    }
+
+    connect();
 
     return () => {
-      es.close();
-      esRef.current = null;
+      close();
     };
-  }, [ocrJobId]);
+  }, [ocrJobId, close]);
 
   const stagePercent = progress
     ? (STAGE_PROGRESS[progress.stage] ?? 50)

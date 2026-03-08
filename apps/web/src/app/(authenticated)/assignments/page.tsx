@@ -45,8 +45,8 @@ import { LatexRenderer } from "@/components/math/latex-renderer";
 
 interface ClassItem {
   id: string;
-  name: string;
-  grade: number | null;
+  title: string;
+  description: string | null;
   _count?: { enrollments: number };
 }
 
@@ -56,14 +56,14 @@ interface Assignment {
   title: string;
   description: string | null;
   type: string; // "problem_set" | "text_task"
-  dueDate: string | null;
+  dueAt: string | null;
   maxScore: number;
   status: string;
   createdAt: string;
   _count?: {
     submissions: number;
   };
-  class?: { name: string; _count?: { enrollments: number } };
+  class?: { title: string; _count?: { enrollments: number } };
   averageScore?: number | null;
 }
 
@@ -348,7 +348,7 @@ function CreateAssignmentDialog({
       title: string;
       description?: string;
       type: string;
-      dueDate?: string;
+      dueAt?: string;
       maxScore: number;
     }) => {
       const assignment = await api.post<{ id: string }>(
@@ -398,7 +398,7 @@ function CreateAssignmentDialog({
       title: title.trim(),
       description: description.trim() || undefined,
       type,
-      dueDate: dueDate || undefined,
+      dueAt: dueDate || undefined,
       maxScore: Number(maxScore) || 100,
     });
   }
@@ -430,7 +430,7 @@ function CreateAssignmentDialog({
                 <SelectContent>
                   {classes.map((cls) => (
                     <SelectItem key={cls.id} value={cls.id}>
-                      {cls.name}
+                      {cls.title}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -646,7 +646,7 @@ export default function AssignmentsPage() {
               size="sm"
               onClick={() => setSelectedClassId(cls.id)}
             >
-              {cls.name}
+              {cls.title}
             </Button>
           ))}
         </div>
@@ -730,8 +730,8 @@ export default function AssignmentsPage() {
               const submissionCount = asgn._count?.submissions ?? 0;
               const totalStudents =
                 asgn.class?._count?.enrollments ?? 0;
-              const dueSoon = asgn.dueDate && isDueSoon(asgn.dueDate);
-              const overdue = asgn.dueDate && isOverdue(asgn.dueDate);
+              const dueSoon = asgn.dueAt && isDueSoon(asgn.dueAt);
+              const overdue = asgn.dueAt && isOverdue(asgn.dueAt);
 
               return (
                 <Card
@@ -753,7 +753,7 @@ export default function AssignmentsPage() {
                         </span>
                       </div>
                       <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
-                        {asgn.dueDate && (
+                        {asgn.dueAt && (
                           <span
                             className={`flex items-center gap-1 ${
                               overdue
@@ -764,7 +764,7 @@ export default function AssignmentsPage() {
                             }`}
                           >
                             <Calendar className="h-3 w-3" />
-                            {formatDate(asgn.dueDate)}
+                            {formatDate(asgn.dueAt)}
                             {overdue && " (마감됨)"}
                           </span>
                         )}

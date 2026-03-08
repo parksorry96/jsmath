@@ -43,9 +43,9 @@ export default function AuthenticatedLayout({
   return (
     <SidebarProvider>
       <AppSidebar />
-      <SidebarInset>
+      <SidebarInset className="max-h-svh">
         <AppHeader />
-        <main className="flex-1 overflow-auto p-6">{children}</main>
+        <main className="flex-1 min-h-0 overflow-auto p-6">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );

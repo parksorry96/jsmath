@@ -18,9 +18,22 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import Link from "next/link";
 
+function stripLatex(text: string): string {
+  return text
+    .replace(/\$\$[\s\S]*?\$\$/g, "[수식]")
+    .replace(/\$[^$]+?\$/g, "[수식]")
+    .replace(/\\left[\\{(|]/g, "")
+    .replace(/\\right[\\})|]/g, "")
+    .replace(/\\[a-zA-Z]+\{[^}]*\}/g, "")
+    .replace(/\\[a-zA-Z]+/g, "")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 interface ClassItem {
   id: string;
-  name: string;
+  title: string;
 }
 
 interface Problem {
@@ -257,10 +270,11 @@ export default function DashboardPage() {
                           {problem.displayNumber || problem.problemNumber
                             ? `${problem.displayNumber || problem.problemNumber}번 `
                             : ""}
-                          {(problem.stemText || problem.stemLatex || "")
-                            .split("\n")[0]
-                            .slice(0, 60) ||
-                            `문제 #${problem.id.slice(0, 8)}`}
+                          {stripLatex(
+                            (problem.stemText || problem.stemLatex || "")
+                              .split("\n")[0]
+                              .slice(0, 80)
+                          ) || `문제 #${problem.id.slice(0, 8)}`}
                         </p>
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
                           <span className="flex items-center gap-1">

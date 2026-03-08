@@ -46,8 +46,8 @@ model Class {
   id             String       @id @default(cuid())
   title          String
   description    String?
-  organizationId String       @map("organization_id")
-  organization   Organization @relation(fields: [organizationId], references: [id])
+  organizationId String?      @map("organization_id")
+  organization   Organization? @relation(fields: [organizationId], references: [id])
   enrollments    Enrollment[]
   assignments    Assignment[]
   lessons        Lesson[]
