@@ -97,11 +97,11 @@ export default function TeacherHome() {
           />
         }
         ListHeaderComponent={
-          <View className="px-4 pt-4 pb-8">
+          <View className="px-5 pt-6 pb-10">
             {/* Quick Actions */}
-            <View className="flex-row gap-3 mb-6">
+            <View className="flex-row gap-3 mb-8">
               <Pressable
-                className="flex-1 bg-brand-accent rounded-xl py-3 items-center"
+                className="flex-1 bg-brand-accent rounded-2xl py-3.5 items-center"
                 onPress={() => router.push("/(teacher)/calendar")}
               >
                 <Text className="text-brand-dark font-bold text-base">
@@ -109,7 +109,7 @@ export default function TeacherHome() {
                 </Text>
               </Pressable>
               <Pressable
-                className="flex-1 border border-brand-accent rounded-xl py-3 items-center"
+                className="flex-1 border border-brand-accent rounded-2xl py-3.5 items-center"
                 onPress={() => router.push("/(teacher)/assignment/new")}
               >
                 <Text className="text-brand-accent font-bold text-base">
@@ -119,8 +119,8 @@ export default function TeacherHome() {
             </View>
 
             {/* Today's Lessons */}
-            <View className="mb-6">
-              <Text className="text-brand-beige text-lg font-bold mb-3">
+            <View className="mb-8">
+              <Text className="text-brand-beige text-lg font-bold mb-4">
                 오늘 수업
               </Text>
               {lessonsQuery.isLoading ? (
@@ -135,7 +135,7 @@ export default function TeacherHome() {
                 lessons.map((lesson) => (
                   <View
                     key={lesson.id}
-                    className="bg-[#2a2a2a] rounded-xl p-4 mb-2"
+                    className="bg-[#2a2a2a] rounded-2xl p-4 mb-3 border border-[#333]/40"
                   >
                     <View className="flex-row justify-between items-center mb-1">
                       <Text className="text-brand-beige font-bold text-base">
@@ -172,7 +172,7 @@ export default function TeacherHome() {
 
             {/* Grading Badge */}
             <Pressable
-              className="bg-[#2a2a2a] rounded-xl p-4 mb-6 flex-row justify-between items-center"
+              className="bg-[#2a2a2a] rounded-2xl p-5 mb-8 border border-[#333]/40 flex-row justify-between items-center"
               onPress={() => router.push("/(teacher)/grading")}
             >
               <View>
@@ -192,7 +192,7 @@ export default function TeacherHome() {
 
             {/* Recent Submissions */}
             <View>
-              <Text className="text-brand-beige text-lg font-bold mb-3">
+              <Text className="text-brand-beige text-lg font-bold mb-4">
                 최근 제출
               </Text>
               {pendingQuery.isLoading ? (
@@ -207,7 +207,7 @@ export default function TeacherHome() {
                 pendingSubmissions.slice(0, 5).map((sub) => (
                   <View
                     key={sub.id}
-                    className="bg-[#2a2a2a] rounded-xl p-3 mb-2 flex-row justify-between items-center"
+                    className="bg-[#2a2a2a] rounded-2xl p-4 mb-3 border border-[#333]/40 flex-row justify-between items-center"
                   >
                     <View className="flex-1">
                       <Text className="text-brand-beige text-sm font-medium">

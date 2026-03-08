@@ -41,9 +41,9 @@ function AccuracyCircle({ value }: { value: number }) {
     pct >= 80 ? "text-green-400" : pct >= 60 ? "text-yellow-400" : "text-red-400";
 
   return (
-    <View className="items-center justify-center bg-[#2a2a2a] rounded-2xl p-6 mx-4">
+    <View className="items-center justify-center bg-[#2a2a2a] rounded-2xl p-8 mx-4 border border-[#333]/40">
       <Text className="text-gray-400 text-sm mb-2">전체 정답률</Text>
-      <View className="w-28 h-28 rounded-full border-4 border-[#333] items-center justify-center">
+      <View className="w-28 h-28 rounded-full border-4 border-[#3a3a3a] items-center justify-center">
         <Text className={`text-3xl font-bold ${color}`}>{pct}%</Text>
       </View>
     </View>
@@ -62,7 +62,7 @@ function BarChart({
       <Text className="text-brand-beige font-semibold text-base mb-2">
         {title}
       </Text>
-      <View className="bg-[#2a2a2a] rounded-xl p-3">
+      <View className="bg-[#2a2a2a] rounded-2xl p-4 border border-[#333]/40">
         {data.length === 0 ? (
           <Text className="text-gray-400 text-center py-2">데이터 없음</Text>
         ) : (
@@ -82,7 +82,7 @@ function BarChart({
                   </Text>
                   <Text className="text-gray-400 text-xs">{pct}%</Text>
                 </View>
-                <View className="h-2 bg-[#333] rounded-full overflow-hidden">
+                <View className="h-2.5 bg-[#333] rounded-full overflow-hidden">
                   <View
                     className={`h-full rounded-full ${barColor}`}
                     style={{ width: `${pct}%` }}
@@ -191,7 +191,7 @@ export default function StudentReport() {
               data.weakChapters.map((ch) => (
                 <View
                   key={ch.name}
-                  className="bg-red-900/20 border border-red-900/30 rounded-xl p-3 mb-2"
+                  className="bg-red-900/20 border border-red-900/40 rounded-2xl p-4 mb-3"
                 >
                   <View className="flex-row items-center justify-between">
                     <Text className="text-brand-beige font-medium">
@@ -223,9 +223,9 @@ export default function StudentReport() {
               data.commonErrors.map((err, i) => (
                 <View
                   key={i}
-                  className="bg-[#2a2a2a] rounded-xl p-3 mb-2 flex-row items-center"
+                  className="bg-[#2a2a2a] rounded-2xl p-4 mb-3 border border-[#333]/40 flex-row items-center"
                 >
-                  <View className="bg-yellow-900/50 rounded-full w-8 h-8 items-center justify-center mr-3">
+                  <View className="bg-yellow-900/50 rounded-full w-9 h-9 items-center justify-center mr-3">
                     <Text className="text-yellow-400 font-bold text-sm">
                       {err.count}
                     </Text>

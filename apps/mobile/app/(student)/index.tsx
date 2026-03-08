@@ -133,11 +133,11 @@ export default function StudentHome() {
       switch (item.key) {
         case "header":
           return (
-            <View className="px-4 pt-4 pb-2">
-              <Text className="text-brand-beige text-2xl font-bold">
+            <View className="px-5 pt-6 pb-3">
+              <Text className="text-brand-beige text-2xl font-bold tracking-tight">
                 안녕하세요{user?.email ? `, ${user.email.split("@")[0]}` : ""}
               </Text>
-              <Text className="text-gray-400 text-sm mt-1">
+              <Text className="text-[#999] text-sm mt-1.5">
                 오늘도 열심히 공부해봐요!
               </Text>
             </View>
@@ -145,15 +145,15 @@ export default function StudentHome() {
 
         case "lessons":
           return (
-            <View className="px-4 mt-4">
-              <Text className="text-brand-beige text-lg font-semibold mb-2">
+            <View className="px-5 mt-6">
+              <Text className="text-brand-beige text-lg font-bold mb-2">
                 오늘 수업
               </Text>
               {isLoading ? (
                 <ActivityIndicator color="#d4a574" />
               ) : lessons.length === 0 ? (
                 <View className="bg-[#2a2a2a] rounded-xl p-4">
-                  <Text className="text-gray-400 text-center">
+                  <Text className="text-gray-400 text-center text-sm">
                     오늘 수업이 없습니다
                   </Text>
                 </View>
@@ -161,9 +161,9 @@ export default function StudentHome() {
                 lessons.map((lesson) => (
                   <View
                     key={lesson.id}
-                    className="bg-[#2a2a2a] rounded-xl p-3 mb-2 flex-row items-center"
+                    className="bg-[#2a2a2a] rounded-2xl p-4 mb-3 border border-[#333]/40 flex-row items-center"
                   >
-                    <View className="bg-brand-accent/20 rounded-lg px-2 py-1 mr-3">
+                    <View className="bg-brand-accent/15 rounded-lg px-3 py-1.5 mr-3">
                       <Text className="text-brand-accent text-xs font-medium">
                         {formatTime(lesson.startTime)}
                       </Text>
@@ -201,13 +201,13 @@ export default function StudentHome() {
 
         case "assignments":
           return (
-            <View className="px-4 mt-4">
+            <View className="px-5 mt-6">
               <View className="flex-row items-center justify-between mb-2">
-                <Text className="text-brand-beige text-lg font-semibold">
+                <Text className="text-brand-beige text-lg font-bold">
                   할 일
                 </Text>
                 <Pressable onPress={() => router.push("/(student)/assignments")}>
-                  <Text className="text-brand-accent text-sm">전체보기</Text>
+                  <Text className="text-brand-accent text-sm font-medium">전체보기</Text>
                 </Pressable>
               </View>
               {isLoading ? (
@@ -215,7 +215,7 @@ export default function StudentHome() {
               ) : !assignmentsQuery.data ||
                 assignmentsQuery.data.length === 0 ? (
                 <View className="bg-[#2a2a2a] rounded-xl p-4">
-                  <Text className="text-gray-400 text-center">
+                  <Text className="text-gray-400 text-center text-sm">
                     대기 중인 과제가 없습니다
                   </Text>
                 </View>
@@ -223,7 +223,7 @@ export default function StudentHome() {
                 assignmentsQuery.data.slice(0, 3).map((a) => (
                   <Pressable
                     key={a.id}
-                    className="bg-[#2a2a2a] rounded-xl p-3 mb-2"
+                    className="bg-[#2a2a2a] rounded-2xl p-4 mb-3 border border-[#333]/40"
                     onPress={() =>
                       router.push(`/(student)/assignment/${a.id}`)
                     }
@@ -247,15 +247,15 @@ export default function StudentHome() {
 
         case "notifications":
           return (
-            <View className="px-4 mt-4 pb-6">
-              <Text className="text-brand-beige text-lg font-semibold mb-2">
+            <View className="px-5 mt-6 pb-8">
+              <Text className="text-brand-beige text-lg font-bold mb-2">
                 최근 알림
               </Text>
               {isLoading ? (
                 <ActivityIndicator color="#d4a574" />
               ) : notifications.length === 0 ? (
                 <View className="bg-[#2a2a2a] rounded-xl p-4">
-                  <Text className="text-gray-400 text-center">
+                  <Text className="text-gray-400 text-center text-sm">
                     새로운 알림이 없습니다
                   </Text>
                 </View>
@@ -263,7 +263,7 @@ export default function StudentHome() {
                 notifications.map((n) => (
                   <View
                     key={n.id}
-                    className={`bg-[#2a2a2a] rounded-xl p-3 mb-2 ${
+                    className={`bg-[#2a2a2a] rounded-2xl p-4 mb-3 border border-[#333]/40 ${
                       !n.read ? "border-l-2 border-brand-accent" : ""
                     }`}
                   >

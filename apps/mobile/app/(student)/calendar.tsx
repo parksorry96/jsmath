@@ -120,10 +120,10 @@ export default function StudentCalendar() {
     ({ item }: { item: Lesson }) => {
       const color = classColorMap.get(item.className) ?? "#d4a574";
       return (
-        <View className="bg-[#2a2a2a] rounded-xl p-3 mb-2 flex-row">
+        <View className="bg-[#2a2a2a] rounded-2xl p-4 mb-3 flex-row">
           <View
             style={{ backgroundColor: color }}
-            className="w-1 rounded-full mr-3"
+            className="w-1.5 rounded-full mr-3"
           />
           <View className="flex-1">
             <View className="flex-row items-center justify-between">
@@ -180,17 +180,19 @@ export default function StudentCalendar() {
           monthTextColor: "#f5f0e8",
           arrowColor: "#d4a574",
           textMonthFontWeight: "bold",
+          textMonthFontSize: 18,
+          textDayFontSize: 14,
         }}
       />
 
       {/* Color legend */}
       {classNames.length > 0 && (
-        <View className="px-4 py-2 flex-row flex-wrap gap-3">
+        <View className="px-4 py-3 flex-row flex-wrap gap-4">
           {classNames.map(([name, color]) => (
             <View key={name} className="flex-row items-center">
               <View
                 style={{ backgroundColor: color }}
-                className="w-2.5 h-2.5 rounded-full mr-1.5"
+                className="w-3 h-3 rounded-full mr-2"
               />
               <Text className="text-gray-400 text-xs">{name}</Text>
             </View>
@@ -200,13 +202,13 @@ export default function StudentCalendar() {
 
       {/* Day lessons */}
       <View className="flex-1 px-4 pt-2">
-        <Text className="text-brand-beige font-semibold mb-2">
+        <Text className="text-brand-beige font-bold text-base mb-3">
           {selectedDate} 수업
         </Text>
         {isLoading ? (
           <ActivityIndicator color="#d4a574" className="mt-4" />
         ) : dayLessons.length === 0 ? (
-          <View className="bg-[#2a2a2a] rounded-xl p-4 mt-1">
+          <View className="bg-[#2a2a2a] rounded-2xl p-6 mt-2">
             <Text className="text-gray-400 text-center">
               이 날에 수업이 없습니다
             </Text>

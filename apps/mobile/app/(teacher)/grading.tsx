@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { ChevronUp, ChevronDown, Check } from "lucide-react-native";
 
 interface Assignment {
   id: string;
@@ -172,7 +173,7 @@ export default function TeacherGrading() {
           />
         }
         ListEmptyComponent={
-          <View className="items-center justify-center py-20">
+          <View className="items-center justify-center py-24">
             <Text className="text-[#888] text-base">채점 대기 중인 과제가 없습니다</Text>
           </View>
         }
@@ -181,7 +182,7 @@ export default function TeacherGrading() {
           return (
             <View className="mb-3">
               <Pressable
-                className="bg-[#2a2a2a] rounded-xl p-4 active:opacity-80"
+                className="bg-[#2a2a2a] rounded-2xl p-4 border border-[#333]/40 active:opacity-80"
                 onPress={() =>
                   setExpandedId(isExpanded ? null : assignment.id)
                 }
@@ -198,14 +199,16 @@ export default function TeacherGrading() {
                     )}
                   </View>
                   <View className="flex-row items-center gap-2">
-                    <View className="bg-[#3a3a3a] rounded-full px-2 py-0.5">
+                    <View className="bg-[#3a3a3a] rounded-full px-2.5 py-1">
                       <Text className="text-[#aaa] text-xs">
                         {assignment.maxScore}점
                       </Text>
                     </View>
-                    <Text className="text-[#888]">
-                      {isExpanded ? "▲" : "▼"}
-                    </Text>
+                    {isExpanded ? (
+                      <ChevronUp size={16} color="#888" />
+                    ) : (
+                      <ChevronDown size={16} color="#888" />
+                    )}
                   </View>
                 </View>
                 <Text className="text-[#666] text-xs mt-1">
@@ -215,7 +218,7 @@ export default function TeacherGrading() {
 
               {/* Expanded: Submissions */}
               {isExpanded && (
-                <View className="bg-[#222] rounded-b-xl px-3 py-2 -mt-1">
+                <View className="bg-[#222] rounded-b-2xl px-4 py-3 -mt-1">
                   {submissionsQuery.isLoading ? (
                     <ActivityIndicator color="#d4a574" className="py-4" />
                   ) : submissions.length === 0 ? (
@@ -227,7 +230,7 @@ export default function TeacherGrading() {
                       {submissions.map((sub) => (
                         <View
                           key={sub.id}
-                          className="bg-[#2a2a2a] rounded-lg p-3 my-1"
+                          className="bg-[#2a2a2a] rounded-xl p-4 my-1.5"
                         >
                           <View className="flex-row justify-between items-center mb-2">
                             <Text className="text-brand-beige font-medium">
@@ -256,9 +259,12 @@ export default function TeacherGrading() {
 
                           {sub.status === "graded" ? (
                             <View className="flex-row items-center justify-between">
+                              <View className="flex-row items-center gap-1">
+                              <Check size={14} color="#4ade80" />
                               <Text className="text-[#4ade80] text-sm">
-                                ✓ 채점완료: {sub.score}/{assignment.maxScore}
+                                채점완료: {sub.score}/{assignment.maxScore}
                               </Text>
+                            </View>
                             </View>
                           ) : (
                             <>
@@ -266,7 +272,7 @@ export default function TeacherGrading() {
                               <View className="flex-row gap-2 items-end">
                                 <View className="flex-1">
                                   <TextInput
-                                    className="bg-[#3a3a3a] text-brand-beige rounded-lg px-3 py-2 text-sm"
+                                    className="bg-[#3a3a3a] text-brand-beige rounded-xl px-4 py-2.5 text-sm"
                                     placeholder={`점수 (0-${assignment.maxScore})`}
                                     placeholderTextColor="#666"
                                     keyboardType="numeric"
@@ -277,7 +283,7 @@ export default function TeacherGrading() {
                                   />
                                 </View>
                                 <Pressable
-                                  className="bg-brand-accent rounded-lg px-4 py-2"
+                                  className="bg-brand-accent rounded-xl px-5 py-2.5"
                                   onPress={() =>
                                     handleGrade(sub, assignment.maxScore)
                                   }
@@ -290,7 +296,7 @@ export default function TeacherGrading() {
                               </View>
                               {/* Feedback */}
                               <TextInput
-                                className="bg-[#3a3a3a] text-brand-beige rounded-lg px-3 py-2 mt-2 text-sm"
+                                className="bg-[#3a3a3a] text-brand-beige rounded-xl px-4 py-2.5 mt-2 text-sm"
                                 placeholder="피드백 (선택)"
                                 placeholderTextColor="#666"
                                 value={getInput(sub.id).feedback}
@@ -306,7 +312,7 @@ export default function TeacherGrading() {
                       {/* Bulk Return */}
                       {submissions.some((s) => s.status === "graded") && (
                         <Pressable
-                          className="bg-[#3a3a3a] rounded-lg py-3 mt-2 items-center"
+                          className="bg-[#3a3a3a] rounded-xl py-3.5 mt-3 border border-[#444] items-center"
                           onPress={handleBulkReturn}
                         >
                           <Text className="text-brand-accent font-bold text-sm">

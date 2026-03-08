@@ -100,20 +100,20 @@ export default function StudentAssignments() {
 
       return (
         <Pressable
-          className="bg-[#2a2a2a] rounded-xl p-3 mx-4 mb-2"
+          className="bg-[#2a2a2a] rounded-2xl p-4 mx-4 mb-3 border border-[#333]/40"
           onPress={() => router.push(`/(student)/assignment/${item.id}`)}
         >
           <View className="flex-row items-center justify-between mb-1">
             <Text className="text-brand-beige font-medium flex-1 mr-2">
               {item.title}
             </Text>
-            <View className={`rounded-full px-2 py-0.5 ${status.bg}`}>
+            <View className={`rounded-full px-2.5 py-1 ${status.bg}`}>
               <Text className={`text-xs ${status.text}`}>{status.label}</Text>
             </View>
           </View>
 
           <View className="flex-row items-center mt-1">
-            <View className={`rounded px-1.5 py-0.5 mr-2 ${type.bg}`}>
+            <View className={`rounded-md px-2 py-0.5 mr-2 ${type.bg}`}>
               <Text className={`text-xs ${type.text}`}>{type.label}</Text>
             </View>
             <Text
@@ -135,7 +135,7 @@ export default function StudentAssignments() {
 
   const renderSectionHeader = useCallback(
     ({ section }: { section: { title: string } }) => (
-      <View className="px-4 pt-4 pb-1">
+      <View className="px-4 pt-5 pb-2">
         <Text className="text-brand-beige font-semibold text-base">
           {section.title}
         </Text>

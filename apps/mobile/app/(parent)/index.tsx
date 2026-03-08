@@ -60,7 +60,7 @@ export default function ParentHome() {
 
   function renderLinkForm() {
     return (
-      <View className="bg-[#2a2a2a] rounded-xl p-6 mx-4 mt-4">
+      <View className="bg-[#2a2a2a] rounded-2xl p-6 mx-4 mt-4 border border-[#333]/40">
         <Text className="text-brand-beige text-lg font-bold mb-2">
           자녀를 등록해주세요
         </Text>
@@ -68,7 +68,7 @@ export default function ParentHome() {
           선생님에게 받은 초대 코드를 입력하세요
         </Text>
         <TextInput
-          className="bg-[#333] text-brand-beige rounded-lg px-4 py-3 text-base mb-3"
+          className="bg-[#333] text-brand-beige rounded-xl px-4 py-3.5 text-base mb-3"
           placeholder="초대 코드 입력"
           placeholderTextColor="#666"
           value={inviteCode}
@@ -78,7 +78,7 @@ export default function ParentHome() {
           autoFocus
         />
         <TouchableOpacity
-          className={`rounded-lg py-3 items-center ${
+          className={`rounded-xl py-3.5 items-center ${
             inviteCode.trim() ? "bg-brand-accent" : "bg-[#444]"
           }`}
           onPress={handleLink}
@@ -103,14 +103,14 @@ export default function ParentHome() {
   function renderChildCard({ item }: { item: Child }) {
     return (
       <TouchableOpacity
-        className="bg-[#2a2a2a] rounded-xl p-4 mx-4 mb-3"
+        className="bg-[#2a2a2a] rounded-2xl p-5 mx-4 mb-3 border border-[#333]/40"
         onPress={() => router.push(`/(parent)/children/${item.id}`)}
         activeOpacity={0.7}
       >
-        <Text className="text-brand-beige text-lg font-bold">{item.name}</Text>
+        <Text className="text-brand-beige text-xl font-bold">{item.name}</Text>
         <Text className="text-gray-400 text-sm mb-3">{item.className}</Text>
 
-        <View className="flex-row justify-between">
+        <View className="flex-row justify-between mt-1">
           <View className="items-center flex-1">
             <Text className="text-gray-400 text-xs">다음 수업</Text>
             <Text className="text-brand-beige text-sm mt-1">
@@ -152,7 +152,7 @@ export default function ParentHome() {
         data={children ?? []}
         keyExtractor={(item) => item.id}
         renderItem={renderChildCard}
-        contentContainerStyle={{ paddingTop: 16, paddingBottom: 100 }}
+        contentContainerStyle={{ paddingTop: 20, paddingBottom: 100 }}
         refreshControl={
           <RefreshControl
             refreshing={isRefetching}
@@ -177,7 +177,7 @@ export default function ParentHome() {
                 renderLinkForm()
               ) : (
                 <TouchableOpacity
-                  className="bg-[#2a2a2a] rounded-xl py-3 items-center"
+                  className="bg-[#2a2a2a] rounded-2xl py-3.5 border border-[#333]/40 items-center"
                   onPress={() => setShowAddForm(true)}
                 >
                   <Text className="text-brand-accent font-bold">+ 자녀 추가</Text>

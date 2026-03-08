@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { ChevronLeft, ChevronRight, MapPin, X } from "lucide-react-native";
 
 interface Class {
   id: string;
@@ -270,13 +271,13 @@ export default function TeacherCalendar() {
             {/* Month Navigation */}
             <View className="flex-row justify-between items-center mb-4">
               <Pressable onPress={prevMonth} className="p-2">
-                <Text className="text-brand-beige text-xl">‹</Text>
+                <ChevronLeft color="#d4a574" size={26} />
               </Pressable>
-              <Text className="text-brand-beige text-lg font-bold">
+              <Text className="text-brand-beige text-xl font-bold">
                 {year}년 {MONTHS[month]}
               </Text>
               <Pressable onPress={nextMonth} className="p-2">
-                <Text className="text-brand-beige text-xl">›</Text>
+                <ChevronRight color="#d4a574" size={26} />
               </Pressable>
             </View>
 
@@ -293,7 +294,7 @@ export default function TeacherCalendar() {
             <View className="flex-row flex-wrap mb-4">
               {days.map((day, idx) => {
                 if (day === null) {
-                  return <View key={`e-${idx}`} style={{ width: "14.28%" }} className="h-12" />;
+                  return <View key={`e-${idx}`} style={{ width: "14.28%" }} className="h-14" />;
                 }
                 const date = new Date(year, month, day);
                 const key = formatDate(date);
@@ -305,11 +306,11 @@ export default function TeacherCalendar() {
                   <Pressable
                     key={key}
                     style={{ width: "14.28%" }}
-                    className="h-12 items-center pt-1"
+                    className="h-14 items-center pt-1"
                     onPress={() => setSelectedDate(date)}
                   >
                     <View
-                      className={`w-7 h-7 rounded-full items-center justify-center ${
+                      className={`w-8 h-8 rounded-full items-center justify-center ${
                         isSelected ? "bg-brand-accent" : isToday ? "border border-brand-accent" : ""
                       }`}
                     >
@@ -338,7 +339,7 @@ export default function TeacherCalendar() {
             </View>
 
             {/* Selected Date Lessons */}
-            <View className="flex-row justify-between items-center mb-3">
+            <View className="flex-row justify-between items-center mb-4">
               <Text className="text-brand-beige font-bold text-base">
                 {selectedDate.getMonth() + 1}월 {selectedDate.getDate()}일 ({DAYS[selectedDate.getDay()]})
               </Text>
@@ -358,10 +359,10 @@ export default function TeacherCalendar() {
               </View>
             ) : (
               selectedLessons.map((lesson) => (
-                <View key={lesson.id} className="bg-[#2a2a2a] rounded-xl p-4 mb-2">
+                <View key={lesson.id} className="bg-[#2a2a2a] rounded-2xl p-4 mb-3">
                   <View className="flex-row items-center mb-2">
                     <View
-                      className="w-3 h-3 rounded-full mr-2"
+                      className="w-3.5 h-3.5 rounded-full mr-2.5"
                       style={{ backgroundColor: classColorMap[lesson.classId] ?? "#d4a574" }}
                     />
                     <Text className="text-brand-beige font-bold flex-1">
@@ -378,25 +379,28 @@ export default function TeacherCalendar() {
                     <Text className="text-[#888] text-xs mb-1">{lesson.class.name}</Text>
                   )}
                   {lesson.location && (
-                    <Text className="text-[#666] text-xs">📍 {lesson.location}</Text>
+                    <View className="flex-row items-center gap-1">
+                      <MapPin size={12} color="#666" />
+                      <Text className="text-[#666] text-xs">{lesson.location}</Text>
+                    </View>
                   )}
 
                   {lesson.status === "scheduled" && (
-                    <View className="flex-row gap-2 mt-3">
+                    <View className="flex-row gap-2.5 mt-4">
                       <Pressable
-                        className="flex-1 border border-brand-accent rounded-lg py-2 items-center"
+                        className="flex-1 border border-brand-accent rounded-xl py-2.5 items-center"
                         onPress={() => openEdit(lesson)}
                       >
                         <Text className="text-brand-accent text-sm">수정</Text>
                       </Pressable>
                       <Pressable
-                        className="flex-1 bg-[#4ade80] rounded-lg py-2 items-center"
+                        className="flex-1 bg-[#4ade80] rounded-xl py-2.5 items-center"
                         onPress={() => handleStatusChange(lesson, "complete")}
                       >
                         <Text className="text-brand-dark text-sm font-bold">완료</Text>
                       </Pressable>
                       <Pressable
-                        className="flex-1 bg-[#555] rounded-lg py-2 items-center"
+                        className="flex-1 bg-[#555] rounded-xl py-2.5 items-center"
                         onPress={() => handleStatusChange(lesson, "cancel")}
                       >
                         <Text className="text-[#ccc] text-sm">취소</Text>
@@ -413,25 +417,25 @@ export default function TeacherCalendar() {
       {/* Add/Edit Lesson Modal */}
       <Modal visible={showModal} animationType="slide" transparent>
         <View className="flex-1 justify-end bg-black/50">
-          <View className="bg-[#2a2a2a] rounded-t-3xl px-5 pt-5 pb-10">
+          <View className="bg-[#242424] rounded-t-3xl px-6 pt-6 pb-12">
             <View className="flex-row justify-between items-center mb-5">
-              <Text className="text-brand-beige text-lg font-bold">
+              <Text className="text-brand-beige text-xl font-bold">
                 {editingLesson ? "수업 수정" : "수업 추가"}
               </Text>
               <Pressable onPress={() => { setShowModal(false); resetForm(); }}>
-                <Text className="text-[#888] text-lg">✕</Text>
+                <X size={20} color="#888" />
               </Pressable>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
               {/* Class Selector */}
-              <Text className="text-[#aaa] text-sm mb-1">반 선택</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-4">
+              <Text className="text-[#999] text-sm mb-2 font-medium">반 선택</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-5">
                 <View className="flex-row gap-2">
                   {classes.map((c) => (
                     <Pressable
                       key={c.id}
-                      className={`px-4 py-2 rounded-lg ${
+                      className={`px-4 py-2.5 rounded-xl ${
                         form.classId === c.id ? "bg-brand-accent" : "bg-[#3a3a3a]"
                       }`}
                       onPress={() => setForm((f) => ({ ...f, classId: c.id }))}
@@ -451,9 +455,9 @@ export default function TeacherCalendar() {
               </ScrollView>
 
               {/* Title */}
-              <Text className="text-[#aaa] text-sm mb-1">제목</Text>
+              <Text className="text-[#999] text-sm mb-2 font-medium">제목</Text>
               <TextInput
-                className="bg-[#3a3a3a] text-brand-beige rounded-lg px-4 py-3 mb-4"
+                className="bg-[#333] text-brand-beige rounded-xl px-4 py-3.5 mb-5"
                 placeholder="수업 제목"
                 placeholderTextColor="#666"
                 value={form.title}
@@ -461,11 +465,11 @@ export default function TeacherCalendar() {
               />
 
               {/* Time */}
-              <View className="flex-row gap-3 mb-4">
+              <View className="flex-row gap-3 mb-5">
                 <View className="flex-1">
-                  <Text className="text-[#aaa] text-sm mb-1">시작 시간</Text>
+                  <Text className="text-[#999] text-sm mb-2 font-medium">시작 시간</Text>
                   <TextInput
-                    className="bg-[#3a3a3a] text-brand-beige rounded-lg px-4 py-3"
+                    className="bg-[#333] text-brand-beige rounded-xl px-4 py-3.5"
                     placeholder="09:00"
                     placeholderTextColor="#666"
                     value={form.startTime}
@@ -473,9 +477,9 @@ export default function TeacherCalendar() {
                   />
                 </View>
                 <View className="flex-1">
-                  <Text className="text-[#aaa] text-sm mb-1">종료 시간</Text>
+                  <Text className="text-[#999] text-sm mb-2 font-medium">종료 시간</Text>
                   <TextInput
-                    className="bg-[#3a3a3a] text-brand-beige rounded-lg px-4 py-3"
+                    className="bg-[#333] text-brand-beige rounded-xl px-4 py-3.5"
                     placeholder="10:00"
                     placeholderTextColor="#666"
                     value={form.endTime}
@@ -485,13 +489,13 @@ export default function TeacherCalendar() {
               </View>
 
               {/* Recurrence */}
-              <Text className="text-[#aaa] text-sm mb-1">반복</Text>
-              <View className="flex-row gap-2 mb-4">
+              <Text className="text-[#999] text-sm mb-2 font-medium">반복</Text>
+              <View className="flex-row gap-2 mb-5">
                 {([["none", "없음"], ["weekly", "매주"], ["biweekly", "격주"]] as const).map(
                   ([val, label]) => (
                     <Pressable
                       key={val}
-                      className={`px-4 py-2 rounded-lg ${
+                      className={`px-4 py-2.5 rounded-xl ${
                         form.recurrence === val ? "bg-brand-accent" : "bg-[#3a3a3a]"
                       }`}
                       onPress={() => setForm((f) => ({ ...f, recurrence: val }))}
@@ -511,9 +515,9 @@ export default function TeacherCalendar() {
               </View>
 
               {/* Location */}
-              <Text className="text-[#aaa] text-sm mb-1">장소</Text>
+              <Text className="text-[#999] text-sm mb-2 font-medium">장소</Text>
               <TextInput
-                className="bg-[#3a3a3a] text-brand-beige rounded-lg px-4 py-3 mb-4"
+                className="bg-[#333] text-brand-beige rounded-xl px-4 py-3.5 mb-5"
                 placeholder="(선택) 장소"
                 placeholderTextColor="#666"
                 value={form.location}
@@ -521,9 +525,9 @@ export default function TeacherCalendar() {
               />
 
               {/* Memo */}
-              <Text className="text-[#aaa] text-sm mb-1">메모</Text>
+              <Text className="text-[#999] text-sm mb-2 font-medium">메모</Text>
               <TextInput
-                className="bg-[#3a3a3a] text-brand-beige rounded-lg px-4 py-3 mb-6"
+                className="bg-[#333] text-brand-beige rounded-xl px-4 py-3.5 mb-6"
                 placeholder="(선택) 메모"
                 placeholderTextColor="#666"
                 multiline
@@ -534,7 +538,7 @@ export default function TeacherCalendar() {
 
               {/* Save */}
               <Pressable
-                className={`rounded-xl py-4 items-center ${
+                className={`rounded-2xl py-4 items-center ${
                   isSaving ? "bg-[#555]" : "bg-brand-accent"
                 }`}
                 onPress={handleSave}

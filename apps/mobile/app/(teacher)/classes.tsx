@@ -76,13 +76,13 @@ export default function TeacherClasses() {
           />
         }
         ListEmptyComponent={
-          <View className="items-center justify-center py-20">
+          <View className="items-center justify-center py-24">
             <Text className="text-[#888] text-base">등록된 반이 없습니다</Text>
           </View>
         }
         renderItem={({ item }) => (
           <Pressable
-            className="bg-[#2a2a2a] rounded-xl p-4 mb-3 active:opacity-80"
+            className="bg-[#2a2a2a] rounded-2xl p-4 mb-3 border border-[#333]/40 active:opacity-80"
             onPress={() =>
               router.push(`/(teacher)/class/${item.id}` as never)
             }
@@ -91,7 +91,7 @@ export default function TeacherClasses() {
               <Text className="text-brand-beige text-base font-bold flex-1">
                 {item.name}
               </Text>
-              <View className="bg-[#3a3a3a] rounded-full px-3 py-1">
+              <View className="bg-brand-accent/15 rounded-full px-3 py-1">
                 <Text className="text-brand-accent text-xs font-medium">
                   {item._count?.enrollments ?? 0}명
                 </Text>

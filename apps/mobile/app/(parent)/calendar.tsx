@@ -120,16 +120,18 @@ export default function ParentCalendar() {
           monthTextColor: "#f5f0e8",
           arrowColor: "#d4a574",
           textDisabledColor: "#444",
+          textMonthFontSize: 18,
+          textDayFontSize: 14,
         }}
       />
 
       {/* Legend */}
       {legendEntries.length > 0 && (
-        <View className="flex-row flex-wrap px-4 py-2 gap-3">
+        <View className="flex-row flex-wrap px-4 py-3 gap-4">
           {legendEntries.map((entry) => (
             <View key={entry.name} className="flex-row items-center gap-1">
               <View
-                style={{ backgroundColor: entry.color, width: 10, height: 10, borderRadius: 5 }}
+                style={{ backgroundColor: entry.color, width: 12, height: 12, borderRadius: 6 }}
               />
               <Text className="text-gray-400 text-xs">{entry.name}</Text>
             </View>
@@ -148,17 +150,17 @@ export default function ParentCalendar() {
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 20 }}
           ListEmptyComponent={
-            <View className="items-center mt-8">
+            <View className="items-center mt-10 px-4">
               <Text className="text-gray-500">이 날짜에 수업이 없습니다</Text>
             </View>
           }
           renderItem={({ item }) => {
             const dotColor = childColorMap.get(item.childId) || CHILD_COLORS[0];
             return (
-              <View className="bg-[#2a2a2a] rounded-xl p-4 mb-3">
+              <View className="bg-[#2a2a2a] rounded-2xl p-4 mb-3">
                 <View className="flex-row items-center gap-2 mb-1">
                   <View
-                    style={{ backgroundColor: dotColor, width: 8, height: 8, borderRadius: 4 }}
+                    style={{ backgroundColor: dotColor, width: 10, height: 10, borderRadius: 5 }}
                   />
                   <Text className="text-brand-accent text-xs font-bold">
                     {item.childName}
@@ -170,7 +172,7 @@ export default function ParentCalendar() {
                 <Text className="text-gray-400 text-sm mt-1">
                   {item.startTime} – {item.endTime}
                 </Text>
-                <View className="mt-2 self-start bg-[#333] rounded-full px-3 py-1">
+                <View className="mt-2 self-start bg-[#333] rounded-full px-3.5 py-1.5">
                   <Text className="text-gray-400 text-xs">{item.status}</Text>
                 </View>
               </View>
