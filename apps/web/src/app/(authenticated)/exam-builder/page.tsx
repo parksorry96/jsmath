@@ -16,6 +16,7 @@ import {
   BookOpen,
   ClipboardList,
   Check,
+  Eye,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -40,6 +41,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
+import { LatexRenderer } from "@/components/math/latex-renderer";
 import Link from "next/link";
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,8 @@ interface Problem {
   difficulty: number | null;
   subject: string | null;
   unitMajor: string | null;
+  choices?: { label: string; contentLatex: string; contentText: string; position: number }[];
+  answerText?: string | null;
 }
 
 interface FilterOptions {
@@ -235,6 +239,9 @@ export default function ExamBuilderPage() {
   const [examDoc, setExamDoc] = useState<ExamDocument | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Problem preview modal
+  const [previewProblem, setPreviewProblem] = useState<Problem | null>(null);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -662,7 +669,7 @@ export default function ExamBuilderPage() {
                 value={problemsPerPage}
                 onChange={(e) => setProblemsPerPage(Number(e.target.value))}
               >
-                {[3, 4, 5, 6].map((n) => (
+                {[2, 3, 4, 5, 6].map((n) => (
                   <option key={n} value={n}>
                     {n}문제
                   </option>
@@ -841,7 +848,11 @@ export default function ExamBuilderPage() {
                               problem.problemNumber ||
                               "#"}
                           </div>
-                          <div className="min-w-0 flex-1">
+                          <button
+                            type="button"
+                            className="min-w-0 flex-1 text-left"
+                            onClick={() => setPreviewProblem(problem)}
+                          >
                             <p className="truncate text-sm">{preview}</p>
                             <div className="mt-0.5 flex items-center gap-1.5">
                               <Badge
@@ -858,7 +869,16 @@ export default function ExamBuilderPage() {
                                 </span>
                               )}
                             </div>
-                          </div>
+                          </button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="shrink-0 h-7 w-7 p-0"
+                            onClick={() => setPreviewProblem(problem)}
+                            title="미리보기"
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                          </Button>
                           <Button
                             variant={isSelected ? "secondary" : "default"}
                             size="sm"
@@ -1181,6 +1201,108 @@ export default function ExamBuilderPage() {
                 제작 내역
               </Button>
             </Link>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================= */}
+      {/* Problem Preview Modal                                              */}
+      {/* ================================================================= */}
+      {previewProblem && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setPreviewProblem(null)}
+        >
+          <div
+            className="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-border bg-brand-dark p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Close button */}
+            <button
+              type="button"
+              onClick={() => setPreviewProblem(null)}
+              className="absolute right-4 top-4 rounded-md p-1 text-muted-foreground hover:bg-brand-charcoal hover:text-foreground"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            {/* Header */}
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-charcoal text-sm font-bold text-brand-beige">
+                {previewProblem.displayNumber || previewProblem.problemNumber || "#"}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-xs">
+                    {PROBLEM_TYPE_LABELS[previewProblem.problemType] ?? previewProblem.problemType}
+                  </Badge>
+                  {previewProblem.difficulty !== null && (
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${difficultyColor(previewProblem.difficulty)}`}>
+                      {difficultyLabel(previewProblem.difficulty)}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                  {previewProblem.subject && <span>{previewProblem.subject}</span>}
+                  {previewProblem.unitMajor && (
+                    <>
+                      <span>&middot;</span>
+                      <span>{previewProblem.unitMajor}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Problem content with LaTeX rendering */}
+            <div className="rounded-lg border border-border bg-brand-charcoal p-4">
+              <LatexRenderer content={previewProblem.stemLatex || previewProblem.stemText} />
+            </div>
+
+            {/* Choices */}
+            {previewProblem.choices && previewProblem.choices.length > 0 && (
+              <div className="mt-4 space-y-2">
+                <p className="text-sm font-medium text-muted-foreground">보기</p>
+                <div className="space-y-1.5">
+                  {previewProblem.choices.map((choice) => (
+                    <div
+                      key={choice.label}
+                      className="flex items-start gap-2 rounded-md border border-border bg-brand-charcoal px-3 py-2"
+                    >
+                      <span className="shrink-0 text-sm font-medium text-brand-beige">
+                        {choice.label}.
+                      </span>
+                      <div className="text-sm">
+                        <LatexRenderer content={choice.contentLatex || choice.contentText} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Add button */}
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setPreviewProblem(null)}>
+                닫기
+              </Button>
+              {!selectedProblems.some((p) => p.id === previewProblem.id) ? (
+                <Button
+                  onClick={() => {
+                    addProblem(previewProblem);
+                    setPreviewProblem(null);
+                  }}
+                >
+                  <Plus className="mr-1 h-4 w-4" />
+                  문제 추가
+                </Button>
+              ) : (
+                <Button variant="secondary" disabled>
+                  <Check className="mr-1 h-4 w-4" />
+                  추가됨
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       )}
