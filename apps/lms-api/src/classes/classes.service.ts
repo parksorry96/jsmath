@@ -6,7 +6,12 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateClassDto } from "./dto/create-class.dto";
 import { UpdateClassDto } from "./dto/update-class.dto";
-import { canAccessClass, getAccessibleClassIds } from "../common/access-control";
+import {
+  canAccessClass,
+  getAccessibleClassIds,
+  getRequesterOrganizationId,
+  isAdminRole,
+} from "../common/access-control";
 
 @Injectable()
 export class ClassesService {
@@ -19,12 +24,28 @@ export class ClassesService {
     };
   }
 
-  async create(dto: CreateClassDto) {
+  async create(
+    dto: CreateClassDto,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const requesterOrganizationId = isAdminRole(requesterRole)
+      ? dto.organizationId
+      : await getRequesterOrganizationId(this.prisma, requesterId);
+
+    if (
+      !isAdminRole(requesterRole) &&
+      dto.organizationId !== undefined &&
+      dto.organizationId !== requesterOrganizationId
+    ) {
+      throw new ForbiddenException("Cannot create classes outside your organization");
+    }
+
     const created = await this.prisma.class.create({
       data: {
         title: dto.title,
         description: dto.description,
-        organizationId: dto.organizationId,
+        organizationId: requesterOrganizationId,
       },
       include: {
         organization: { select: { id: true, name: true } },
@@ -90,8 +111,14 @@ export class ClassesService {
 
   async update(id: string, dto: UpdateClassDto, requesterId: string, requesterRole: string) {
     await this.assertClassExists(id);
-    if (requesterRole === "student") {
-      throw new ForbiddenException("Students cannot update classes");
+    const allowed = await canAccessClass(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      id,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to update this class");
     }
     const updated = await this.prisma.class.update({
       where: { id },
@@ -103,10 +130,16 @@ export class ClassesService {
     return this.serializeClass(updated);
   }
 
-  async softDelete(id: string, requesterRole: string) {
+  async softDelete(id: string, requesterId: string, requesterRole: string) {
     await this.assertClassExists(id);
-    if (requesterRole === "student") {
-      throw new ForbiddenException("Students cannot delete classes");
+    const allowed = await canAccessClass(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      id,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to delete this class");
     }
     return this.prisma.class.update({
       where: { id },

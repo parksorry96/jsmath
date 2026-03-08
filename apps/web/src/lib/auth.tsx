@@ -28,7 +28,6 @@ interface AuthContextValue {
     email: string,
     name: string,
     password: string,
-    role: string,
   ) => Promise<void>;
   logout: () => void;
 }
@@ -77,11 +76,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: string,
       name: string,
       password: string,
-      role: string,
     ) => {
       const { accessToken } = await api.post<{ accessToken: string }>(
         "/auth/register",
-        { email, name, password, role },
+        { email, name, password, role: "student" },
       );
       localStorage.setItem("token", accessToken);
 

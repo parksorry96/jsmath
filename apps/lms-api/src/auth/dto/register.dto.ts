@@ -1,9 +1,7 @@
 import { IsEmail, IsString, MinLength, IsOptional, IsIn } from "class-validator";
 
 export const PUBLIC_REGISTRATION_ROLES = [
-  "teacher",
   "student",
-  "parent",
 ] as const;
 
 export type PublicRegistrationRole = (typeof PUBLIC_REGISTRATION_ROLES)[number];

@@ -1,5 +1,6 @@
 import {
   Injectable,
+  BadRequestException,
   NotFoundException,
   InternalServerErrorException,
   ForbiddenException,
@@ -11,8 +12,16 @@ import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { basename } from "path";
+import { randomUUID } from "crypto";
 import { Redis } from "ioredis";
 import { canAccessSubmission } from "../common/access-control";
+
+const ALLOWED_IMAGE_MIME_TYPES = new Map<string, string>([
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/webp", ".webp"],
+]);
 
 @Injectable()
 export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
@@ -50,10 +59,15 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    await this.redisSubscriber.subscribe("photo:analysis:completed");
+    await this.redisSubscriber.subscribe(
+      "photo:analysis:completed",
+      "photo:analysis:failed",
+    );
     this.redisSubscriber.on("message", (channel, message) => {
       if (channel === "photo:analysis:completed") {
         void this.handleAnalysisCompleted(message);
+      } else if (channel === "photo:analysis:failed") {
+        void this.handleAnalysisFailed(message);
       }
     });
   }
@@ -90,6 +104,28 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleAnalysisFailed(message: string) {
+    try {
+      const payload = JSON.parse(message) as {
+        submissionPhotoId: string;
+      };
+      await this.prisma.submissionPhoto.update({
+        where: { id: payload.submissionPhotoId },
+        data: {
+          analysisStatus: "failed",
+        },
+      });
+      this.logger.warn(
+        `Photo analysis failed for ${payload.submissionPhotoId}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        "Failed to process photo:analysis:failed",
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
   async uploadPhoto(
     submissionId: string,
     file: Express.Multer.File,
@@ -105,6 +141,14 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
     if (!allowed) {
       throw new ForbiddenException("Not authorized to upload to this submission");
     }
+    if (!file) {
+      throw new BadRequestException("No photo provided");
+    }
+
+    const extension = ALLOWED_IMAGE_MIME_TYPES.get(file.mimetype);
+    if (!extension) {
+      throw new BadRequestException("Only JPG, PNG, and WEBP images are accepted");
+    }
 
     const submission = await this.prisma.submission.findUnique({
       where: { id: submissionId },
@@ -118,7 +162,9 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
     });
     if (!submission) throw new NotFoundException("Submission not found");
 
-    const s3Key = `submissions/${submissionId}/${Date.now()}-${file.originalname}`;
+    const safeOriginalName = basename(file.originalname || `photo${extension}`)
+      .normalize("NFC");
+    const s3Key = `submissions/${submissionId}/${Date.now()}-${randomUUID()}${extension}`;
     try {
       await this.s3.send(
         new PutObjectCommand({
@@ -133,22 +179,22 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
     }
 
     const photo = await this.prisma.submissionPhoto.create({
-      data: { submissionId, s3Key, originalName: file.originalname },
+      data: { submissionId, s3Key, originalName: safeOriginalName },
     });
 
-    // Fetch problem context for Vision LLM
+    // Send all assignment problems so the worker can match the photo to the right item.
     const problemIds = submission.assignment.assignmentProblems.map(
       (ap) => ap.problemId,
     );
-    let problemContext: {
+    let problemContexts: Array<{
       id: string;
       stemLatex: string;
       answerText: string | null;
       answerLatex: string | null;
       solutionSteps: unknown;
-    } | null = null;
+    }> = [];
     if (problemIds.length > 0) {
-      problemContext = await this.prisma.problem.findFirst({
+      const problems = await this.prisma.problem.findMany({
         where: { id: { in: problemIds } },
         select: {
           id: true,
@@ -158,16 +204,16 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
           solutionSteps: true,
         },
       });
+      const problemMap = new Map(problems.map((problem) => [problem.id, problem]));
+      problemContexts = submission.assignment.assignmentProblems
+        .map((assignmentProblem) => problemMap.get(assignmentProblem.problemId))
+        .filter((problem): problem is NonNullable<typeof problem> => Boolean(problem));
     }
 
     const payload = {
       submissionPhotoId: photo.id,
       s3Key,
-      problemId: problemContext?.id ?? null,
-      problemStemLatex: problemContext?.stemLatex ?? "",
-      answerText: problemContext?.answerText ?? null,
-      answerLatex: problemContext?.answerLatex ?? null,
-      solutionSteps: problemContext?.solutionSteps ?? null,
+      problems: problemContexts,
     };
     await this.redisPublisher.publish(
       "photo:analyze",

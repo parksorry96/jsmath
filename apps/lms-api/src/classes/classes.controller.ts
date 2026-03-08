@@ -30,8 +30,8 @@ export class ClassesController {
 
   @Post()
   @Roles("admin", "teacher")
-  create(@Body() dto: CreateClassDto) {
-    return this.classes.create(dto);
+  create(@Body() dto: CreateClassDto, @Request() req: AuthRequest) {
+    return this.classes.create(dto, req.user.id, req.user.role);
   }
 
   @Get()
@@ -61,6 +61,6 @@ export class ClassesController {
   @Roles("admin", "teacher")
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param("id") id: string, @Request() req: AuthRequest) {
-    return this.classes.softDelete(id, req.user.role);
+    return this.classes.softDelete(id, req.user.id, req.user.role);
   }
 }

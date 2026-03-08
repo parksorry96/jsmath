@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from "@nestjs/common";
 import { SubmissionStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
@@ -11,6 +12,7 @@ import {
   canAccessAssignment,
   canAccessStudentData,
   canAccessSubmission,
+  getAccessibleClassIds,
   getLinkedStudentIds,
   isPrivilegedRole,
 } from "../common/access-control";
@@ -55,8 +57,38 @@ export class SubmissionsService {
 
     const assignment = await this.prisma.assignment.findUnique({
       where: { id: dto.assignmentId },
+      include: {
+        assignmentProblems: {
+          orderBy: { orderIndex: "asc" },
+          select: { problemId: true },
+        },
+      },
     });
     if (!assignment) throw new NotFoundException("Assignment not found");
+
+    if (dto.type === "online" && assignment.assignmentProblems.length === 0) {
+      throw new BadRequestException("Online submissions require assignment problems");
+    }
+
+    const providedAnswers = new Map<string, string>();
+    if (dto.type === "online") {
+      for (const answer of dto.answers ?? []) {
+        if (providedAnswers.has(answer.problemId)) {
+          throw new BadRequestException("Duplicate answers are not allowed");
+        }
+        providedAnswers.set(answer.problemId, answer.studentAnswer);
+      }
+
+      const assignmentProblemIds = new Set(
+        assignment.assignmentProblems.map((problem) => problem.problemId),
+      );
+      const invalidProblemId = [...providedAnswers.keys()].find(
+        (problemId) => !assignmentProblemIds.has(problemId),
+      );
+      if (invalidProblemId) {
+        throw new BadRequestException("Submission contains answers for another assignment");
+      }
+    }
 
     const submission = await this.prisma.submission.create({
       data: {
@@ -65,11 +97,11 @@ export class SubmissionsService {
         type: dto.type,
         maxScore: assignment.maxScore,
         answers:
-          dto.type === "online" && dto.answers?.length
+          dto.type === "online" && assignment.assignmentProblems.length > 0
             ? {
-                create: dto.answers.map((a) => ({
-                  problemId: a.problemId,
-                  studentAnswer: a.studentAnswer,
+                create: assignment.assignmentProblems.map((problem) => ({
+                  problemId: problem.problemId,
+                  studentAnswer: providedAnswers.get(problem.problemId) ?? null,
                 })),
               }
             : undefined,
@@ -87,43 +119,92 @@ export class SubmissionsService {
   async autoGrade(submissionId: string) {
     const submission = await this.prisma.submission.findUnique({
       where: { id: submissionId },
-      include: { answers: true, assignment: true },
+      include: {
+        answers: true,
+        assignment: {
+          select: { maxScore: true },
+        },
+      },
     });
     if (!submission) throw new NotFoundException("Submission not found");
 
+    const problemIds = submission.answers.map((answer) => answer.problemId);
+    const problems = problemIds.length
+      ? await this.prisma.problem.findMany({
+          where: { id: { in: problemIds } },
+          select: {
+            id: true,
+            problemType: true,
+            answerText: true,
+          },
+        })
+      : [];
+    const problemMap = new Map(problems.map((problem) => [problem.id, problem]));
+
     let correctCount = 0;
-    const totalCount = submission.answers.length;
+    let autoGradableCount = 0;
+    let manualReviewRequired = false;
+    const answerUpdates: Array<Promise<unknown>> = [];
 
     for (const answer of submission.answers) {
-      const problem = await this.prisma.problem.findUnique({
-        where: { id: answer.problemId },
-      });
-      if (!problem || !problem.answerText) continue;
+      const problem = problemMap.get(answer.problemId);
+      if (!problem) {
+        manualReviewRequired = true;
+        continue;
+      }
+
+      const isAutoGradable =
+        (problem.problemType === "multiple_choice" ||
+          problem.problemType === "short_answer") &&
+        Boolean(problem.answerText);
+      if (!isAutoGradable) {
+        manualReviewRequired = true;
+        continue;
+      }
+
+      autoGradableCount++;
 
       let isCorrect = false;
+      const expectedAnswer = problem.answerText ?? "";
 
       if (problem.problemType === "multiple_choice") {
-        isCorrect = answer.studentAnswer === problem.answerText;
+        isCorrect = answer.studentAnswer === expectedAnswer;
       } else if (problem.problemType === "short_answer") {
         const normalize = (s: string) =>
           s.trim().toLowerCase().replace(/\s+/g, "");
         isCorrect =
           normalize(answer.studentAnswer ?? "") ===
-          normalize(problem.answerText);
+          normalize(expectedAnswer);
       }
       // written_solution / essay: skip auto-grading
 
       if (isCorrect) correctCount++;
 
-      await this.prisma.submissionAnswer.update({
+      answerUpdates.push(this.prisma.submissionAnswer.update({
         where: { id: answer.id },
         data: { isCorrect },
+      }));
+    }
+
+    if (answerUpdates.length > 0) {
+      await Promise.all(answerUpdates);
+    }
+
+    if (manualReviewRequired) {
+      return this.prisma.submission.update({
+        where: { id: submissionId },
+        data: {
+          score: null,
+          status: "submitted",
+          gradedAt: null,
+        },
+        include: { answers: true },
       });
     }
 
     const score =
-      totalCount > 0
-        ? (correctCount / totalCount) * (submission.maxScore ?? 100)
+      autoGradableCount > 0
+        ? (correctCount / autoGradableCount) * (submission.assignment.maxScore ?? 100)
         : 0;
 
     return this.prisma.submission.update({
@@ -269,9 +350,22 @@ export class SubmissionsService {
     }
 
     const normalizedStatus = this.normalizeStatus(status);
+    const accessibleClassIds = await getAccessibleClassIds(
+      this.prisma,
+      requesterId,
+      requesterRole,
+    );
+    const assignmentWhere =
+      accessibleClassIds === null
+        ? (classId ? { classId } : undefined)
+        : {
+            classId: classId
+              ? { equals: classId, in: accessibleClassIds }
+              : { in: accessibleClassIds },
+          };
     const items = await this.prisma.submission.findMany({
       where: {
-        ...(classId ? { assignment: { classId } } : {}),
+        ...(assignmentWhere ? { assignment: assignmentWhere } : {}),
         ...(normalizedStatus ? { status: normalizedStatus } : {}),
       },
       include: {
@@ -308,7 +402,22 @@ export class SubmissionsService {
     return this.serializeSubmission(submission);
   }
 
-  async grade(id: string, dto: GradeSubmissionDto, graderId: string) {
+  async grade(
+    id: string,
+    dto: GradeSubmissionDto,
+    graderId: string,
+    requesterRole: string,
+  ) {
+    const allowed = await canAccessSubmission(
+      this.prisma,
+      graderId,
+      requesterRole,
+      id,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to grade this submission");
+    }
+
     const submission = await this.prisma.submission.findUnique({
       where: { id },
     });
@@ -345,7 +454,17 @@ export class SubmissionsService {
     });
   }
 
-  async returnSubmission(id: string) {
+  async returnSubmission(id: string, requesterId: string, requesterRole: string) {
+    const allowed = await canAccessSubmission(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      id,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to return this submission");
+    }
+
     const submission = await this.prisma.submission.findUnique({
       where: { id },
     });

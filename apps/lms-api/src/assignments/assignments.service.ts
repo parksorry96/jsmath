@@ -6,7 +6,12 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateAssignmentDto } from "./dto/create-assignment.dto";
 import { UpdateAssignmentDto } from "./dto/update-assignment.dto";
-import { canAccessClass, canAccessAssignment } from "../common/access-control";
+import {
+  canAccessAssignment,
+  canAccessClass,
+  getAccessibleClassIds,
+  isPrivilegedRole,
+} from "../common/access-control";
 
 @Injectable()
 export class AssignmentsService {
@@ -72,12 +77,13 @@ export class AssignmentsService {
       };
     }>;
     _count?: { submissions: number };
-  }) {
+  }, includeProblemAnswers: boolean) {
     const problems = (assignment.assignmentProblems ?? []).map((ap) => ({
       id: ap.id,
       order: ap.orderIndex,
       problem: {
         ...ap.problem,
+        answerText: includeProblemAnswers ? ap.problem.answerText : null,
         choices: ap.problem.choices,
       },
     }));
@@ -100,7 +106,21 @@ export class AssignmentsService {
     return dto.dueAt ?? dto.dueDate;
   }
 
-  async create(classId: string, dto: CreateAssignmentDto) {
+  async create(
+    classId: string,
+    dto: CreateAssignmentDto,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const allowed = await canAccessClass(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      classId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to access this class");
+    }
     await this.assertClassExists(classId);
 
     const assignment = await this.prisma.assignment.create({
@@ -166,10 +186,10 @@ export class AssignmentsService {
       throw new ForbiddenException("Not authorized to access this assignment");
     }
 
-    return this.findByIdInternal(id);
+    return this.findByIdInternal(id, isPrivilegedRole(requesterRole));
   }
 
-  private async findByIdInternal(id: string) {
+  private async findByIdInternal(id: string, includeProblemAnswers = true) {
     const assignment = await this.prisma.assignment.findUnique({
       where: { id },
       include: {
@@ -234,7 +254,7 @@ export class AssignmentsService {
         .filter((item): item is NonNullable<typeof item> => item !== null),
     };
 
-    return this.serializeAssignmentDetail(detail);
+    return this.serializeAssignmentDetail(detail, includeProblemAnswers);
   }
 
   async findMine(studentId: string) {
@@ -267,15 +287,25 @@ export class AssignmentsService {
     );
   }
 
-  async findAcrossClasses(hasPendingOnly = false) {
+  async findAcrossClasses(
+    requesterId: string,
+    requesterRole: string,
+    hasPendingOnly = false,
+  ) {
+    const accessibleClassIds = await getAccessibleClassIds(
+      this.prisma,
+      requesterId,
+      requesterRole,
+    );
     const assignments = await this.prisma.assignment.findMany({
       where: hasPendingOnly
         ? {
+            ...(accessibleClassIds !== null ? { classId: { in: accessibleClassIds } } : {}),
             submissions: {
               some: { status: "submitted" },
             },
           }
-        : undefined,
+        : (accessibleClassIds !== null ? { classId: { in: accessibleClassIds } } : undefined),
       include: {
         class: { select: { id: true, title: true } },
         submissions: {
@@ -292,9 +322,20 @@ export class AssignmentsService {
     }));
   }
 
-  async update(id: string, dto: UpdateAssignmentDto, requesterRole: string) {
-    if (requesterRole === "student") {
-      throw new ForbiddenException("Students cannot update assignments");
+  async update(
+    id: string,
+    dto: UpdateAssignmentDto,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const allowed = await canAccessAssignment(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      id,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to update this assignment");
     }
     await this.assertAssignmentExists(id);
     return this.prisma.assignment.update({
@@ -306,15 +347,30 @@ export class AssignmentsService {
     });
   }
 
-  async remove(id: string, requesterRole: string) {
-    if (requesterRole === "student") {
-      throw new ForbiddenException("Students cannot delete assignments");
+  async remove(id: string, requesterId: string, requesterRole: string) {
+    const allowed = await canAccessAssignment(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      id,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to delete this assignment");
     }
     await this.assertAssignmentExists(id);
     await this.prisma.assignment.delete({ where: { id } });
   }
 
-  async returnAll(id: string) {
+  async returnAll(id: string, requesterId: string, requesterRole: string) {
+    const allowed = await canAccessAssignment(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      id,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to return this assignment");
+    }
     await this.assertAssignmentExists(id);
 
     const result = await this.prisma.submission.updateMany({
@@ -330,7 +386,21 @@ export class AssignmentsService {
     return { returnedCount: result.count };
   }
 
-  async addProblems(assignmentId: string, problemIds: string[]) {
+  async addProblems(
+    assignmentId: string,
+    problemIds: string[],
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const allowed = await canAccessAssignment(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      assignmentId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to update this assignment");
+    }
     const assignment = await this.assertAssignmentExists(assignmentId);
 
     const existing = await this.prisma.assignmentProblem.findMany({
@@ -352,7 +422,21 @@ export class AssignmentsService {
     return this.findByIdInternal(assignmentId);
   }
 
-  async removeProblem(assignmentId: string, problemId: string) {
+  async removeProblem(
+    assignmentId: string,
+    problemId: string,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const allowed = await canAccessAssignment(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      assignmentId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to update this assignment");
+    }
     await this.assertAssignmentExists(assignmentId);
 
     const record = await this.prisma.assignmentProblem.findFirst({
@@ -364,7 +448,21 @@ export class AssignmentsService {
     return this.findByIdInternal(assignmentId);
   }
 
-  async reorderProblems(assignmentId: string, problemIds: string[]) {
+  async reorderProblems(
+    assignmentId: string,
+    problemIds: string[],
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const allowed = await canAccessAssignment(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      assignmentId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to update this assignment");
+    }
     await this.assertAssignmentExists(assignmentId);
 
     await this.prisma.$transaction(

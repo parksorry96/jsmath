@@ -18,7 +18,7 @@ import { toast } from "sonner";
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
 
-const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
 type UploadStatus =
   | "pending"
@@ -94,7 +94,11 @@ export default function UploadPage() {
       let reconnectDelay = 1000;
 
       function connect() {
-        const es = new EventSource(`${API_URL}/files/${jobId}/events`);
+        const token = localStorage.getItem("token");
+        const query = token
+          ? `?access_token=${encodeURIComponent(token)}`
+          : "";
+        const es = new EventSource(`${API_URL}/files/${jobId}/events${query}`);
         sseRef.current.set(uploadId, es);
 
         es.addEventListener("progress", (e) => {

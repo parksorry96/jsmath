@@ -5,8 +5,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import * as SecureStore from "expo-secure-store";
 import { api } from "./api";
+import { deleteItemAsync, getItemAsync, setItemAsync } from "./storage";
 
 type Role = "student" | "parent" | "teacher" | "admin";
 
@@ -28,7 +28,6 @@ interface RegisterData {
   name: string;
   email: string;
   password: string;
-  role: string;
 }
 
 interface AuthResponse {
@@ -68,12 +67,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function loadUser() {
     try {
-      const token = await SecureStore.getItemAsync("auth_token");
+      const token = await getItemAsync("auth_token");
       if (token) {
         setUser(userFromToken(token));
       }
     } catch {
-      await SecureStore.deleteItemAsync("auth_token");
+      await deleteItemAsync("auth_token");
     } finally {
       setIsLoading(false);
     }
@@ -84,18 +83,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email,
       password,
     });
-    await SecureStore.setItemAsync("auth_token", res.accessToken);
+    await setItemAsync("auth_token", res.accessToken);
     setUser(userFromToken(res.accessToken));
   }
 
   async function register(data: RegisterData) {
-    const res = await api.post<AuthResponse>("/auth/register", data);
-    await SecureStore.setItemAsync("auth_token", res.accessToken);
+    const res = await api.post<AuthResponse>("/auth/register", {
+      ...data,
+      role: "student",
+    });
+    await setItemAsync("auth_token", res.accessToken);
     setUser(userFromToken(res.accessToken));
   }
 
   async function logout() {
-    await SecureStore.deleteItemAsync("auth_token");
+    await deleteItemAsync("auth_token");
     setUser(null);
   }
 

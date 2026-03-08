@@ -1,7 +1,26 @@
 import { PrismaService } from "../prisma/prisma.service";
 
+export function isAdminRole(role: string): boolean {
+  return role === "admin";
+}
+
+export function isTeacherRole(role: string): boolean {
+  return role === "teacher";
+}
+
 export function isPrivilegedRole(role: string): boolean {
-  return role === "admin" || role === "teacher";
+  return isAdminRole(role) || isTeacherRole(role);
+}
+
+export async function getRequesterOrganizationId(
+  prisma: PrismaService,
+  requesterId: string,
+): Promise<string | null> {
+  const user = await prisma.user.findUnique({
+    where: { id: requesterId },
+    select: { organizationId: true },
+  });
+  return user?.organizationId ?? null;
 }
 
 export async function getLinkedStudentIds(
@@ -21,8 +40,20 @@ export async function getAccessibleClassIds(
   requesterId: string,
   requesterRole: string,
 ): Promise<string[] | null> {
-  if (isPrivilegedRole(requesterRole)) {
+  if (isAdminRole(requesterRole)) {
     return null;
+  }
+
+  if (isTeacherRole(requesterRole)) {
+    const organizationId = await getRequesterOrganizationId(prisma, requesterId);
+    const classes = await prisma.class.findMany({
+      where: {
+        deletedAt: null,
+        organizationId,
+      },
+      select: { id: true },
+    });
+    return classes.map((cls) => cls.id);
   }
 
   if (requesterRole === "student") {
@@ -71,7 +102,7 @@ export async function canAccessAssignment(
   requesterRole: string,
   assignmentId: string,
 ): Promise<boolean> {
-  if (isPrivilegedRole(requesterRole)) {
+  if (isAdminRole(requesterRole)) {
     return true;
   }
 
@@ -98,17 +129,31 @@ export async function canAccessSubmission(
   requesterRole: string,
   submissionId: string,
 ): Promise<boolean> {
-  if (isPrivilegedRole(requesterRole)) {
+  if (isAdminRole(requesterRole)) {
     return true;
   }
 
   const submission = await prisma.submission.findUnique({
     where: { id: submissionId },
-    select: { studentId: true },
+    select: {
+      studentId: true,
+      assignment: {
+        select: {
+          class: {
+            select: { organizationId: true },
+          },
+        },
+      },
+    },
   });
 
   if (!submission) {
     return false;
+  }
+
+  if (isTeacherRole(requesterRole)) {
+    const organizationId = await getRequesterOrganizationId(prisma, requesterId);
+    return submission.assignment.class.organizationId === organizationId;
   }
 
   if (requesterRole === "student") {
@@ -129,8 +174,19 @@ export async function canAccessStudentData(
   requesterRole: string,
   studentId: string,
 ): Promise<boolean> {
-  if (isPrivilegedRole(requesterRole)) {
+  if (isAdminRole(requesterRole)) {
     return true;
+  }
+
+  if (isTeacherRole(requesterRole)) {
+    const [teacherOrganizationId, student] = await Promise.all([
+      getRequesterOrganizationId(prisma, requesterId),
+      prisma.user.findUnique({
+        where: { id: studentId },
+        select: { organizationId: true },
+      }),
+    ]);
+    return student?.organizationId === teacherOrganizationId;
   }
 
   if (requesterRole === "student") {

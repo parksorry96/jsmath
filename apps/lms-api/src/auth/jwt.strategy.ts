@@ -10,6 +10,11 @@ interface JwtPayload {
   role: string;
 }
 
+function extractJwtFromQuery(req: { query?: Record<string, unknown> } | undefined) {
+  const token = req?.query?.access_token;
+  return typeof token === "string" ? token : null;
+}
+
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
@@ -17,7 +22,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     private prisma: PrismaService,
   ) {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        extractJwtFromQuery,
+      ]),
       ignoreExpiration: false,
       secretOrKey: config.getOrThrow<string>("JWT_SECRET"),
     });

@@ -88,12 +88,12 @@ export class SubmissionsController {
     @Body() dto: GradeSubmissionDto,
     @Request() req: AuthRequest,
   ) {
-    return this.submissions.grade(id, dto, req.user.id);
+    return this.submissions.grade(id, dto, req.user.id, req.user.role);
   }
 
   @Patch(":id/return")
   @Roles("admin", "teacher")
-  returnSubmission(@Param("id") id: string) {
-    return this.submissions.returnSubmission(id);
+  returnSubmission(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.submissions.returnSubmission(id, req.user.id, req.user.role);
   }
 }

@@ -4,6 +4,7 @@ import {
   Param,
   MessageEvent,
   UseGuards,
+  Request,
 } from "@nestjs/common";
 import { Observable, filter, map } from "rxjs";
 import { FilesService } from "./files.service";
@@ -18,7 +19,12 @@ export class FilesSseController {
   constructor(private readonly filesService: FilesService) {}
 
   @Sse(":id/events")
-  streamEvents(@Param("id") id: string): Observable<MessageEvent> {
+  async streamEvents(
+    @Param("id") id: string,
+    @Request() req: { user: { id: string; role: string } },
+  ): Promise<Observable<MessageEvent>> {
+    await this.filesService.assertCanAccessOcrJob(id, req.user.id, req.user.role);
+
     return this.filesService.getProgressStream().pipe(
       filter((event) => event.ocrJobId === id),
       map((event) => ({

@@ -28,13 +28,14 @@ export class ProblemsController {
 
   @Get("stats")
   @Roles("admin", "teacher")
-  getStats() {
-    return this.problems.getStats();
+  getStats(@Request() req: AuthRequest) {
+    return this.problems.getStats(req.user.id, req.user.role);
   }
 
   @Get()
   @Roles("admin", "teacher")
   findAll(
+    @Request() req: AuthRequest,
     @Query("ocrJobId") ocrJobId?: string,
     @Query("reviewStatus") reviewStatus?: ReviewStatus,
     @Query("gradeLevel") gradeLevel?: string,
@@ -50,6 +51,8 @@ export class ProblemsController {
     @Query("limit") limit?: string,
   ) {
     return this.problems.findAll({
+      requesterId: req.user.id,
+      requesterRole: req.user.role,
       ocrJobId,
       reviewStatus,
       gradeLevel,
@@ -67,19 +70,32 @@ export class ProblemsController {
 
   @Post("analyze")
   @Roles("admin", "teacher")
-  triggerAnalysis(@Body() body: { ocrJobId: string; problemIds?: string[] }) {
-    return this.problems.triggerAnalysis(body.ocrJobId, body.problemIds);
+  triggerAnalysis(
+    @Body() body: { ocrJobId: string; problemIds?: string[] },
+    @Request() req: AuthRequest,
+  ) {
+    return this.problems.triggerAnalysis(
+      body.ocrJobId,
+      req.user.id,
+      req.user.role,
+      body.problemIds,
+    );
   }
 
   @Get(":id/analysis")
-  getAnalysis(@Param("id") id: string) {
-    return this.problems.getAnalysis(id);
+  @Roles("admin", "teacher")
+  getAnalysis(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.problems.getAnalysis(id, req.user.id, req.user.role);
   }
 
   @Patch(":id")
   @Roles("admin", "teacher")
-  update(@Param("id") id: string, @Body() dto: UpdateProblemDto) {
-    return this.problems.update(id, dto);
+  update(
+    @Param("id") id: string,
+    @Body() dto: UpdateProblemDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.problems.update(id, dto, req.user.id, req.user.role);
   }
 
   @Post(":id/review")
@@ -89,6 +105,6 @@ export class ProblemsController {
     @Body() dto: ReviewProblemDto,
     @Request() req: AuthRequest,
   ) {
-    return this.problems.review(id, dto.action, req.user.id);
+    return this.problems.review(id, dto.action, req.user.id, req.user.role);
   }
 }

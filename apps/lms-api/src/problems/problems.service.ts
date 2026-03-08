@@ -12,6 +12,8 @@ import { UpdateProblemDto } from "./dto/update-problem.dto";
 import { Redis } from "ioredis";
 
 export interface ProblemsQuery {
+  requesterId: string;
+  requesterRole: string;
   ocrJobId?: string;
   reviewStatus?: ReviewStatus;
   gradeLevel?: string;
@@ -45,12 +47,40 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     await this.redisPublisher.quit();
   }
 
+  private getProblemScopeWhere(requesterId: string, requesterRole: string) {
+    if (requesterRole === "admin") {
+      return {};
+    }
+
+    return {
+      ocrJob: {
+        sourceFile: {
+          uploaderId: requesterId,
+        },
+      },
+    };
+  }
+
+  private getOcrJobScopeWhere(requesterId: string, requesterRole: string) {
+    if (requesterRole === "admin") {
+      return {};
+    }
+
+    return {
+      sourceFile: {
+        uploaderId: requesterId,
+      },
+    };
+  }
+
   async findAll(query: ProblemsQuery) {
     const page = query.page ?? 1;
     const limit = Math.min(query.limit ?? 20, 100);
     const skip = (page - 1) * limit;
 
-    const where: Record<string, unknown> = {};
+    const where: Record<string, unknown> = {
+      ...this.getProblemScopeWhere(query.requesterId, query.requesterRole),
+    };
 
     if (query.ocrJobId) where.ocrJobId = query.ocrJobId;
     if (query.reviewStatus) where.reviewStatus = query.reviewStatus;
@@ -145,16 +175,37 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async getStats() {
+  async getStats(requesterId: string, requesterRole: string) {
+    const ocrJobWhere = this.getOcrJobScopeWhere(requesterId, requesterRole);
+    const problemWhere = this.getProblemScopeWhere(requesterId, requesterRole);
     const [totalJobs, completedJobs, failedJobs, totalProblems, pendingReview, approved, rejected] =
       await Promise.all([
-        this.prisma.ocrJob.count(),
-        this.prisma.ocrJob.count({ where: { status: OcrJobStatus.completed } }),
-        this.prisma.ocrJob.count({ where: { status: OcrJobStatus.failed } }),
-        this.prisma.problem.count(),
-        this.prisma.problem.count({ where: { reviewStatus: ReviewStatus.pending_review } }),
-        this.prisma.problem.count({ where: { reviewStatus: ReviewStatus.approved } }),
-        this.prisma.problem.count({ where: { reviewStatus: ReviewStatus.rejected } }),
+        this.prisma.ocrJob.count({ where: ocrJobWhere }),
+        this.prisma.ocrJob.count({
+          where: { ...ocrJobWhere, status: OcrJobStatus.completed },
+        }),
+        this.prisma.ocrJob.count({
+          where: { ...ocrJobWhere, status: OcrJobStatus.failed },
+        }),
+        this.prisma.problem.count({ where: problemWhere }),
+        this.prisma.problem.count({
+          where: {
+            ...problemWhere,
+            reviewStatus: ReviewStatus.pending_review,
+          },
+        }),
+        this.prisma.problem.count({
+          where: {
+            ...problemWhere,
+            reviewStatus: ReviewStatus.approved,
+          },
+        }),
+        this.prisma.problem.count({
+          where: {
+            ...problemWhere,
+            reviewStatus: ReviewStatus.rejected,
+          },
+        }),
       ]);
 
     const ocrSuccessRate = totalJobs > 0 ? completedJobs / totalJobs : null;
@@ -165,8 +216,18 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async update(id: string, dto: UpdateProblemDto) {
-    const problem = await this.prisma.problem.findUnique({ where: { id } });
+  async update(
+    id: string,
+    dto: UpdateProblemDto,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id,
+        ...this.getProblemScopeWhere(requesterId, requesterRole),
+      },
+    });
     if (!problem) throw new NotFoundException("Problem not found");
 
     // Build update payload from defined fields only
@@ -197,13 +258,44 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async triggerAnalysis(ocrJobId: string, problemIds?: string[]) {
+  async triggerAnalysis(
+    ocrJobId: string,
+    requesterId: string,
+    requesterRole: string,
+    problemIds?: string[],
+  ) {
+    const accessibleJob = await this.prisma.ocrJob.findFirst({
+      where: {
+        id: ocrJobId,
+        ...this.getOcrJobScopeWhere(requesterId, requesterRole),
+      },
+      select: { id: true },
+    });
+    if (!accessibleJob) {
+      throw new NotFoundException("OCR job not found");
+    }
+
     if (!problemIds || problemIds.length === 0) {
       const problems = await this.prisma.problem.findMany({
-        where: { ocrJobId },
+        where: {
+          ocrJobId,
+          ...this.getProblemScopeWhere(requesterId, requesterRole),
+        },
         select: { id: true },
       });
       problemIds = problems.map((p) => p.id);
+    } else {
+      const accessibleProblems = await this.prisma.problem.findMany({
+        where: {
+          id: { in: problemIds },
+          ocrJobId,
+          ...this.getProblemScopeWhere(requesterId, requesterRole),
+        },
+        select: { id: true },
+      });
+      if (accessibleProblems.length !== problemIds.length) {
+        throw new NotFoundException("Problem not found");
+      }
     }
 
     if (problemIds.length === 0) {
@@ -227,9 +319,12 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async getAnalysis(problemId: string) {
-    const problem = await this.prisma.problem.findUnique({
-      where: { id: problemId },
+  async getAnalysis(problemId: string, requesterId: string, requesterRole: string) {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id: problemId,
+        ...this.getProblemScopeWhere(requesterId, requesterRole),
+      },
       select: {
         id: true,
         stemLatex: true,
@@ -260,8 +355,18 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     return problem;
   }
 
-  async review(id: string, action: "approved" | "rejected", reviewerId: string) {
-    const problem = await this.prisma.problem.findUnique({ where: { id } });
+  async review(
+    id: string,
+    action: "approved" | "rejected",
+    reviewerId: string,
+    requesterRole: string,
+  ) {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id,
+        ...this.getProblemScopeWhere(reviewerId, requesterRole),
+      },
+    });
     if (!problem) throw new NotFoundException("Problem not found");
 
     return this.prisma.problem.update({

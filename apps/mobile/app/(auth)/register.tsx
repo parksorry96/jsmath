@@ -19,7 +19,6 @@ export default function RegisterScreen() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"student" | "parent">("student");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -45,7 +44,6 @@ export default function RegisterScreen() {
         name: name.trim(),
         email: email.trim(),
         password,
-        role,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "회원가입에 실패했습니다.");
@@ -118,45 +116,11 @@ export default function RegisterScreen() {
           editable={!loading}
         />
 
-        {/* Role Selector */}
-        <Text className="text-brand-beige/80 text-sm mb-3 ml-1">역할</Text>
-        <View className="flex-row mb-6 gap-3">
-          <TouchableOpacity
-            className={`flex-1 rounded-lg py-3 items-center border ${
-              role === "student"
-                ? "bg-brand-accent border-brand-accent"
-                : "bg-white/5 border-white/20"
-            }`}
-            onPress={() => setRole("student")}
-            disabled={loading}
-            activeOpacity={0.8}
-          >
-            <Text
-              className={`font-semibold ${
-                role === "student" ? "text-brand-dark" : "text-brand-beige/70"
-              }`}
-            >
-              학생
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            className={`flex-1 rounded-lg py-3 items-center border ${
-              role === "parent"
-                ? "bg-brand-accent border-brand-accent"
-                : "bg-white/5 border-white/20"
-            }`}
-            onPress={() => setRole("parent")}
-            disabled={loading}
-            activeOpacity={0.8}
-          >
-            <Text
-              className={`font-semibold ${
-                role === "parent" ? "text-brand-dark" : "text-brand-beige/70"
-              }`}
-            >
-              학부모
-            </Text>
-          </TouchableOpacity>
+        <View className="bg-white/5 border border-white/10 rounded-lg px-4 py-3 mb-6">
+          <Text className="text-brand-beige text-sm font-medium">학생 계정</Text>
+          <Text className="text-brand-beige/60 text-xs mt-1">
+            모바일 회원가입은 학생 계정만 지원합니다. 다른 역할은 관리자에게 문의하세요.
+          </Text>
         </View>
 
         {/* Register Button */}

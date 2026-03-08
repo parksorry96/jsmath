@@ -12,6 +12,7 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Roles } from "../auth/roles.decorator";
 import { PrismaService } from "../prisma/prisma.service";
+import { canAccessClass, canAccessStudentData } from "../common/access-control";
 
 interface AuthRequest {
   user: { id: string; email: string; role: string };
@@ -33,24 +34,46 @@ export class AnalyticsController {
   ) {
     const user = req.user;
 
-    if (user.role === "student" && user.id !== studentId) {
+    const canAccessStudent = await canAccessStudentData(
+      this.prisma,
+      user.id,
+      user.role,
+      studentId,
+    );
+    if (!canAccessStudent) {
       throw new ForbiddenException();
     }
 
-    if (user.role === "parent") {
-      const link = await this.prisma.parentStudent.findFirst({
-        where: { parentId: user.id, studentId },
-      });
-      if (!link) throw new ForbiddenException();
+    if (classId) {
+      const canAccessTargetClass = await canAccessClass(
+        this.prisma,
+        user.id,
+        user.role,
+        classId,
+      );
+      if (!canAccessTargetClass) {
+        throw new ForbiddenException();
+      }
     }
 
-    // Teachers and admins have full access (consistent with isPrivilegedRole)
     return this.analytics.getStudentReport(studentId, classId);
   }
 
   @Get("class/:classId")
   @Roles("admin", "teacher")
-  classReport(@Param("classId") classId: string) {
+  async classReport(
+    @Param("classId") classId: string,
+    @Request() req: AuthRequest,
+  ) {
+    const allowed = await canAccessClass(
+      this.prisma,
+      req.user.id,
+      req.user.role,
+      classId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException();
+    }
     return this.analytics.getClassReport(classId);
   }
 }

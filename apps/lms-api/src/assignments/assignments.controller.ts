@@ -33,20 +33,31 @@ export class AssignmentsController {
   create(
     @Param("classId") classId: string,
     @Body() dto: CreateAssignmentDto,
+    @Request() req: AuthRequest,
   ) {
-    return this.assignments.create(classId, dto);
+    return this.assignments.create(classId, dto, req.user.id, req.user.role);
   }
 
   @Get("classes/assignments")
   @Roles("admin", "teacher")
-  findAcrossClasses(@Query("hasPending") hasPending?: string) {
-    return this.assignments.findAcrossClasses(hasPending === "true");
+  findAcrossClasses(
+    @Query("hasPending") hasPending?: string,
+    @Request() req?: AuthRequest,
+  ) {
+    if (!req) {
+      return [];
+    }
+    return this.assignments.findAcrossClasses(
+      req.user.id,
+      req.user.role,
+      hasPending === "true",
+    );
   }
 
   @Get("assignments/pending")
   @Roles("admin", "teacher")
-  findPendingAssignments() {
-    return this.assignments.findAcrossClasses(true);
+  findPendingAssignments(@Request() req: AuthRequest) {
+    return this.assignments.findAcrossClasses(req.user.id, req.user.role, true);
   }
 
   @Get("classes/:classId/assignments")
@@ -72,20 +83,20 @@ export class AssignmentsController {
     @Body() dto: UpdateAssignmentDto,
     @Request() req: AuthRequest,
   ) {
-    return this.assignments.update(id, dto, req.user.role);
+    return this.assignments.update(id, dto, req.user.id, req.user.role);
   }
 
   @Delete("assignments/:id")
   @Roles("admin", "teacher")
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param("id") id: string, @Request() req: AuthRequest) {
-    return this.assignments.remove(id, req.user.role);
+    return this.assignments.remove(id, req.user.id, req.user.role);
   }
 
   @Post("assignments/:id/return-all")
   @Roles("admin", "teacher")
-  returnAll(@Param("id") id: string) {
-    return this.assignments.returnAll(id);
+  returnAll(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.assignments.returnAll(id, req.user.id, req.user.role);
   }
 
   @Post("assignments/:id/problems")
@@ -93,8 +104,14 @@ export class AssignmentsController {
   addProblems(
     @Param("id") id: string,
     @Body() body: { problemIds: string[] },
+    @Request() req: AuthRequest,
   ) {
-    return this.assignments.addProblems(id, body.problemIds);
+    return this.assignments.addProblems(
+      id,
+      body.problemIds,
+      req.user.id,
+      req.user.role,
+    );
   }
 
   @Delete("assignments/:id/problems/:problemId")
@@ -102,8 +119,14 @@ export class AssignmentsController {
   removeProblem(
     @Param("id") id: string,
     @Param("problemId") problemId: string,
+    @Request() req: AuthRequest,
   ) {
-    return this.assignments.removeProblem(id, problemId);
+    return this.assignments.removeProblem(
+      id,
+      problemId,
+      req.user.id,
+      req.user.role,
+    );
   }
 
   @Patch("assignments/:id/problems/reorder")
@@ -111,7 +134,13 @@ export class AssignmentsController {
   reorderProblems(
     @Param("id") id: string,
     @Body() body: { problemIds: string[] },
+    @Request() req: AuthRequest,
   ) {
-    return this.assignments.reorderProblems(id, body.problemIds);
+    return this.assignments.reorderProblems(
+      id,
+      body.problemIds,
+      req.user.id,
+      req.user.role,
+    );
   }
 }

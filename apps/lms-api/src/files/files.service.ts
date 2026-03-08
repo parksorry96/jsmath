@@ -1,5 +1,7 @@
 import {
   Injectable,
+  BadRequestException,
+  ForbiddenException,
   NotFoundException,
   InternalServerErrorException,
   Logger,
@@ -9,9 +11,14 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { ProblemType } from "@prisma/client";
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { Redis } from "ioredis";
 import { Subject } from "rxjs";
 
@@ -81,6 +88,83 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
       this.redisSubscriber.quit(),
       this.redisPublisher.quit(),
     ]);
+  }
+
+  private getSourceFileScopeWhere(requesterId: string, requesterRole: string) {
+    if (requesterRole === "admin") {
+      return {};
+    }
+
+    return { uploaderId: requesterId };
+  }
+
+  private getProblemAssetScopeWhere(requesterId: string, requesterRole: string) {
+    if (requesterRole === "admin") {
+      return {};
+    }
+
+    return {
+      problem: {
+        ocrJob: {
+          sourceFile: {
+            uploaderId: requesterId,
+          },
+        },
+      },
+    };
+  }
+
+  private isPdfUpload(file: Express.Multer.File): boolean {
+    if (!file?.buffer || file.buffer.length < 4) {
+      return false;
+    }
+
+    return file.buffer.subarray(0, 4).toString("utf8") === "%PDF";
+  }
+
+  private async deleteS3Objects(keys: string[]) {
+    const uniqueKeys = [...new Set(keys.filter(Boolean))];
+    if (uniqueKeys.length === 0) {
+      return;
+    }
+
+    for (let i = 0; i < uniqueKeys.length; i += 1000) {
+      const chunk = uniqueKeys.slice(i, i + 1000);
+      try {
+        await this.s3.send(
+          new DeleteObjectsCommand({
+            Bucket: this.bucket,
+            Delete: {
+              Objects: chunk.map((Key) => ({ Key })),
+              Quiet: true,
+            },
+          }),
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Failed to delete ${chunk.length} S3 objects`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+    }
+  }
+
+  async assertCanAccessOcrJob(
+    jobId: string,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const job = await this.prisma.ocrJob.findFirst({
+      where: {
+        id: jobId,
+        sourceFile: this.getSourceFileScopeWhere(requesterId, requesterRole),
+      },
+      select: { id: true },
+    });
+    if (!job) {
+      throw new NotFoundException("OCR job not found");
+    }
+    return job;
   }
 
   private async handleOcrPipelineEvent(channel: string, message: string) {
@@ -297,6 +381,13 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
     bookTitle: string | null;
     publisher: string | null;
   }) {
+    if (!file) {
+      throw new BadRequestException("No file provided");
+    }
+    if (!this.isPdfUpload(file)) {
+      throw new BadRequestException("Uploaded file is not a valid PDF");
+    }
+
     const fileHash = createHash("sha256").update(file.buffer).digest("hex");
 
     // Idempotency: same file + same document type → return existing
@@ -347,7 +438,7 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    const s3Key = `uploads/${uploaderId}/${crypto.randomUUID()}.pdf`;
+    const s3Key = `uploads/${uploaderId}/${randomUUID()}.pdf`;
 
     try {
       await this.s3.send(
@@ -406,8 +497,9 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async listFiles() {
+  async listFiles(requesterId: string, requesterRole: string) {
     const files = await this.prisma.sourceFile.findMany({
+      where: this.getSourceFileScopeWhere(requesterId, requesterRole),
       orderBy: { createdAt: "desc" },
       include: {
         ocrJobs: {
@@ -433,7 +525,22 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async getAssetUrl(s3Key: string): Promise<{ url: string }> {
+  async getAssetUrl(
+    s3Key: string,
+    requesterId: string,
+    requesterRole: string,
+  ): Promise<{ url: string }> {
+    const asset = await this.prisma.problemAsset.findFirst({
+      where: {
+        s3Key,
+        ...this.getProblemAssetScopeWhere(requesterId, requesterRole),
+      },
+      select: { id: true },
+    });
+    if (!asset) {
+      throw new NotFoundException("Asset not found");
+    }
+
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: s3Key,
@@ -442,14 +549,23 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
     return { url };
   }
 
-  async deleteFile(id: string) {
-    const sourceFile = await this.prisma.sourceFile.findUnique({
-      where: { id },
+  async deleteFile(id: string, requesterId: string, requesterRole: string) {
+    const sourceFile = await this.prisma.sourceFile.findFirst({
+      where: {
+        id,
+        ...this.getSourceFileScopeWhere(requesterId, requesterRole),
+      },
       include: { ocrJobs: { select: { id: true } } },
     });
     if (!sourceFile) throw new NotFoundException("File not found");
 
     const jobIds = sourceFile.ocrJobs.map((j) => j.id);
+    const problemAssets = jobIds.length
+      ? await this.prisma.problemAsset.findMany({
+          where: { problem: { ocrJobId: { in: jobIds } } },
+          select: { s3Key: true },
+        })
+      : [];
 
     // Delete in dependency order
     if (jobIds.length > 0) {
@@ -468,13 +584,20 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.prisma.sourceFile.delete({ where: { id } });
+    await this.deleteS3Objects([
+      sourceFile.s3Key,
+      ...problemAssets.map((asset) => asset.s3Key),
+    ]);
 
     return { deleted: true };
   }
 
-  async getStatus(id: string) {
-    const sourceFile = await this.prisma.sourceFile.findUnique({
-      where: { id },
+  async getStatus(id: string, requesterId: string, requesterRole: string) {
+    const sourceFile = await this.prisma.sourceFile.findFirst({
+      where: {
+        id,
+        ...this.getSourceFileScopeWhere(requesterId, requesterRole),
+      },
       include: { ocrJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
     });
     if (!sourceFile) throw new NotFoundException("File not found");

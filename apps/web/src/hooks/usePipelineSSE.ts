@@ -53,7 +53,11 @@ export function usePipelineSSE(ocrJobId: string | null) {
 
       const apiUrl =
         process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
-      const es = new EventSource(`${apiUrl}/files/${ocrJobId}/events`);
+      const token = localStorage.getItem("token");
+      const query = token
+        ? `?access_token=${encodeURIComponent(token)}`
+        : "";
+      const es = new EventSource(`${apiUrl}/files/${ocrJobId}/events${query}`);
       esRef.current = es;
 
       es.onopen = () => {

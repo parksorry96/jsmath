@@ -15,7 +15,6 @@ export default function RegisterPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState("teacher");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -31,7 +30,7 @@ export default function RegisterPage() {
     setIsLoading(true);
 
     try {
-      await register(email, name, password, role);
+      await register(email, name, password);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message);
@@ -111,19 +110,9 @@ export default function RegisterPage() {
                 8자 이상 입력하세요
               </p>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="role">역할</Label>
-              <select
-                id="role"
-                className="flex h-9 w-full rounded-md border border-border bg-brand-dark px-3 py-1 text-sm text-foreground"
-                value={role}
-                onChange={(e) => setRole(e.target.value)}
-                disabled={isLoading}
-              >
-                <option value="teacher">교사</option>
-                <option value="student">학생</option>
-              </select>
-            </div>
+            <p className="rounded-md border border-border bg-brand-dark px-3 py-2 text-xs text-muted-foreground">
+              웹 회원가입은 학생 계정만 지원합니다. 교사 계정은 관리자 초대나 별도 발급 절차를 사용하세요.
+            </p>
             <Button type="submit" className="w-full" disabled={isLoading}>
               {isLoading ? (
                 <>

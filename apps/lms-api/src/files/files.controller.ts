@@ -22,6 +22,8 @@ interface AuthRequest {
   user: { id: string; email: string; role: string };
 }
 
+const MAX_PDF_UPLOAD_BYTES = 100 * 1024 * 1024;
+
 @Controller("files")
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles("admin", "teacher")
@@ -29,12 +31,26 @@ export class FilesController {
   constructor(private files: FilesService) {}
 
   @Get()
-  listFiles() {
-    return this.files.listFiles();
+  listFiles(@Request() req: AuthRequest) {
+    return this.files.listFiles(req.user.id, req.user.role);
   }
 
   @Post("pdf")
-  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 300 * 1024 * 1024 } }))
+  @UseInterceptors(
+    FileInterceptor("file", {
+      limits: { fileSize: MAX_PDF_UPLOAD_BYTES, files: 1 },
+      fileFilter: (_req, file, callback) => {
+        if (
+          file.mimetype !== "application/pdf" &&
+          !file.originalname.toLowerCase().endsWith(".pdf")
+        ) {
+          callback(new BadRequestException("Only PDF files are accepted"), false);
+          return;
+        }
+        callback(null, true);
+      },
+    }),
+  )
   uploadPdf(
     @UploadedFile() file: Express.Multer.File,
     @Request() req: AuthRequest,
@@ -61,18 +77,18 @@ export class FilesController {
   }
 
   @Get("assets/url")
-  getAssetUrl(@Query("key") key: string) {
+  getAssetUrl(@Query("key") key: string, @Request() req: AuthRequest) {
     if (!key) throw new BadRequestException("key query parameter is required");
-    return this.files.getAssetUrl(key);
+    return this.files.getAssetUrl(key, req.user.id, req.user.role);
   }
 
   @Get(":id/status")
-  getStatus(@Param("id") id: string) {
-    return this.files.getStatus(id);
+  getStatus(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.files.getStatus(id, req.user.id, req.user.role);
   }
 
   @Delete(":id")
-  deleteFile(@Param("id") id: string) {
-    return this.files.deleteFile(id);
+  deleteFile(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.files.deleteFile(id, req.user.id, req.user.role);
   }
 }
