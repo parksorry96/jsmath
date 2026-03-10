@@ -56,7 +56,7 @@ export type AssetKind =
 
 export type GradeLevel = "high_1" | "high_2" | "high_3";
 
-export type Difficulty = 1 | 2 | 3 | 4 | 5;
+export type Difficulty = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface ProblemChoice {
   id: string;
@@ -114,6 +114,8 @@ export interface Problem {
   unitSub: string | null;
   difficulty: Difficulty | null;
   classificationConfidence: number | null;
+  solutionConfidence: number | null;
+  reviewConfidence: number | null;
   reviewStatus: ReviewStatus;
   // CSAT metadata
   isCommon: boolean | null;

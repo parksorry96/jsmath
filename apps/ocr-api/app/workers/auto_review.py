@@ -4,7 +4,7 @@ Computes multi-factor composite confidence and determines whether to
 auto-approve or keep as pending_review.
 
 Composite confidence factors:
-  - AI self-confidence (weight 0.30)
+  - AI self-confidence (classification + solution confidence, weight 0.30)
   - Subject/unit consistency with required_concepts (weight 0.25)
   - Difficulty vs estimated_time correlation (weight 0.20)
   - Similar problem subject agreement (weight 0.25)
@@ -36,11 +36,12 @@ W_SIMILAR_AGREEMENT = 0.25
 
 # Difficulty → expected estimated_time_sec ranges (inclusive)
 _DIFFICULTY_TIME_RANGES: dict[int, tuple[int, int]] = {
-    1: (0, 120),      # 기초: up to 2 min
-    2: (0, 120),      # 쉬움: up to 2 min
-    3: (120, 300),     # 보통: 2-5 min
-    4: (180, 600),     # 어려움: 3-10 min
-    5: (180, 900),     # 최상: 3-15 min
+    1: (30, 120),      # 기초
+    2: (60, 180),      # 쉬움
+    3: (90, 300),      # 보통
+    4: (150, 420),     # 약간 어려움
+    5: (240, 600),     # 어려움
+    6: (360, 900),     # 최상
 }
 
 # Concept keywords that loosely map to each subject for consistency check
@@ -104,11 +105,32 @@ def _compute_answer_cross_check(ai_answer: str | None, problem: Problem) -> floa
     return 1.0 if ai_norm == book_norm else 0.0
 
 
-def _compute_ai_confidence(raw_confidence: float | None) -> float:
-    """Factor 1: AI self-reported confidence (clamped to [0, 1])."""
+def _clamp_confidence(raw_confidence: float | None) -> float | None:
     if raw_confidence is None:
-        return 0.0
+        return None
     return max(0.0, min(1.0, raw_confidence))
+
+
+def _compute_ai_confidence(
+    classification_confidence: float | None,
+    solution_confidence: float | None,
+) -> float:
+    """Factor 1: AI self-reported confidence.
+
+    We keep classification and solution confidence separate in storage and
+    average the available values only for auto-review scoring.
+    """
+    parts = [
+        value
+        for value in (
+            _clamp_confidence(classification_confidence),
+            _clamp_confidence(solution_confidence),
+        )
+        if value is not None
+    ]
+    if not parts:
+        return 0.0
+    return sum(parts) / len(parts)
 
 
 def _compute_subject_consistency(
@@ -166,7 +188,7 @@ def _compute_difficulty_time_correlation(
         return 0.5  # neutral when data is missing
 
     d = round(difficulty_refined)
-    d = max(1, min(5, d))
+    d = max(1, min(6, d))
     low, high = _DIFFICULTY_TIME_RANGES[d]
 
     if low <= estimated_time_sec <= high:
@@ -287,7 +309,7 @@ async def _review(problem_id: str) -> dict:
         # Check 5: Difficulty is reasonable
         difficulty_ok = (
             problem.difficulty_refined is not None
-            and 1.0 <= problem.difficulty_refined <= 5.0
+            and 1.0 <= problem.difficulty_refined <= 6.0
         )
         checks.append(("difficulty_in_range", difficulty_ok))
 
@@ -295,7 +317,17 @@ async def _review(problem_id: str) -> dict:
 
         is_textbook = bool(problem.book_source)
 
-        f_ai = _compute_ai_confidence(problem.classification_confidence)
+        factors["classification_confidence"] = round(
+            _clamp_confidence(problem.classification_confidence) or 0.0, 4
+        )
+        factors["solution_confidence"] = round(
+            _clamp_confidence(problem.solution_confidence) or 0.0, 4
+        )
+
+        f_ai = _compute_ai_confidence(
+            problem.classification_confidence,
+            problem.solution_confidence,
+        )
         factors["ai_confidence"] = f_ai
 
         f_subject = _compute_subject_consistency(
@@ -371,8 +403,8 @@ async def _review(problem_id: str) -> dict:
             problem.review_status = ReviewStatus.pending_review
             decision = "pending_review"
 
-        # Store composite confidence back on the problem
-        problem.classification_confidence = composite
+        # Preserve model confidences and store review confidence separately.
+        problem.review_confidence = composite
 
         # Mark analysis as complete
         problem.analysis_status = AnalysisStatus.completed

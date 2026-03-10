@@ -40,7 +40,7 @@ CURRICULUM_TREE: dict[str, dict[str, list[str]]] = {
     },
 }
 
-DIFFICULTY_LEVELS = {1: "기초", 2: "쉬움", 3: "보통", 4: "어려움", 5: "최상"}
+DIFFICULTY_LEVELS = {1: "기초", 2: "쉬움", 3: "보통", 4: "약간 어려움", 5: "어려움", 6: "최상"}
 
 PROBLEM_TYPES = ["multiple_choice", "short_answer", "written_solution", "essay"]
 
@@ -129,7 +129,7 @@ class ClassificationResult(BaseModel):
     unit_major: str | None = None
     unit_minor: str | None = None
     unit_sub: str | None = None
-    difficulty: int | None = Field(None, ge=1, le=5)
+    difficulty: int | None = Field(None, ge=1, le=6)
     concept_tags: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
 

@@ -27,9 +27,20 @@ logger = logging.getLogger(__name__)
 
 COMMON_SUBJECTS = {"수학I", "수학II"}
 
+
+def _book_source_value(book_source: dict, *keys: str) -> str:
+    for key in keys:
+        value = book_source.get(key)
+        if value:
+            return str(value)
+    return ""
+
 # ─── Textbook-specific prompts ───
 
 TEXTBOOK_SYSTEM_PROMPT = """You are a Korean math textbook (교재) analysis expert for 2015 개정교육과정.
+
+## Goal
+Classify the problem first, then solve and analyze it independently, and return one JSON object matching the requested schema.
 
 ## Subjects (2015 개정교육과정)
 - 수학I: 지수함수와 로그함수, 삼각함수, 수열. 고2 과정. 수능 공통과목.
@@ -46,14 +57,20 @@ TEXTBOOK_SYSTEM_PROMPT = """You are a Korean math textbook (교재) analysis exp
 - 벡터 내적/연산 → 기하 (NOT 수학II)
 
 ## Difficulty Scale (교재 기준 → 수능 환산)
-- 1.0: 개념 확인 문제. 공식 직접 대입.
-- 2.0: 기본 연습 문제. 한두 단계 풀이.
-- 3.0: 응용 문제. 2-3개 개념 복합. 수능 기본 수준.
-- 4.0: 심화/도전 문제. 다단계 추론. 수능 3-4점 수준.
-- 5.0: 최고난도. 경시 수준. 수능 킬러 이상.
+- 1.0: 개념 확인 문제. 공식 직접 대입. 수능 정답률 90%+.
+- 2.0: 기본 연습 문제. 한두 단계 풀이. 수능 정답률 75~90%.
+- 3.0: 응용 문제. 2-3개 개념 복합. 수능 정답률 55~75%.
+- 4.0: 심화 문제. 개념 응용/변형. 수능 정답률 35~55%.
+- 5.0: 고난도 문제. 복합 개념, 준킬러급. 수능 정답률 15~35%.
+- 6.0: 최고난도. 킬러 문항. 수능 정답률 15% 미만.
 
 ## Curriculum Hierarchy
 {curriculum_json}
+
+## Evidence Priority
+1. 문제 본문과 선택지
+2. 교재 단원 정보 (strong prior)
+3. 해설지 정답/풀이 (reference only; independently verify)
 
 ## Textbook Context Usage
 교재 단원 정보는 STRONG PRIOR입니다. 문제 내용이 명백히 다른 단원이 아닌 한 교재 단원을 따르세요.
@@ -61,20 +78,45 @@ TEXTBOOK_SYSTEM_PROMPT = """You are a Korean math textbook (교재) analysis exp
 예: "미분법" → 다항함수만이면 수학II, 지수/로그/삼각함수면 미적분
 
 ## Answer Key Usage
-해설지 정답이 주어지면:
-1. 독립적으로 풀이하세요
-2. 답이 다르면 classification_reasoning에 이유 명시
-3. 해설지 오류 가능성이 있으면 지적
+해설지 정답이 주어져도 독립적으로 다시 풀이하세요.
+해설지 답과 다르면 모델이 다시 푼 답을 answer에 넣고, classification_reasoning에 불일치 이유를 짧게 적으세요.
+
+## Uncertainty Handling
+- curriculum_json에 없는 단원명을 invent하지 마세요.
+- 근거가 약하면 가장 가까운 유효 단원을 선택하고 classification_confidence를 낮추세요.
+- exam_source는 강한 근거가 없으면 null로 두세요.
+- classification_reasoning은 2-4문장 분량의 근거 요약으로 쓰고, 숨겨진 chain-of-thought를 그대로 쓰지 마세요.
+
+## Output Contract
+- Return exactly one JSON object matching the requested schema.
+- Do not add markdown, code fences, or extra keys.
 
 ## IMPORTANT: Language
 - ALL text fields MUST be written in Korean (한국어). English only for math notation/LaTeX.
 
-Respond with valid JSON matching the requested schema."""
+## IMPORTANT: Math Formatting
+- In solution_strategy, solution_steps.description, common_mistakes, and answer, every mathematical expression must be written in LaTeX.
+- Use $...$ for inline math and $$...$$ for display or multi-line derivations.
+- Keep Korean explanation outside math delimiters.
+- Never leave raw math like x^2, a_n, \\frac{1}{2}, lim_{n\\to\\infty} outside math delimiters.
+
+## Self-Check
+- subject/unit fields must align with curriculum_json.
+- is_common must be consistent with subject.
+- answer must agree with solution_strategy and solution_steps.
+- common_mistakes must fit this exact problem type."""
 
 TEXTBOOK_USER_PROMPT = """## Problem
-LaTeX: {stem_latex}
-Plain text: {stem_text}
+<problem_latex>
+{stem_latex}
+</problem_latex>
+
+<problem_text>
+{stem_text}
+</problem_text>
+
 {choices_text}
+
 Problem number: {problem_number}
 
 ## Textbook Context
@@ -87,8 +129,11 @@ Problem number: {problem_number}
 해설지 풀이: {solution_text}
 매칭 상태: {answer_match_status}
 
-Classify FIRST using textbook context, then analyze solution.
-IMPORTANT: Provide final answer in 'answer' field."""
+## Task
+- 교재 단원 정보를 strong prior로 사용해 먼저 분류하세요.
+- 그 다음 문제를 독립적으로 풀고 해설을 작성하세요.
+- 최종 답은 반드시 answer 필드에 넣으세요.
+- 해설지 정답과 다르면 independently verified answer를 유지하세요."""
 
 
 def _make_strict_schema(schema: dict) -> dict:
@@ -146,7 +191,7 @@ class UnifiedAnalysisResult(BaseModel):
     unit_major: str
     unit_minor: Optional[str] = None
     unit_sub: Optional[str] = None
-    difficulty_refined: float = Field(ge=1.0, le=5.0)
+    difficulty_refined: float = Field(ge=1.0, le=6.0)
     is_common: bool
     classification_confidence: float = Field(ge=0.0, le=1.0)
 
@@ -174,7 +219,7 @@ class BatchAnalysisResponse(BaseModel):
 # ─── Prompts ───
 
 SYSTEM_PROMPT = """You are a Korean CSAT (수능) math expert specializing in the 2015 개정교육과정.
-Your task: classify the problem FIRST, then analyze the solution independently.
+Your task is to classify the problem first, solve it independently, and return one JSON object matching the requested schema.
 
 ## Subjects (2015 개정교육과정)
 - 수학I: 지수함수와 로그함수, 삼각함수, 수열. 고2 과정. 수능 공통과목.
@@ -191,11 +236,12 @@ Your task: classify the problem FIRST, then analyze the solution independently.
 - 벡터 내적/연산 → 기하 (NOT 수학II)
 
 ## Difficulty Scale (수능 기준, 정답률 anchors)
-- 1.0 (기초): 교과서 기본 예제. 정답률 90%+. 개념 직접 적용.
-- 2.0 (쉬움): 교과서 응용 문제. 정답률 70-90%. 한두 단계 풀이.
-- 3.0 (보통): 수능 기본 문항 (2~3점). 정답률 50-70%. 표준적 풀이.
-- 4.0 (어려움): 수능 고난도 3점/4점. 정답률 30-50%. 복합 개념, 다단계 추론.
-- 5.0 (최상): 킬러문항 (21번, 29번, 30번급). 정답률 30% 미만. 창의적 풀이.
+- 1.0 (기초): 개념 직접 적용. 수능 정답률 90%+.
+- 2.0 (쉬움): 개념 1~2개 조합. 수능 정답률 75~90%.
+- 3.0 (보통): 개념 2~3개 조합, 약간의 변형. 수능 정답률 55~75%.
+- 4.0 (약간 어려움): 개념 응용/변형. 수능 정답률 35~55%.
+- 5.0 (어려움): 복합 개념, 준킬러급. 수능 정답률 15~35%.
+- 6.0 (최상): 킬러 문항. 수능 정답률 15% 미만.
 
 ## Difficulty Modifiers
 - 빈칸 추론형 (box-type): +0.5
@@ -206,31 +252,63 @@ Your task: classify the problem FIRST, then analyze the solution independently.
 ## Curriculum Hierarchy
 {curriculum_json}
 
+## Evidence Priority
+1. 문제 본문과 선택지
+2. curriculum_json의 유효 단원 체계
+3. 현재 분류 값은 weak hint only
+
+## Uncertainty Handling
+- curriculum_json에 없는 단원명을 invent하지 마세요.
+- 근거가 약하면 가장 가까운 유효 단원을 선택하고 classification_confidence를 낮추세요.
+- exam_source는 강한 근거가 없으면 null로 두세요.
+- classification_reasoning은 2-4문장 분량의 근거 요약으로 쓰고, 숨겨진 chain-of-thought를 그대로 쓰지 마세요.
+
 ## IMPORTANT: Language
 - ALL text fields (classification_reasoning, solution_strategy, required_concepts, solution_steps descriptions, common_mistakes) MUST be written in Korean (한국어).
 - Do NOT use English for any descriptive text. Only use English for mathematical notation/LaTeX.
+
+## IMPORTANT: Math Formatting
+- In solution_strategy, solution_steps.description, common_mistakes, and answer, every mathematical expression must be written in LaTeX.
+- Use $...$ for inline math and $$...$$ for display or multi-line derivations.
+- Keep Korean explanation outside math delimiters.
+- Never leave raw math like x^2, a_n, \\frac{1}{2}, lim_{n\\to\\infty} outside math delimiters.
+
+## Output Contract
+- Return exactly one JSON object matching the requested schema.
+- Do not add markdown, code fences, or extra keys.
+
+## Self-Check
+- subject/unit fields must align with curriculum_json.
+- is_common must be consistent with subject.
+- answer must agree with solution_strategy and solution_steps.
+- common_mistakes must fit this exact problem type.
 
 Respond with valid JSON matching the requested schema."""
 
 USER_PROMPT_TEMPLATE = """## Problem
 
-LaTeX:
+<problem_latex>
 {stem_latex}
+</problem_latex>
 
-Plain text:
+<problem_text>
 {stem_text}
+</problem_text>
 
 {choices_text}
 
 Problem number: {problem_number}
 
-Current classification (may be incorrect):
+## Current Classification Hint
 - Subject: {current_subject}
 - Unit Major: {current_unit_major}
 - Difficulty: {current_difficulty}
 
-Classify FIRST (explain reasoning), then analyze the solution, then identify exam source if applicable.
-IMPORTANT: You MUST provide the final answer in the 'answer' field (e.g. "③", "24", "\\frac{1}{2}")."""
+## Task
+- 현재 분류 값은 참고만 하고, 문제 본문 기준으로 다시 분류하세요.
+- 그 다음 문제를 독립적으로 풀고 해설을 작성하세요.
+- 특정 시험 원문이라는 강한 근거가 있을 때만 exam_source를 채우세요.
+- 최종 답은 반드시 answer 필드에 넣으세요 (예: "③", "$24$", "$\\frac{1}{2}$")."""
 
 
 # ─── Celery task ───
@@ -311,7 +389,7 @@ async def _unified_analyze(problem_id: str) -> dict:
                 publisher=book_source.get("publisher", ""),
                 chapter=book_source.get("chapter", ""),
                 section=book_source.get("section", ""),
-                problem_category=book_source.get("problem_category", ""),
+                problem_category=_book_source_value(book_source, "problemCategory", "problem_category"),
                 answer_text=problem.answer_text or "없음",
                 solution_text=problem.solution_text or "없음",
                 answer_match_status=problem.answer_match_status or "no_answer_key",
@@ -369,7 +447,7 @@ async def _unified_analyze(problem_id: str) -> dict:
     is_common = subject in COMMON_SUBJECTS
 
     # Clamp difficulty
-    difficulty = max(1.0, min(5.0, parsed.difficulty_refined))
+    difficulty = max(1.0, min(6.0, parsed.difficulty_refined))
 
     return {
         "problem_id": problem_id,
@@ -444,7 +522,7 @@ def _format_problem_section(problem: Problem, choices_text: str) -> str:
             f"Textbook Context:\n"
             f"교재: {bs.get('title', '')} ({bs.get('publisher', '')})\n"
             f"단원: {bs.get('chapter', '')} > {bs.get('section', '')}\n"
-            f"문제 카테고리: {bs.get('problem_category', '')}\n\n"
+            f"문제 카테고리: {_book_source_value(bs, 'problemCategory', 'problem_category')}\n\n"
             f"Answer Key:\n"
             f"해설지 정답: {problem.answer_text or '없음'}\n"
             f"해설지 풀이: {problem.solution_text or '없음'}\n"
@@ -467,7 +545,7 @@ def _postprocess_batch_item(item: BatchItemResult) -> dict:
     """Post-process a single batch result item into a plain dict."""
     subject = item.subject if item.subject in SUBJECTS else SUBJECTS[0]
     is_common = subject in COMMON_SUBJECTS
-    difficulty = max(1.0, min(5.0, item.difficulty_refined))
+    difficulty = max(1.0, min(6.0, item.difficulty_refined))
 
     return {
         "problem_id": item.problem_id,
