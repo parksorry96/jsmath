@@ -155,6 +155,8 @@ export default function ProblemsPage() {
   const [difficultyFilter, setDifficultyFilter] = useState<string>("");
   const [bookTitleFilter, setBookTitleFilter] = useState<string>("");
   const [problemTypeFilter, setProblemTypeFilter] = useState<string>("");
+  const [examYearFilter, setExamYearFilter] = useState<string>("");
+  const [examTypeFilter, setExamTypeFilter] = useState<string>("");
   const [previewProblem, setPreviewProblem] = useState<Problem | null>(null);
   const [generatedTwin, setGeneratedTwin] = useState<TwinProblemResponse | null>(null);
 
@@ -166,6 +168,8 @@ export default function ProblemsPage() {
       textbooks: { filename: string; bookTitle: string | null }[];
       difficulties: number[];
       problemTypes: string[];
+      examYears: number[];
+      examTypes: string[];
     }>("/problems/filter-options"),
   });
 
@@ -179,12 +183,14 @@ export default function ProblemsPage() {
     difficultyFilter && `difficulty=${difficultyFilter}`,
     bookTitleFilter && `bookTitle=${encodeURIComponent(bookTitleFilter)}`,
     problemTypeFilter && `problemType=${problemTypeFilter}`,
+    examYearFilter && `examYear=${examYearFilter}`,
+    examTypeFilter && `examType=${encodeURIComponent(examTypeFilter)}`,
   ]
     .filter(Boolean)
     .join("&");
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["problems", page, searchQuery, reviewFilter, subjectFilter, gradeLevelFilter, difficultyFilter, bookTitleFilter, problemTypeFilter],
+    queryKey: ["problems", page, searchQuery, reviewFilter, subjectFilter, gradeLevelFilter, difficultyFilter, bookTitleFilter, problemTypeFilter, examYearFilter, examTypeFilter],
     queryFn: () =>
       api.get<PaginatedResponse>(`/problems?${queryString}`),
   });
@@ -346,7 +352,33 @@ export default function ProblemsPage() {
           </select>
         )}
 
-        {(subjectFilter || gradeLevelFilter || difficultyFilter || bookTitleFilter || problemTypeFilter) && (
+        {filterOptions?.examYears && filterOptions.examYears.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={examYearFilter}
+            onChange={(e) => { setExamYearFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">출제연도 전체</option>
+            {filterOptions.examYears.map((y) => (
+              <option key={y} value={String(y)}>{y}년</option>
+            ))}
+          </select>
+        )}
+
+        {filterOptions?.examTypes && filterOptions.examTypes.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={examTypeFilter}
+            onChange={(e) => { setExamTypeFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">시험유형 전체</option>
+            {filterOptions.examTypes.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        )}
+
+        {(subjectFilter || gradeLevelFilter || difficultyFilter || bookTitleFilter || problemTypeFilter || examYearFilter || examTypeFilter) && (
           <Button
             variant="ghost"
             size="sm"
@@ -356,6 +388,8 @@ export default function ProblemsPage() {
               setDifficultyFilter("");
               setBookTitleFilter("");
               setProblemTypeFilter("");
+              setExamYearFilter("");
+              setExamTypeFilter("");
               setPage(1);
             }}
           >

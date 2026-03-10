@@ -53,6 +53,9 @@ export class ProblemsController {
     @Query("bookTitle") bookTitle?: string,
     @Query("q") q?: string,
     @Query("search") search?: string,
+    @Query("examYear") examYear?: string,
+    @Query("examMonth") examMonth?: string,
+    @Query("examType") examType?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
   ) {
@@ -69,6 +72,9 @@ export class ProblemsController {
       analysisStatus,
       bookTitle,
       q: q ?? search,
+      examYear,
+      examMonth,
+      examType,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
@@ -86,6 +92,12 @@ export class ProblemsController {
       req.user.role,
       body.problemIds,
     );
+  }
+
+  @Post(":id/generate-twin")
+  @Roles("admin", "teacher")
+  generateTwin(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.problems.generateTwinProblem(id, req.user.id, req.user.role);
   }
 
   @Get(":id/analysis")

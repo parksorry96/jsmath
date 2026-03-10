@@ -10,6 +10,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ReviewStatus, OcrJobStatus } from "@prisma/client";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
 import { Redis } from "ioredis";
+import { normalizeFilename } from "../common/filename";
+import { TwinProblemService } from "./twin-problem.service";
 
 export interface ProblemsQuery {
   requesterId: string;
@@ -24,6 +26,9 @@ export interface ProblemsQuery {
   analysisStatus?: string;
   bookTitle?: string;
   q?: string;
+  examYear?: string;
+  examMonth?: string;
+  examType?: string;
   page?: number;
   limit?: number;
 }
@@ -36,6 +41,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private prisma: PrismaService,
     private config: ConfigService,
+    private twinProblemService: TwinProblemService,
   ) {}
 
   onModuleInit() {
@@ -76,7 +82,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
   async getFilterOptions(requesterId: string, requesterRole: string) {
     const where = this.getProblemScopeWhere(requesterId, requesterRole);
 
-    const [subjects, gradeLevels, textbooks, difficulties, problemTypes] = await Promise.all([
+    const [subjects, gradeLevels, textbooks, difficulties, problemTypes, examYearsRaw, examTypesRaw] = await Promise.all([
       this.prisma.problem.findMany({
         where: { ...where, subject: { not: null } },
         select: { subject: true },
@@ -112,6 +118,18 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         select: { problemType: true },
         distinct: ["problemType"],
       }),
+      this.prisma.$queryRaw<{ year: number }[]>`
+        SELECT DISTINCT (exam_source->>'year')::int as year
+        FROM ocr.problems
+        WHERE exam_source IS NOT NULL AND exam_source->>'year' IS NOT NULL
+        ORDER BY year DESC
+      `,
+      this.prisma.$queryRaw<{ type: string }[]>`
+        SELECT DISTINCT exam_source->>'type' as type
+        FROM ocr.problems
+        WHERE exam_source IS NOT NULL AND exam_source->>'type' IS NOT NULL
+        ORDER BY type
+      `,
     ]);
 
     return {
@@ -119,12 +137,14 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       gradeLevels: gradeLevels.map((g) => g.gradeLevel).filter(Boolean),
       textbooks: textbooks
         .map((t) => ({
-          filename: t.ocrJob?.sourceFile?.filename ?? null,
+          filename: normalizeFilename(t.ocrJob?.sourceFile?.filename) ?? null,
           bookTitle: t.ocrJob?.sourceFile?.bookTitle ?? null,
         }))
         .filter((t) => t.filename),
       difficulties: difficulties.map((d) => d.difficulty).filter((d): d is number => d !== null),
       problemTypes: problemTypes.map((p) => p.problemType),
+      examYears: examYearsRaw.map((r) => r.year),
+      examTypes: examTypesRaw.map((r) => r.type),
     };
   }
 
@@ -152,6 +172,27 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       if (!isNaN(parsed)) where.difficulty = parsed;
     }
 
+    // Exam source JSON filters — use AND for multiple path conditions on same field
+    const examSourceFilters: Record<string, unknown>[] = [];
+    if (query.examYear) {
+      examSourceFilters.push({
+        examSource: { path: ["year"], equals: parseInt(query.examYear, 10) },
+      });
+    }
+    if (query.examMonth) {
+      examSourceFilters.push({
+        examSource: { path: ["month"], equals: parseInt(query.examMonth, 10) },
+      });
+    }
+    if (query.examType) {
+      examSourceFilters.push({
+        examSource: { path: ["type"], string_contains: query.examType },
+      });
+    }
+    if (examSourceFilters.length > 0) {
+      where.AND = examSourceFilters;
+    }
+
     // Basic ILIKE search on stemText — tsvector upgrade in Phase 3
     if (query.q) {
       where.stemText = { contains: query.q, mode: "insensitive" };
@@ -177,11 +218,14 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
           unitMinor: true,
           difficulty: true,
           classificationConfidence: true,
+          solutionConfidence: true,
+          reviewConfidence: true,
           analysisStatus: true,
           ocrJobId: true,
           startPage: true,
           endPage: true,
           bookSource: true,
+          examSource: true,
           answerMatchStatus: true,
           solutionLatex: true,
           createdAt: true,
@@ -220,7 +264,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     return {
       data: items.map((item) => ({
         ...item,
-        sourceFile: item.ocrJob?.sourceFile?.filename ?? null,
+        sourceFile: normalizeFilename(item.ocrJob?.sourceFile?.filename) ?? null,
         ocrJob: undefined,
       })),
       total,
@@ -402,12 +446,60 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         analysisStatus: true,
         analyzedAt: true,
         classificationConfidence: true,
+        solutionConfidence: true,
+        reviewConfidence: true,
         reviewStatus: true,
         answerText: true,
       },
     });
     if (!problem) throw new NotFoundException("Problem not found");
     return problem;
+  }
+
+  async generateTwinProblem(
+    problemId: string,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id: problemId,
+        ...this.getProblemScopeWhere(requesterId, requesterRole),
+      },
+      select: {
+        id: true,
+        displayNumber: true,
+        problemNumber: true,
+        problemType: true,
+        gradeLevel: true,
+        subject: true,
+        unitMajor: true,
+        unitMinor: true,
+        difficulty: true,
+        stemText: true,
+        stemLatex: true,
+        answerText: true,
+        answerLatex: true,
+        solutionText: true,
+        solutionLatex: true,
+        bookSource: true,
+        choices: {
+          select: {
+            label: true,
+            position: true,
+            contentText: true,
+            contentLatex: true,
+          },
+          orderBy: { position: "asc" },
+        },
+      },
+    });
+
+    if (!problem) {
+      throw new NotFoundException("Problem not found");
+    }
+
+    return this.twinProblemService.generate(problem);
   }
 
   async review(
