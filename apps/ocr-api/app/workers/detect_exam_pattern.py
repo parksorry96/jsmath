@@ -299,6 +299,18 @@ async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
             if val is not None and hasattr(problem, attr):
                 setattr(problem, attr, val)
 
+        # Link to curriculum node based on classification labels
+        _subject = prev_result.get("subject") or problem.subject
+        _unit_major = prev_result.get("unit_major") or problem.unit_major
+        _unit_minor = prev_result.get("unit_minor") or problem.unit_minor
+        if _subject:
+            from app.models.curriculum_node import find_curriculum_node
+
+            node = await find_curriculum_node(
+                session, _subject, _unit_major, _unit_minor,
+            )
+            problem.curriculum_node_id = node.id if node else None
+
         problem.analysis_status = AnalysisStatus.analyzing
         await session.commit()
 

@@ -18,7 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
@@ -121,6 +121,9 @@ class Problem(Base, TimestampMixin):
     unit_major: Mapped[str | None] = mapped_column(String(100))  # 대단원
     unit_minor: Mapped[str | None] = mapped_column(String(100))  # 중단원
     unit_sub: Mapped[str | None] = mapped_column(String(100))  # 소단원
+    curriculum_node_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("curriculum_nodes.id"), nullable=True
+    )
     difficulty: Mapped[int | None] = mapped_column(SmallInteger)  # 1~5
     classification_confidence: Mapped[float | None] = mapped_column(Float)
     solution_confidence: Mapped[float | None] = mapped_column(Float)
