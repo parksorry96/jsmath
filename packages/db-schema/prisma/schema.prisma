@@ -432,6 +432,7 @@ model Problem {
   solutionText         String?       @map("solution_text")
 
   // AI analysis
+  solutionTags         Json?         @map("solution_tags")
   solutionStrategy     String?       @map("solution_strategy")
   requiredConcepts     Json?         @map("required_concepts")
   solutionSteps        Json?         @map("solution_steps")

@@ -27,6 +27,7 @@ export interface ProblemsQuery {
   analysisStatus?: string;
   bookTitle?: string;
   q?: string;
+  solutionTag?: string;
   examYear?: string;
   examMonth?: string;
   examType?: string;
@@ -84,7 +85,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
   async getFilterOptions(requesterId: string, requesterRole: string) {
     const where = this.getProblemScopeWhere(requesterId, requesterRole);
 
-    const [subjects, gradeLevels, textbooks, difficulties, problemTypes, examYearsRaw, examTypesRaw] = await Promise.all([
+    const [subjects, gradeLevels, textbooks, difficulties, problemTypes, examYearsRaw, examTypesRaw, solutionTagsRaw] = await Promise.all([
       this.prisma.problem.findMany({
         where: { ...where, subject: { not: null } },
         select: { subject: true },
@@ -132,6 +133,12 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         WHERE exam_source IS NOT NULL AND exam_source->>'type' IS NOT NULL
         ORDER BY type
       `,
+      this.prisma.$queryRaw<{ tag: string }[]>`
+        SELECT DISTINCT jsonb_array_elements_text(solution_tags) as tag
+        FROM ocr.problems
+        WHERE solution_tags IS NOT NULL
+        ORDER BY tag
+      `,
     ]);
 
     return {
@@ -147,6 +154,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       problemTypes: problemTypes.map((p) => p.problemType),
       examYears: examYearsRaw.map((r) => r.year),
       examTypes: examTypesRaw.map((r) => r.type),
+      solutionTags: solutionTagsRaw.map((r) => r.tag),
     };
   }
 
@@ -168,6 +176,9 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     if (query.analysisStatus) where.analysisStatus = query.analysisStatus;
     if (query.bookTitle) {
       where.bookSource = { path: ["title"], string_contains: query.bookTitle };
+    }
+    if (query.solutionTag) {
+      where.solutionTags = { array_contains: [query.solutionTag] };
     }
     if (query.difficulty !== undefined) {
       const parsed = parseInt(query.difficulty, 10);
@@ -222,6 +233,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
           classificationConfidence: true,
           solutionConfidence: true,
           reviewConfidence: true,
+          solutionTags: true,
           analysisStatus: true,
           ocrJobId: true,
           startPage: true,
@@ -483,6 +495,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         unitMinor: true,
         difficulty: true,
         difficultyRefined: true,
+        solutionTags: true,
         solutionStrategy: true,
         requiredConcepts: true,
         solutionSteps: true,

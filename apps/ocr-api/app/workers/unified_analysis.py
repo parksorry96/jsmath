@@ -21,7 +21,7 @@ from app.config import settings
 from app.services.openai_client import get_openai_client
 from app.database import worker_session
 from app.models.problem import Problem, ProblemChoice
-from app.schemas.problem import CURRICULUM_TREE, SUBJECTS
+from app.schemas.problem import CURRICULUM_TREE, SOLUTION_STRATEGY_TAGS, SUBJECTS
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,12 @@ Classify the problem first, then solve and analyze it independently, and return 
 - exam_source는 강한 근거가 없으면 null로 두세요.
 - classification_reasoning은 2-4문장 분량의 근거 요약으로 쓰고, 숨겨진 chain-of-thought를 그대로 쓰지 마세요.
 
+## Solution Strategy Tags
+Select 1-4 tags from this list that best describe the solution approach:
+{solution_tags_json}
+- Pick only tags that directly apply to the primary solution method.
+- Order by relevance (most relevant first).
+
 ## Output Contract
 - Return exactly one JSON object matching the requested schema.
 - Do not add markdown, code fences, or extra keys.
@@ -104,7 +110,8 @@ Classify the problem first, then solve and analyze it independently, and return 
 - subject/unit fields must align with curriculum_json.
 - is_common must be consistent with subject.
 - answer must agree with solution_strategy and solution_steps.
-- common_mistakes must fit this exact problem type."""
+- common_mistakes must fit this exact problem type.
+- solution_tags must be chosen from the provided list only."""
 
 TEXTBOOK_USER_PROMPT = """## Problem
 <problem_latex>
@@ -196,6 +203,7 @@ class UnifiedAnalysisResult(BaseModel):
     classification_confidence: float = Field(ge=0.0, le=1.0)
 
     # Solution analysis
+    solution_tags: list[str] = Field(default_factory=list)
     solution_strategy: str
     required_concepts: list[str]
     solution_steps: list[SolutionStep]
@@ -273,6 +281,12 @@ Your task is to classify the problem first, solve it independently, and return o
 - Keep Korean explanation outside math delimiters.
 - Never leave raw math like x^2, a_n, \\frac{1}{2}, lim_{n\\to\\infty} outside math delimiters.
 
+## Solution Strategy Tags
+Select 1-4 tags from this list that best describe the solution approach:
+{solution_tags_json}
+- Pick only tags that directly apply to the primary solution method.
+- Order by relevance (most relevant first).
+
 ## Output Contract
 - Return exactly one JSON object matching the requested schema.
 - Do not add markdown, code fences, or extra keys.
@@ -282,6 +296,7 @@ Your task is to classify the problem first, solve it independently, and return o
 - is_common must be consistent with subject.
 - answer must agree with solution_strategy and solution_steps.
 - common_mistakes must fit this exact problem type.
+- solution_tags must be chosen from the provided list only.
 
 Respond with valid JSON matching the requested schema."""
 
@@ -374,11 +389,13 @@ async def _unified_analyze(problem_id: str) -> dict:
         is_textbook = bool(problem.book_source)
 
         curriculum_json = json.dumps(CURRICULUM_TREE, ensure_ascii=False, indent=2)
+        solution_tags_json = json.dumps(SOLUTION_STRATEGY_TAGS, ensure_ascii=False)
 
         if is_textbook:
             book_source = problem.book_source or {}
             system_prompt = TEXTBOOK_SYSTEM_PROMPT.format(
                 curriculum_json=curriculum_json,
+                solution_tags_json=solution_tags_json,
             )
             user_prompt = TEXTBOOK_USER_PROMPT.format(
                 stem_latex=problem.stem_latex,
@@ -397,6 +414,7 @@ async def _unified_analyze(problem_id: str) -> dict:
         else:
             system_prompt = SYSTEM_PROMPT.format(
                 curriculum_json=curriculum_json,
+                solution_tags_json=solution_tags_json,
             )
             user_prompt = USER_PROMPT_TEMPLATE.format(
                 stem_latex=problem.stem_latex,
@@ -449,6 +467,9 @@ async def _unified_analyze(problem_id: str) -> dict:
     # Clamp difficulty
     difficulty = max(1.0, min(6.0, parsed.difficulty_refined))
 
+    # Filter solution_tags to only include valid tags
+    valid_tags = [t for t in parsed.solution_tags if t in SOLUTION_STRATEGY_TAGS]
+
     return {
         "problem_id": problem_id,
         # Classification
@@ -461,6 +482,7 @@ async def _unified_analyze(problem_id: str) -> dict:
         "is_common": is_common,
         "classification_confidence": parsed.classification_confidence,
         # Solution
+        "solution_tags": valid_tags,
         "solution_strategy": parsed.solution_strategy,
         "required_concepts": parsed.required_concepts,
         "solution_steps": [s.model_dump() for s in parsed.solution_steps],
@@ -485,6 +507,7 @@ def _heuristic_fallback(problem_id: str) -> dict:
         "difficulty_refined": 3.0,
         "is_common": True,
         "classification_confidence": 0.3,
+        "solution_tags": [],
         "solution_strategy": None,
         "required_concepts": [],
         "solution_steps": [],
@@ -547,6 +570,8 @@ def _postprocess_batch_item(item: BatchItemResult) -> dict:
     is_common = subject in COMMON_SUBJECTS
     difficulty = max(1.0, min(6.0, item.difficulty_refined))
 
+    valid_tags = [t for t in item.solution_tags if t in SOLUTION_STRATEGY_TAGS]
+
     return {
         "problem_id": item.problem_id,
         "classification_reasoning": item.classification_reasoning,
@@ -557,6 +582,7 @@ def _postprocess_batch_item(item: BatchItemResult) -> dict:
         "difficulty_refined": round(difficulty, 1),
         "is_common": is_common,
         "classification_confidence": item.classification_confidence,
+        "solution_tags": valid_tags,
         "solution_strategy": item.solution_strategy,
         "required_concepts": item.required_concepts,
         "solution_steps": [s.model_dump() for s in item.solution_steps],
@@ -625,10 +651,17 @@ async def _batch_analyze(problem_ids: list[str]) -> list[dict]:
     is_textbook = bool(first.book_source)
 
     curriculum_json = json.dumps(CURRICULUM_TREE, ensure_ascii=False, indent=2)
+    solution_tags_json = json.dumps(SOLUTION_STRATEGY_TAGS, ensure_ascii=False)
     if is_textbook:
-        system_prompt = TEXTBOOK_SYSTEM_PROMPT.format(curriculum_json=curriculum_json)
+        system_prompt = TEXTBOOK_SYSTEM_PROMPT.format(
+            curriculum_json=curriculum_json,
+            solution_tags_json=solution_tags_json,
+        )
     else:
-        system_prompt = SYSTEM_PROMPT.format(curriculum_json=curriculum_json)
+        system_prompt = SYSTEM_PROMPT.format(
+            curriculum_json=curriculum_json,
+            solution_tags_json=solution_tags_json,
+        )
 
     # Build per-problem sections
     sections = []

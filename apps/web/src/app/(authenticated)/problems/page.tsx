@@ -157,6 +157,7 @@ export default function ProblemsPage() {
   const [difficultyFilter, setDifficultyFilter] = useState<string>("");
   const [bookTitleFilter, setBookTitleFilter] = useState<string>("");
   const [problemTypeFilter, setProblemTypeFilter] = useState<string>("");
+  const [solutionTagFilter, setSolutionTagFilter] = useState<string>("");
   const [examYearFilter, setExamYearFilter] = useState<string>("");
   const [examTypeFilter, setExamTypeFilter] = useState<string>("");
   const [previewProblem, setPreviewProblem] = useState<Problem | null>(null);
@@ -172,6 +173,7 @@ export default function ProblemsPage() {
       problemTypes: string[];
       examYears: number[];
       examTypes: string[];
+      solutionTags: string[];
     }>("/problems/filter-options"),
   });
 
@@ -186,6 +188,7 @@ export default function ProblemsPage() {
     difficultyFilter && `difficulty=${difficultyFilter}`,
     bookTitleFilter && `bookTitle=${encodeURIComponent(bookTitleFilter)}`,
     problemTypeFilter && `problemType=${problemTypeFilter}`,
+    solutionTagFilter && `solutionTag=${encodeURIComponent(solutionTagFilter)}`,
     examYearFilter && `examYear=${examYearFilter}`,
     examTypeFilter && `examType=${encodeURIComponent(examTypeFilter)}`,
   ]
@@ -193,7 +196,7 @@ export default function ProblemsPage() {
     .join("&");
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["problems", page, searchQuery, searchMode, reviewFilter, subjectFilter, gradeLevelFilter, difficultyFilter, bookTitleFilter, problemTypeFilter, examYearFilter, examTypeFilter],
+    queryKey: ["problems", page, searchQuery, searchMode, reviewFilter, subjectFilter, gradeLevelFilter, difficultyFilter, bookTitleFilter, problemTypeFilter, solutionTagFilter, examYearFilter, examTypeFilter],
     queryFn: () =>
       api.get<PaginatedResponse>(`/problems?${queryString}`),
   });
@@ -414,7 +417,20 @@ export default function ProblemsPage() {
           </select>
         )}
 
-        {(subjectFilter || gradeLevelFilter || difficultyFilter || bookTitleFilter || problemTypeFilter || examYearFilter || examTypeFilter) && (
+        {filterOptions?.solutionTags && filterOptions.solutionTags.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={solutionTagFilter}
+            onChange={(e) => { setSolutionTagFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">풀이전략 전체</option>
+            {filterOptions.solutionTags.map((tag) => (
+              <option key={tag} value={tag}>{tag}</option>
+            ))}
+          </select>
+        )}
+
+        {(subjectFilter || gradeLevelFilter || difficultyFilter || bookTitleFilter || problemTypeFilter || solutionTagFilter || examYearFilter || examTypeFilter) && (
           <Button
             variant="ghost"
             size="sm"
@@ -424,6 +440,7 @@ export default function ProblemsPage() {
               setDifficultyFilter("");
               setBookTitleFilter("");
               setProblemTypeFilter("");
+              setSolutionTagFilter("");
               setExamYearFilter("");
               setExamTypeFilter("");
               setPage(1);

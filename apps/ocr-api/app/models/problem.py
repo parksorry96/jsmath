@@ -123,6 +123,8 @@ class Problem(Base, TimestampMixin):
     unit_sub: Mapped[str | None] = mapped_column(String(100))  # 소단원
     difficulty: Mapped[int | None] = mapped_column(SmallInteger)  # 1~5
     classification_confidence: Mapped[float | None] = mapped_column(Float)
+    solution_confidence: Mapped[float | None] = mapped_column(Float)
+    review_confidence: Mapped[float | None] = mapped_column(Float)
 
     # Review
     review_status: Mapped[ReviewStatus] = mapped_column(
@@ -149,6 +151,7 @@ class Problem(Base, TimestampMixin):
     exam_source: Mapped[dict | None] = mapped_column(JSONB)  # {"year","month","type","number"}
 
     # AI analysis results
+    solution_tags: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     solution_strategy: Mapped[str | None] = mapped_column(Text)
     required_concepts: Mapped[list | None] = mapped_column(JSONB)
     solution_steps: Mapped[list | None] = mapped_column(JSONB)

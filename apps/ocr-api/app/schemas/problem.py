@@ -40,6 +40,16 @@ CURRICULUM_TREE: dict[str, dict[str, list[str]]] = {
     },
 }
 
+SOLUTION_STRATEGY_TAGS = [
+    "직접계산", "치환", "귀류법", "수학적귀납법",
+    "그래프활용", "미분활용", "적분활용", "벡터활용",
+    "경우의수", "확률계산", "점화식", "극한",
+    "넓이/부피", "방정식풀이", "부등식풀이",
+    "도형성질", "좌표기하", "삼각함수활용",
+    "함수의성질", "합성함수", "역함수",
+    "조건분석", "범위추정", "대칭성활용",
+]
+
 DIFFICULTY_LEVELS = {1: "기초", 2: "쉬움", 3: "보통", 4: "약간 어려움", 5: "어려움", 6: "최상"}
 
 PROBLEM_TYPES = ["multiple_choice", "short_answer", "written_solution", "essay"]

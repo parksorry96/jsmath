@@ -262,11 +262,11 @@ async def _merge(problem_id: str, results: list[dict]) -> dict:
 
         problem.analysis_status = AnalysisStatus.analyzing
         field_map = [
-            "solution_strategy", "required_concepts", "solution_steps",
-            "estimated_time_sec", "common_mistakes", "subject", "unit_major",
-            "unit_minor", "unit_sub", "difficulty_refined", "is_common",
-            "classification_confidence", "exam_source", "position_type",
-            "point_value", "question_format",
+            "solution_tags", "solution_strategy", "required_concepts",
+            "solution_steps", "estimated_time_sec", "common_mistakes",
+            "subject", "unit_major", "unit_minor", "unit_sub",
+            "difficulty_refined", "is_common", "classification_confidence",
+            "exam_source", "position_type", "point_value", "question_format",
         ]
         for key in field_map:
             val = merged.get(key)

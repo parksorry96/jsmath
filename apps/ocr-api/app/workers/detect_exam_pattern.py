@@ -70,32 +70,42 @@ _DIFFICULTY_TO_POINT: dict[int, int] = {
     5: 4,  # 최상 → 4pt
 }
 
-EXAM_SOURCE_PROMPT = """You are a Korean CSAT (수능/모의평가) exam identification expert.
+EXAM_SOURCE_SYSTEM_PROMPT = """You are a Korean CSAT (수능/모의평가) exam identification expert.
 
-Determine if this math problem is from a specific exam.
+# Goal
+Determine whether the problem can be matched to one specific known exam source.
 
-Problem (LaTeX):
+# Decision Policy
+- Be conservative. Return a specific exam source only when the evidence is strong enough to support one exact source.
+- Topic, difficulty, or question number alone are not sufficient evidence.
+- If multiple exams are plausible or the evidence is weak, return null.
+- Do not guess year, month, type, or number.
+
+# Output Contract
+- Return exactly one JSON object with one key only: exam_source.
+- exam_source must be either null or an object with year, month, type, number.
+- type must be one of: 수능, 6월모의평가, 9월모의평가, 교육청모의고사.
+- Do not add markdown, commentary, or extra keys."""
+
+EXAM_SOURCE_USER_PROMPT = """# Problem
+<problem_latex>
 {stem_latex}
+</problem_latex>
 
-Problem (plain text):
+<problem_text>
 {stem_text}
+</problem_text>
 
 Problem number: {problem_number}
 
-If this problem appears to be from a specific 수능 or 모의평가, return the exam source.
-Otherwise return null.
-
-Respond in JSON:
+# Return JSON
 {{
   "exam_source": {{"year": 2024, "month": 11, "type": "수능", "number": 15}}
 }}
 or
 {{
   "exam_source": null
-}}
-
-- type: "수능", "6월모의평가", "9월모의평가", "교육청모의고사"
-- Respond with JSON only."""
+}}"""
 
 
 def _parse_question_number(raw: str | None) -> int | None:
@@ -262,6 +272,7 @@ async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
 
         # Save unified analysis results to DB
         field_map = {
+            "solution_tags": "solution_tags",
             "solution_strategy": "solution_strategy",
             "required_concepts": "required_concepts",
             "solution_steps": "solution_steps",
@@ -274,6 +285,7 @@ async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
             "difficulty_refined": "difficulty_refined",
             "is_common": "is_common",
             "classification_confidence": "classification_confidence",
+            "solution_confidence": "solution_confidence",
             "exam_source": "exam_source",
         }
         if is_textbook:
@@ -300,7 +312,7 @@ async def _identify_exam_source(
     """Call GPT to identify exam source only."""
     client = get_openai_client()
 
-    prompt = EXAM_SOURCE_PROMPT.format(
+    user_prompt = EXAM_SOURCE_USER_PROMPT.format(
         stem_latex=stem_latex,
         stem_text=stem_text,
         problem_number=problem_number,
@@ -309,7 +321,10 @@ async def _identify_exam_source(
     try:
         response = await client.chat.completions.create(
             model=settings.ai_model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": EXAM_SOURCE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
             response_format={"type": "json_object"},
             temperature=0.1,
             max_completion_tokens=200,
@@ -321,4 +336,3 @@ async def _identify_exam_source(
     content = response.choices[0].message.content or "{}"
     analysis = json.loads(content)
     return analysis.get("exam_source")
-
