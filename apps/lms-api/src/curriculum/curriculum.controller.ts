@@ -1,4 +1,11 @@
-import { Controller, Get, Param, Query, UseGuards } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Query,
+  UseGuards,
+} from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { CurriculumService } from "./curriculum.service";
 
@@ -8,15 +15,17 @@ export class CurriculumController {
   constructor(private curriculumService: CurriculumService) {}
 
   @Get("tree")
-  getTree(@Query("year") year?: string) {
-    const curriculumYear = year ? parseInt(year, 10) : 2015;
-    return this.curriculumService.getTree(curriculumYear);
+  getTree(
+    @Query("year", new ParseIntPipe({ optional: true })) year?: number,
+  ) {
+    return this.curriculumService.getTree(year ?? 2015);
   }
 
   @Get("subjects")
-  getSubjects(@Query("year") year?: string) {
-    const curriculumYear = year ? parseInt(year, 10) : 2015;
-    return this.curriculumService.getSubjects(curriculumYear);
+  getSubjects(
+    @Query("year", new ParseIntPipe({ optional: true })) year?: number,
+  ) {
+    return this.curriculumService.getSubjects(year ?? 2015);
   }
 
   @Get(":parentId/children")
