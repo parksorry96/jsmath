@@ -31,6 +31,7 @@ export interface ProblemsQuery {
   examYear?: string;
   examMonth?: string;
   examType?: string;
+  curriculumNodeId?: string;
   page?: number;
   limit?: number;
 }
@@ -204,6 +205,21 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     }
     if (examSourceFilters.length > 0) {
       where.AND = examSourceFilters;
+    }
+
+    // Curriculum node filter — includes all descendant nodes via recursive CTE
+    if (query.curriculumNodeId) {
+      const descendants = await this.prisma.$queryRaw<{ id: string }[]>`
+        WITH RECURSIVE tree AS (
+          SELECT id FROM ocr.curriculum_nodes WHERE id = ${query.curriculumNodeId}::uuid
+          UNION ALL
+          SELECT cn.id FROM ocr.curriculum_nodes cn
+          JOIN tree t ON cn.parent_id = t.id
+        )
+        SELECT id FROM tree
+      `;
+      const nodeIds = descendants.map((d) => d.id);
+      where.curriculumNodeId = { in: nodeIds };
     }
 
     // Basic ILIKE search on stemText — tsvector upgrade in Phase 3

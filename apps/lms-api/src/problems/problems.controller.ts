@@ -58,6 +58,7 @@ export class ProblemsController {
     @Query("examYear") examYear?: string,
     @Query("examMonth") examMonth?: string,
     @Query("examType") examType?: string,
+    @Query("curriculumNodeId") curriculumNodeId?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
   ) {
@@ -90,6 +91,7 @@ export class ProblemsController {
       examYear,
       examMonth,
       examType,
+      curriculumNodeId,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
     });

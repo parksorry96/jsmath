@@ -29,6 +29,17 @@ import { api } from "@/lib/api";
 import { LatexRenderer } from "@/components/math/latex-renderer";
 import { toast } from "sonner";
 
+interface CurriculumNode {
+  id: string;
+  curriculumYear: number;
+  level: number;
+  code: string;
+  label: string;
+  parentId: string | null;
+  sortOrder: number;
+  gradeLevel: string | null;
+}
+
 interface Problem {
   id: string;
   displayNumber: string | null;
@@ -160,6 +171,10 @@ export default function ProblemsPage() {
   const [solutionTagFilter, setSolutionTagFilter] = useState<string>("");
   const [examYearFilter, setExamYearFilter] = useState<string>("");
   const [examTypeFilter, setExamTypeFilter] = useState<string>("");
+  const [curriculumYear, setCurriculumYear] = useState<number>(2015);
+  const [selectedSubjectNode, setSelectedSubjectNode] = useState<string | null>(null);
+  const [selectedMajorNode, setSelectedMajorNode] = useState<string | null>(null);
+  const [selectedMinorNode, setSelectedMinorNode] = useState<string | null>(null);
   const [previewProblem, setPreviewProblem] = useState<Problem | null>(null);
   const [generatedTwin, setGeneratedTwin] = useState<TwinProblemResponse | null>(null);
 
@@ -177,6 +192,30 @@ export default function ProblemsPage() {
     }>("/problems/filter-options"),
   });
 
+  const { data: curriculumSubjects } = useQuery({
+    queryKey: ["curriculum-subjects", curriculumYear],
+    queryFn: () =>
+      api.get<CurriculumNode[]>(`/curriculum/subjects?year=${curriculumYear}`),
+  });
+
+  const { data: majorUnits } = useQuery({
+    queryKey: ["curriculum-children", selectedSubjectNode],
+    queryFn: () =>
+      api.get<CurriculumNode[]>(`/curriculum/${selectedSubjectNode}/children`),
+    enabled: !!selectedSubjectNode,
+  });
+
+  const { data: minorUnits } = useQuery({
+    queryKey: ["curriculum-children", selectedMajorNode],
+    queryFn: () =>
+      api.get<CurriculumNode[]>(`/curriculum/${selectedMajorNode}/children`),
+    enabled: !!selectedMajorNode,
+  });
+
+  // The most specific selected curriculum node takes priority
+  const activeCurriculumNodeId =
+    selectedMinorNode ?? selectedMajorNode ?? selectedSubjectNode;
+
   const queryString = [
     `page=${page}`,
     `limit=${PAGE_SIZE}`,
@@ -191,12 +230,13 @@ export default function ProblemsPage() {
     solutionTagFilter && `solutionTag=${encodeURIComponent(solutionTagFilter)}`,
     examYearFilter && `examYear=${examYearFilter}`,
     examTypeFilter && `examType=${encodeURIComponent(examTypeFilter)}`,
+    activeCurriculumNodeId && `curriculumNodeId=${activeCurriculumNodeId}`,
   ]
     .filter(Boolean)
     .join("&");
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["problems", page, searchQuery, searchMode, reviewFilter, subjectFilter, gradeLevelFilter, difficultyFilter, bookTitleFilter, problemTypeFilter, solutionTagFilter, examYearFilter, examTypeFilter],
+    queryKey: ["problems", page, searchQuery, searchMode, reviewFilter, subjectFilter, gradeLevelFilter, difficultyFilter, bookTitleFilter, problemTypeFilter, solutionTagFilter, examYearFilter, examTypeFilter, activeCurriculumNodeId],
     queryFn: () =>
       api.get<PaginatedResponse>(`/problems?${queryString}`),
   });
@@ -318,21 +358,99 @@ export default function ProblemsPage() {
         </Button>
       </form>
 
-      {/* Advanced Filters */}
+      {/* Curriculum Filter */}
       <div className="flex flex-wrap items-center gap-3">
-        {filterOptions?.subjects && filterOptions.subjects.length > 0 && (
+        <div className="flex rounded-lg border border-border bg-brand-charcoal p-0.5">
+          <button
+            type="button"
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+              curriculumYear === 2015
+                ? "bg-brand-dark text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => {
+              setCurriculumYear(2015);
+              setSelectedSubjectNode(null);
+              setSelectedMajorNode(null);
+              setSelectedMinorNode(null);
+              setPage(1);
+            }}
+          >
+            2015 교육과정
+          </button>
+          <button
+            type="button"
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+              curriculumYear === 2022
+                ? "bg-brand-dark text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => {
+              setCurriculumYear(2022);
+              setSelectedSubjectNode(null);
+              setSelectedMajorNode(null);
+              setSelectedMinorNode(null);
+              setPage(1);
+            }}
+          >
+            2022 교육과정
+          </button>
+        </div>
+
+        {curriculumSubjects && curriculumSubjects.length > 0 && (
           <select
             className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
-            value={subjectFilter}
-            onChange={(e) => { setSubjectFilter(e.target.value); setPage(1); }}
+            value={selectedSubjectNode ?? ""}
+            onChange={(e) => {
+              setSelectedSubjectNode(e.target.value || null);
+              setSelectedMajorNode(null);
+              setSelectedMinorNode(null);
+              setPage(1);
+            }}
           >
             <option value="">과목 전체</option>
-            {filterOptions.subjects.map((s) => (
-              <option key={s} value={s}>{s}</option>
+            {curriculumSubjects.map((node) => (
+              <option key={node.id} value={node.id}>{node.label}</option>
             ))}
           </select>
         )}
 
+        {majorUnits && majorUnits.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={selectedMajorNode ?? ""}
+            onChange={(e) => {
+              setSelectedMajorNode(e.target.value || null);
+              setSelectedMinorNode(null);
+              setPage(1);
+            }}
+          >
+            <option value="">대단원 전체</option>
+            {majorUnits.map((node) => (
+              <option key={node.id} value={node.id}>{node.label}</option>
+            ))}
+          </select>
+        )}
+
+        {minorUnits && minorUnits.length > 0 && (
+          <select
+            className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
+            value={selectedMinorNode ?? ""}
+            onChange={(e) => {
+              setSelectedMinorNode(e.target.value || null);
+              setPage(1);
+            }}
+          >
+            <option value="">소단원 전체</option>
+            {minorUnits.map((node) => (
+              <option key={node.id} value={node.id}>{node.label}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {/* Advanced Filters */}
+      <div className="flex flex-wrap items-center gap-3">
         {filterOptions?.gradeLevels && filterOptions.gradeLevels.length > 0 && (
           <select
             className="rounded-md bg-brand-charcoal border border-transparent px-3 py-1.5 text-sm text-foreground"
@@ -430,11 +548,14 @@ export default function ProblemsPage() {
           </select>
         )}
 
-        {(subjectFilter || gradeLevelFilter || difficultyFilter || bookTitleFilter || problemTypeFilter || solutionTagFilter || examYearFilter || examTypeFilter) && (
+        {(activeCurriculumNodeId || gradeLevelFilter || difficultyFilter || bookTitleFilter || problemTypeFilter || solutionTagFilter || examYearFilter || examTypeFilter) && (
           <Button
             variant="ghost"
             size="sm"
             onClick={() => {
+              setSelectedSubjectNode(null);
+              setSelectedMajorNode(null);
+              setSelectedMinorNode(null);
               setSubjectFilter("");
               setGradeLevelFilter("");
               setDifficultyFilter("");
