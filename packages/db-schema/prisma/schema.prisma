@@ -395,6 +395,7 @@ model Problem {
   sharedStemLatex          String?       @map("shared_stem_latex")
   sharedStemText           String?       @map("shared_stem_text")
   problemType              ProblemType   @map("problem_type")
+  bbox                     Json?
 
   // Answer
   answerText               String?       @map("answer_text")
@@ -406,8 +407,12 @@ model Problem {
   unitMajor                String?       @map("unit_major")
   unitMinor                String?       @map("unit_minor")
   unitSub                  String?       @map("unit_sub")
+  curriculumNodeId         String?       @map("curriculum_node_id") @db.Uuid
+  curriculumNode           CurriculumNode? @relation(fields: [curriculumNodeId], references: [id])
   difficulty               Int?          @db.SmallInt
   classificationConfidence Float?        @map("classification_confidence")
+  solutionConfidence       Float?        @map("solution_confidence")
+  reviewConfidence         Float?        @map("review_confidence")
 
   // Review
   reviewStatus             ReviewStatus  @default(pending_review) @map("review_status")
@@ -435,6 +440,8 @@ model Problem {
   difficultyRefined    Float?        @map("difficulty_refined")
   analysisStatus       String        @default("pending") @map("analysis_status")
   analyzedAt           DateTime?     @map("analyzed_at")
+  stemTsv              Unsupported("tsvector")? @map("stem_tsv")
+  embedding            Unsupported("vector(1536)")?
 
   // Relations
   choices                  ProblemChoice[]
@@ -446,9 +453,31 @@ model Problem {
   @@index([ocrJobId])
   @@index([textbookId])
   @@index([gradeLevel, subject, unitMajor])
+  @@index([curriculumNodeId])
   @@index([reviewStatus])
   @@index([analysisStatus])
   @@map("problems")
+  @@schema("ocr")
+}
+
+model CurriculumNode {
+  id              String           @id @default(uuid()) @db.Uuid
+  curriculumYear  Int              @map("curriculum_year")
+  level           Int              // 1=subject, 2=unitMajor, 3=unitMinor, 4=unitSub
+  code            String           // machine-readable key e.g. "math1.polynomial.ops"
+  label           String           // display name e.g. "다항식의 연산"
+  parentId        String?          @map("parent_id") @db.Uuid
+  parent          CurriculumNode?  @relation("CurriculumTree", fields: [parentId], references: [id])
+  children        CurriculumNode[] @relation("CurriculumTree")
+  sortOrder       Int              @default(0) @map("sort_order")
+  gradeLevel      String?          @map("grade_level")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  problems        Problem[]
+
+  @@unique([curriculumYear, code])
+  @@index([curriculumYear, level])
+  @@index([parentId])
+  @@map("curriculum_nodes")
   @@schema("ocr")
 }
 
