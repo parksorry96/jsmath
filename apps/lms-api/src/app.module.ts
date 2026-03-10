@@ -18,10 +18,14 @@ import { NotificationsModule } from "./notifications/notifications.module";
 import { AnalyticsModule } from "./analytics/analytics.module";
 import { SubmissionPhotosModule } from "./submission-photos/submission-photos.module";
 import { ExamDocumentsModule } from "./exam-documents/exam-documents.module";
+import { CurriculumModule } from "./curriculum/curriculum.module";
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: [".env", "../../.env"],
+    }),
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -47,6 +51,7 @@ import { ExamDocumentsModule } from "./exam-documents/exam-documents.module";
     AnalyticsModule,
     SubmissionPhotosModule,
     ExamDocumentsModule,
+    CurriculumModule,
   ],
   controllers: [AppController],
 })
