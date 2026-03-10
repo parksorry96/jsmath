@@ -53,12 +53,25 @@ export class ProblemsController {
     @Query("bookTitle") bookTitle?: string,
     @Query("q") q?: string,
     @Query("search") search?: string,
+    @Query("searchMode") searchMode?: string,
     @Query("examYear") examYear?: string,
     @Query("examMonth") examMonth?: string,
     @Query("examType") examType?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
   ) {
+    const queryText = q ?? search;
+    if (searchMode === "semantic" && queryText) {
+      return this.problems.semanticSearch(queryText, {
+        requesterId: req.user.id,
+        requesterRole: req.user.role,
+        subject,
+        gradeLevel,
+        difficulty,
+        limit: limit ? parseInt(limit, 10) : undefined,
+      });
+    }
+
     return this.problems.findAll({
       requesterId: req.user.id,
       requesterRole: req.user.role,
@@ -71,7 +84,7 @@ export class ProblemsController {
       problemType,
       analysisStatus,
       bookTitle,
-      q: q ?? search,
+      q: queryText,
       examYear,
       examMonth,
       examType,

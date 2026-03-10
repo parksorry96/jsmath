@@ -12,6 +12,7 @@ import { UpdateProblemDto } from "./dto/update-problem.dto";
 import { Redis } from "ioredis";
 import { normalizeFilename } from "../common/filename";
 import { TwinProblemService } from "./twin-problem.service";
+import { EmbeddingService } from "./embedding.service";
 
 export interface ProblemsQuery {
   requesterId: string;
@@ -42,6 +43,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     private prisma: PrismaService,
     private config: ConfigService,
     private twinProblemService: TwinProblemService,
+    private embeddingService: EmbeddingService,
   ) {}
 
   onModuleInit() {
@@ -271,6 +273,54 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       page,
       limit,
       totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async semanticSearch(query: string, filters: ProblemsQuery, limit = 20) {
+    const embedding = await this.embeddingService.embed(query);
+    const vectorStr = `[${embedding.join(",")}]`;
+
+    const conditions = [
+      `embedding IS NOT NULL`,
+      `review_status IN ('approved', 'auto_approved')`,
+    ];
+    const params: unknown[] = [];
+    let paramIndex = 1;
+
+    if (filters.subject) {
+      conditions.push(`subject = $${paramIndex++}`);
+      params.push(filters.subject);
+    }
+    if (filters.gradeLevel) {
+      conditions.push(`grade_level = $${paramIndex++}`);
+      params.push(filters.gradeLevel);
+    }
+    if (filters.difficulty) {
+      conditions.push(`difficulty = $${paramIndex++}`);
+      params.push(parseInt(filters.difficulty, 10));
+    }
+
+    const whereClause = conditions.join(" AND ");
+    const sql = `
+      SELECT id, stem_text AS "stemText", stem_latex AS "stemLatex",
+             subject, unit_major AS "unitMajor", difficulty,
+             problem_type AS "problemType", grade_level AS "gradeLevel",
+             display_number AS "displayNumber", problem_number AS "problemNumber",
+             review_status AS "reviewStatus",
+             1 - (embedding <=> '${vectorStr}'::vector) AS similarity
+      FROM ocr.problems
+      WHERE ${whereClause}
+      ORDER BY embedding <=> '${vectorStr}'::vector
+      LIMIT ${limit}
+    `;
+
+    const rows = await this.prisma.$queryRawUnsafe(sql, ...params);
+    return {
+      data: rows,
+      total: (rows as unknown[]).length,
+      page: 1,
+      limit,
+      totalPages: 1,
     };
   }
 

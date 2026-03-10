@@ -46,6 +46,7 @@ interface Problem {
   sourceFile: string | null;
   startPage: number | null;
   createdAt: string;
+  similarity?: number;
   choices?: Array<{
     label?: string;
     contentText?: string;
@@ -149,6 +150,7 @@ export default function ProblemsPage() {
   const [page, setPage] = useState(1);
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<"keyword" | "semantic">("keyword");
   const [reviewFilter, setReviewFilter] = useState<string>("");
   const [subjectFilter, setSubjectFilter] = useState<string>("");
   const [gradeLevelFilter, setGradeLevelFilter] = useState<string>("");
@@ -177,6 +179,7 @@ export default function ProblemsPage() {
     `page=${page}`,
     `limit=${PAGE_SIZE}`,
     searchQuery && `q=${encodeURIComponent(searchQuery)}`,
+    searchMode === "semantic" && searchQuery && `searchMode=semantic`,
     reviewFilter && `reviewStatus=${reviewFilter}`,
     subjectFilter && `subject=${encodeURIComponent(subjectFilter)}`,
     gradeLevelFilter && `gradeLevel=${encodeURIComponent(gradeLevelFilter)}`,
@@ -190,7 +193,7 @@ export default function ProblemsPage() {
     .join("&");
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["problems", page, searchQuery, reviewFilter, subjectFilter, gradeLevelFilter, difficultyFilter, bookTitleFilter, problemTypeFilter, examYearFilter, examTypeFilter],
+    queryKey: ["problems", page, searchQuery, searchMode, reviewFilter, subjectFilter, gradeLevelFilter, difficultyFilter, bookTitleFilter, problemTypeFilter, examYearFilter, examTypeFilter],
     queryFn: () =>
       api.get<PaginatedResponse>(`/problems?${queryString}`),
   });
@@ -262,12 +265,45 @@ export default function ProblemsPage() {
         </p>
       </div>
 
-      {/* Search + Filters */}
+      {/* Search mode toggle + Search */}
+      <div className="flex items-center gap-2">
+        <div className="flex rounded-lg border border-border bg-brand-charcoal p-0.5">
+          <button
+            type="button"
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+              searchMode === "keyword"
+                ? "bg-brand-dark text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => { setSearchMode("keyword"); setPage(1); }}
+          >
+            <Search className="mr-1.5 inline h-3.5 w-3.5" />
+            키워드 검색
+          </button>
+          <button
+            type="button"
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+              searchMode === "semantic"
+                ? "bg-brand-dark text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => { setSearchMode("semantic"); setPage(1); }}
+          >
+            <Sparkles className="mr-1.5 inline h-3.5 w-3.5" />
+            의미 검색
+          </button>
+        </div>
+      </div>
+
       <form onSubmit={handleSearch} className="flex items-center gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="문제 내용, 단원, 키워드로 검색..."
+            placeholder={
+              searchMode === "semantic"
+                ? "찾고 싶은 문제 유형을 자연어로 설명하세요"
+                : "문제 내용, 단원, 키워드로 검색..."
+            }
             className="pl-9 bg-brand-charcoal border-transparent"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
@@ -531,6 +567,11 @@ export default function ProblemsPage() {
                       <Eye className="mr-1 h-4 w-4" />
                       미리보기
                     </Button>
+                    {problem.similarity != null && (
+                      <span className="rounded-full bg-violet-900/30 px-2 py-0.5 text-xs font-medium text-violet-400">
+                        {(problem.similarity * 100).toFixed(1)}%
+                      </span>
+                    )}
                     <Badge variant="outline" className="text-xs">
                       {typeLabel}
                     </Badge>
