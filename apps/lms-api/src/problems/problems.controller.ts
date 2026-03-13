@@ -12,6 +12,7 @@ import {
 import { ProblemsService } from "./problems.service";
 import { ReviewProblemDto } from "./dto/review-problem.dto";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
+import { GenerateVariantsDto } from "./dto/generate-variants.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Roles } from "../auth/roles.decorator";
@@ -115,6 +116,22 @@ export class ProblemsController {
   @Roles("admin", "teacher")
   generateTwin(@Param("id") id: string, @Request() req: AuthRequest) {
     return this.problems.generateTwinProblem(id, req.user.id, req.user.role);
+  }
+
+  @Post(":id/generate-variants")
+  @Roles("admin", "teacher")
+  generateVariants(
+    @Param("id") id: string,
+    @Body() dto: GenerateVariantsDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.problems.generateVariants(
+      id,
+      dto.count,
+      req.user.id,
+      req.user.role,
+      dto.difficultyTarget,
+    );
   }
 
   @Get(":id/analysis")

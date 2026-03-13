@@ -245,6 +245,8 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
           subject: true,
           unitMajor: true,
           unitMinor: true,
+          classification2015: true,
+          classification2022: true,
           difficulty: true,
           classificationConfidence: true,
           solutionConfidence: true,
@@ -509,6 +511,8 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         subject: true,
         unitMajor: true,
         unitMinor: true,
+        classification2015: true,
+        classification2022: true,
         difficulty: true,
         difficultyRefined: true,
         solutionTags: true,
@@ -579,6 +583,58 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     }
 
     return this.twinProblemService.generate(problem);
+  }
+
+  async generateVariants(
+    problemId: string,
+    count: number,
+    requesterId: string,
+    requesterRole: string,
+    difficultyTarget?: number,
+  ) {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id: problemId,
+        ...this.getProblemScopeWhere(requesterId, requesterRole),
+      },
+      select: {
+        id: true,
+        displayNumber: true,
+        problemNumber: true,
+        problemType: true,
+        gradeLevel: true,
+        subject: true,
+        unitMajor: true,
+        unitMinor: true,
+        difficulty: true,
+        stemText: true,
+        stemLatex: true,
+        answerText: true,
+        answerLatex: true,
+        solutionText: true,
+        solutionLatex: true,
+        bookSource: true,
+        choices: {
+          select: {
+            label: true,
+            position: true,
+            contentText: true,
+            contentLatex: true,
+          },
+          orderBy: { position: "asc" as const },
+        },
+      },
+    });
+
+    if (!problem) {
+      throw new NotFoundException("Problem not found");
+    }
+
+    return this.twinProblemService.generateVariants(
+      problem,
+      count,
+      difficultyTarget,
+    );
   }
 
   async review(
