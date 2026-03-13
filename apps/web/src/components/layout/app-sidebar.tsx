@@ -19,6 +19,8 @@ import {
   GitBranch,
   BrainCircuit,
   MessageCircle,
+  Award,
+  Building2,
 } from "lucide-react";
 import {
   Sidebar,
@@ -44,6 +46,8 @@ const teacherNav = [
   { title: "지식 그래프", href: "/knowledge-graph", icon: GitBranch },
   { title: "AI 진단", href: "/diagnostics", icon: BrainCircuit },
   { title: "AI 튜터", href: "/tutor", icon: MessageCircle },
+  { title: "등급 예측", href: "/grade-prediction", icon: Award },
+  { title: "학원 운영", href: "/operations", icon: Building2 },
 ];
 
 const studentNav = [
@@ -55,6 +59,7 @@ const studentNav = [
   { title: "지식 그래프", href: "/knowledge-graph", icon: GitBranch },
   { title: "오늘의 복습", href: "/review-daily", icon: RotateCcw },
   { title: "AI 튜터", href: "/tutor", icon: MessageCircle },
+  { title: "등급 예측", href: "/grade-prediction", icon: Award },
 ];
 
 const parentNav = [

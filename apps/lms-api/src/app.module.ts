@@ -25,6 +25,11 @@ import { ReviewsModule } from "./reviews/reviews.module";
 import { RemediationModule } from "./remediation/remediation.module";
 import { DiagnosticsModule } from "./diagnostics/diagnostics.module";
 import { TutorModule } from "./tutor/tutor.module";
+import { GradePredictionModule } from "./grade-prediction/grade-prediction.module";
+import { ParentAnalyticsModule } from "./parent-analytics/parent-analytics.module";
+import { GamificationModule } from "./gamification/gamification.module";
+import { ClassMonitorModule } from "./class-monitor/class-monitor.module";
+import { OperationsModule } from "./operations/operations.module";
 
 @Module({
   imports: [
@@ -64,6 +69,11 @@ import { TutorModule } from "./tutor/tutor.module";
     RemediationModule,
     DiagnosticsModule,
     TutorModule,
+    GradePredictionModule,
+    ParentAnalyticsModule,
+    GamificationModule,
+    ClassMonitorModule,
+    OperationsModule,
   ],
   controllers: [AppController],
 })
