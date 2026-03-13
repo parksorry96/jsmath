@@ -81,6 +81,10 @@ const ocrNav = [
   { title: "OCR 현황", href: "/analytics", icon: BarChart3 },
 ];
 
+const adminNav = [
+  { title: "연동 관리", href: "/integrations", icon: Plug },
+];
+
 export function AppSidebar() {
   const pathname = usePathname();
   const { user } = useAuth();
@@ -135,6 +139,29 @@ export function AppSidebar() {
             <SidebarGroupContent>
               <SidebarMenu>
                 {pipelineNavigation.map((item) => (
+                  <SidebarMenuItem key={item.href}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname.startsWith(item.href)}
+                    >
+                      <Link href={item.href}>
+                        <item.icon className="h-4 w-4" />
+                        <span>{item.title}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+
+        {user?.role === "admin" && (
+          <SidebarGroup>
+            <SidebarGroupLabel>관리자</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {adminNav.map((item) => (
                   <SidebarMenuItem key={item.href}>
                     <SidebarMenuButton
                       asChild
