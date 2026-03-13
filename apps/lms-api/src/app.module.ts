@@ -19,6 +19,8 @@ import { AnalyticsModule } from "./analytics/analytics.module";
 import { SubmissionPhotosModule } from "./submission-photos/submission-photos.module";
 import { ExamDocumentsModule } from "./exam-documents/exam-documents.module";
 import { CurriculumModule } from "./curriculum/curriculum.module";
+import { WrongAnswersModule } from "./wrong-answers/wrong-answers.module";
+import { MasteryModule } from "./mastery/mastery.module";
 
 @Module({
   imports: [
@@ -52,6 +54,8 @@ import { CurriculumModule } from "./curriculum/curriculum.module";
     SubmissionPhotosModule,
     ExamDocumentsModule,
     CurriculumModule,
+    WrongAnswersModule,
+    MasteryModule,
   ],
   controllers: [AppController],
 })

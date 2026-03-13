@@ -14,6 +14,14 @@ jest.mock("../common/access-control", () => ({
 }));
 
 describe("SubmissionsService", () => {
+  const mockWrongAnswers = {
+    collectFromSubmission: jest.fn().mockResolvedValue([]),
+  };
+
+  const mockMastery = {
+    updateFromSubmission: jest.fn().mockResolvedValue(undefined),
+  };
+
   const prisma = {
     assignment: {
       findUnique: jest.fn(),
@@ -46,7 +54,7 @@ describe("SubmissionsService", () => {
       assignmentProblems: [{ problemId: "problem-1" }],
     });
 
-    const service = new SubmissionsService(prisma as never);
+    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never);
 
     await expect(
       service.submit("student-1", {
@@ -70,7 +78,7 @@ describe("SubmissionsService", () => {
       answers: [{ id: "answer-1" }, { id: "answer-2" }],
     });
 
-    const service = new SubmissionsService(prisma as never);
+    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never);
     jest.spyOn(service, "autoGrade").mockResolvedValue({ id: "submission-1" } as never);
 
     await service.submit("student-1", {
@@ -111,7 +119,7 @@ describe("SubmissionsService", () => {
       answers: [{ id: "answer-1" }, { id: "answer-2" }],
     });
 
-    const service = new SubmissionsService(prisma as never);
+    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never);
     jest.spyOn(service, "autoGrade").mockResolvedValue({ id: "submission-existing" } as never);
 
     await service.submit("student-1", {
@@ -156,7 +164,7 @@ describe("SubmissionsService", () => {
     prisma.submissionAnswer.update.mockResolvedValue({ id: "answer-1", isCorrect: true });
     prisma.submission.update.mockResolvedValue({ id: "submission-1", status: "submitted" });
 
-    const service = new SubmissionsService(prisma as never);
+    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never);
 
     await service.autoGrade("submission-1");
 

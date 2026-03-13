@@ -4,7 +4,7 @@ import {
   ForbiddenException,
   BadRequestException,
 } from "@nestjs/common";
-import { SubmissionStatus } from "@prisma/client";
+import { Prisma, SubmissionStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateSubmissionDto } from "./dto/create-submission.dto";
 import { GradeSubmissionDto } from "./dto/grade-submission.dto";
@@ -16,10 +16,16 @@ import {
   getLinkedStudentIds,
   isPrivilegedRole,
 } from "../common/access-control";
+import { WrongAnswersService } from "../wrong-answers/wrong-answers.service";
+import { MasteryService } from "../mastery/mastery.service";
 
 @Injectable()
 export class SubmissionsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private wrongAnswers: WrongAnswersService,
+    private masteryService: MasteryService,
+  ) {}
 
   private normalizeStatus(status?: string): SubmissionStatus | undefined {
     if (
@@ -42,6 +48,13 @@ export class SubmissionsService {
         answer: answer.studentAnswer,
       })),
     };
+  }
+
+  private isSubmissionUniquenessError(error: unknown) {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    );
   }
 
   async submit(studentId: string, dto: CreateSubmissionDto) {
@@ -116,38 +129,78 @@ export class SubmissionsService {
           }
         : undefined;
 
-    const submission = existingSubmission
-      ? await this.prisma.submission.update({
-          where: { id: existingSubmission.id },
-          data: {
-            type: dto.type,
-            maxScore: assignment.maxScore,
-            status: "submitted",
-            score: null,
-            feedback: null,
-            gradedAt: null,
-            gradedBy: null,
-            submittedAt: new Date(),
-            answers:
-              dto.type === "online"
-                ? {
-                    deleteMany: {},
-                    ...answerOperations,
-                  }
-                : undefined,
-          },
-          include: { answers: true },
-        })
-      : await this.prisma.submission.create({
-          data: {
-            assignmentId: dto.assignmentId,
-            studentId,
-            type: dto.type,
-            maxScore: assignment.maxScore,
-            answers: answerOperations,
-          },
+    const submissionUpdateData = {
+      type: dto.type,
+      maxScore: assignment.maxScore,
+      status: "submitted" as const,
+      score: null,
+      feedback: null,
+      gradedAt: null,
+      gradedBy: null,
+      submittedAt: new Date(),
+      answers:
+        dto.type === "online"
+          ? {
+              deleteMany: {},
+              ...answerOperations,
+            }
+          : undefined,
+    };
+
+    const submissionCreateData = {
+      assignmentId: dto.assignmentId,
+      studentId,
+      type: dto.type,
+      maxScore: assignment.maxScore,
+      answers: answerOperations,
+    };
+
+    let submission;
+    if (existingSubmission) {
+      submission = await this.prisma.submission.update({
+        where: { id: existingSubmission.id },
+        data: submissionUpdateData,
+        include: { answers: true },
+      });
+    } else {
+      try {
+        submission = await this.prisma.submission.create({
+          data: submissionCreateData,
           include: { answers: true },
         });
+      } catch (error) {
+        if (!this.isSubmissionUniquenessError(error)) {
+          throw error;
+        }
+
+        const concurrentSubmission = await this.prisma.submission.findFirst({
+          where: {
+            assignmentId: dto.assignmentId,
+            studentId,
+          },
+          orderBy: { submittedAt: "desc" },
+          select: {
+            id: true,
+            type: true,
+          },
+        });
+
+        if (!concurrentSubmission) {
+          throw error;
+        }
+        if (concurrentSubmission.type !== dto.type) {
+          throw new BadRequestException(
+            "Submission type does not match the existing submission",
+          );
+        }
+
+        submission = await this.prisma.submission.update({
+          where: { id: concurrentSubmission.id },
+          data: submissionUpdateData,
+          include: { answers: true },
+        });
+      }
+    }
 
     if (dto.type === "online" && submission.answers.length > 0) {
       return this.autoGrade(submission.id);
@@ -247,7 +300,7 @@ export class SubmissionsService {
         ? (correctCount / autoGradableCount) * (submission.assignment.maxScore ?? 100)
         : 0;
 
-    return this.prisma.submission.update({
+    const graded = await this.prisma.submission.update({
       where: { id: submissionId },
       data: {
         score,
@@ -256,6 +309,20 @@ export class SubmissionsService {
       },
       include: { answers: true },
     });
+
+    await this.wrongAnswers.collectFromSubmission(submissionId).catch(() => {});
+
+    for (const answer of graded.answers) {
+      if (answer.isCorrect !== null && answer.isCorrect !== undefined) {
+        await this.masteryService.updateOnAnswer(
+          graded.studentId,
+          answer.problemId,
+          answer.isCorrect,
+        ).catch(() => {});
+      }
+    }
+
+    return graded;
   }
 
   async findByAssignment(
@@ -484,7 +551,7 @@ export class SubmissionsService {
       }
     }
 
-    return this.prisma.submission.update({
+    const graded = await this.prisma.submission.update({
       where: { id },
       data: {
         score: dto.score,
@@ -495,6 +562,20 @@ export class SubmissionsService {
       },
       include: { answers: true },
     });
+
+    await this.wrongAnswers.collectFromSubmission(id).catch(() => {});
+
+    for (const answer of graded.answers) {
+      if (answer.isCorrect !== null && answer.isCorrect !== undefined) {
+        await this.masteryService.updateOnAnswer(
+          graded.studentId,
+          answer.problemId,
+          answer.isCorrect,
+        ).catch(() => {});
+      }
+    }
+
+    return graded;
   }
 
   async returnSubmission(id: string, requesterId: string, requesterRole: string) {
