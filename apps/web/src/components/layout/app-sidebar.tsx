@@ -13,6 +13,7 @@ import {
   GraduationCap,
   Calendar,
   Printer,
+  BookX,
 } from "lucide-react";
 import {
   Sidebar,
@@ -35,6 +36,7 @@ const mainNav = [
   { title: "문제은행", href: "/problems", icon: FileText },
   { title: "과제/채점", href: "/assignments", icon: GraduationCap },
   { title: "시험지 제작", href: "/exam-builder", icon: Printer },
+  { title: "오답노트", href: "/wrong-answers", icon: BookX },
 ];
 
 const ocrNav = [
