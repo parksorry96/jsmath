@@ -11,7 +11,7 @@ interface CutoffInput {
   percentile?: number;
 }
 
-interface SubjectPrediction {
+export interface SubjectPrediction {
   subject: string;
   predictedScore: number;
   predictedGrade: number;
