@@ -23,6 +23,7 @@ import { WrongAnswersModule } from "./wrong-answers/wrong-answers.module";
 import { MasteryModule } from "./mastery/mastery.module";
 import { ReviewsModule } from "./reviews/reviews.module";
 import { RemediationModule } from "./remediation/remediation.module";
+import { DiagnosticsModule } from "./diagnostics/diagnostics.module";
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { RemediationModule } from "./remediation/remediation.module";
     MasteryModule,
     ReviewsModule,
     RemediationModule,
+    DiagnosticsModule,
   ],
   controllers: [AppController],
 })
