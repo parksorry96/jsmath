@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Param,
   Query,
   UseGuards,
@@ -8,6 +9,7 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 import { AnalyticsService } from "./analytics.service";
+import { KnowledgeGraphService } from "./knowledge-graph.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Roles } from "../auth/roles.decorator";
@@ -23,6 +25,7 @@ interface AuthRequest {
 export class AnalyticsController {
   constructor(
     private analytics: AnalyticsService,
+    private knowledgeGraph: KnowledgeGraphService,
     private prisma: PrismaService,
   ) {}
 
@@ -75,5 +78,29 @@ export class AnalyticsController {
       throw new ForbiddenException();
     }
     return this.analytics.getClassReport(classId);
+  }
+
+  @Get("student/:studentId/knowledge-graph")
+  async studentKnowledgeGraph(
+    @Param("studentId") studentId: string,
+    @Request() req: AuthRequest,
+  ) {
+    const canAccess = await canAccessStudentData(
+      this.prisma,
+      req.user.id,
+      req.user.role,
+      studentId,
+    );
+    if (!canAccess) {
+      throw new ForbiddenException();
+    }
+
+    return this.knowledgeGraph.getStudentKnowledgeGraph(studentId);
+  }
+
+  @Post("seed-prerequisites")
+  @Roles("admin")
+  async seedPrerequisites() {
+    return this.knowledgeGraph.seedPrerequisites();
   }
 }
