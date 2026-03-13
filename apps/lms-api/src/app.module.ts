@@ -24,6 +24,7 @@ import { MasteryModule } from "./mastery/mastery.module";
 import { ReviewsModule } from "./reviews/reviews.module";
 import { RemediationModule } from "./remediation/remediation.module";
 import { DiagnosticsModule } from "./diagnostics/diagnostics.module";
+import { TutorModule } from "./tutor/tutor.module";
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { DiagnosticsModule } from "./diagnostics/diagnostics.module";
     ReviewsModule,
     RemediationModule,
     DiagnosticsModule,
+    TutorModule,
   ],
   controllers: [AppController],
 })

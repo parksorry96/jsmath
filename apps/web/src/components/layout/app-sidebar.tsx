@@ -18,6 +18,7 @@ import {
   RotateCcw,
   GitBranch,
   BrainCircuit,
+  MessageCircle,
 } from "lucide-react";
 import {
   Sidebar,
@@ -42,6 +43,7 @@ const teacherNav = [
   { title: "시험지 제작", href: "/exam-builder", icon: Printer },
   { title: "지식 그래프", href: "/knowledge-graph", icon: GitBranch },
   { title: "AI 진단", href: "/diagnostics", icon: BrainCircuit },
+  { title: "AI 튜터", href: "/tutor", icon: MessageCircle },
 ];
 
 const studentNav = [
@@ -52,6 +54,7 @@ const studentNav = [
   { title: "학습 현황", href: "/mastery", icon: TrendingUp },
   { title: "지식 그래프", href: "/knowledge-graph", icon: GitBranch },
   { title: "오늘의 복습", href: "/review-daily", icon: RotateCcw },
+  { title: "AI 튜터", href: "/tutor", icon: MessageCircle },
 ];
 
 const parentNav = [
