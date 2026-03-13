@@ -306,19 +306,21 @@ export class SubmissionsService {
       .calculate(submissionId)
       .catch(() => null);
 
+    const updateData: Prisma.SubmissionUpdateInput = {
+      score,
+      status: "graded",
+      gradedAt: new Date(),
+      ...(smartScoreBreakdown
+        ? {
+            smartScore: smartScoreBreakdown.finalScore,
+            smartScoreMeta: smartScoreBreakdown as unknown as Prisma.InputJsonObject,
+          }
+        : {}),
+    };
+
     const graded = await this.prisma.submission.update({
       where: { id: submissionId },
-      data: {
-        score,
-        status: "graded",
-        gradedAt: new Date(),
-        ...(smartScoreBreakdown
-          ? {
-              smartScore: smartScoreBreakdown.finalScore,
-              smartScoreMeta: smartScoreBreakdown,
-            }
-          : {}),
-      },
+      data: updateData,
       include: { answers: true },
     });
 

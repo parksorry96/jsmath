@@ -22,6 +22,10 @@ describe("SubmissionsService", () => {
     updateFromSubmission: jest.fn().mockResolvedValue(undefined),
   };
 
+  const mockSmartScore = {
+    calculate: jest.fn().mockResolvedValue(null),
+  };
+
   const prisma = {
     assignment: {
       findUnique: jest.fn(),
@@ -54,7 +58,7 @@ describe("SubmissionsService", () => {
       assignmentProblems: [{ problemId: "problem-1" }],
     });
 
-    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never);
+    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never, mockSmartScore as never);
 
     await expect(
       service.submit("student-1", {
@@ -78,7 +82,7 @@ describe("SubmissionsService", () => {
       answers: [{ id: "answer-1" }, { id: "answer-2" }],
     });
 
-    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never);
+    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never, mockSmartScore as never);
     jest.spyOn(service, "autoGrade").mockResolvedValue({ id: "submission-1" } as never);
 
     await service.submit("student-1", {
@@ -119,7 +123,7 @@ describe("SubmissionsService", () => {
       answers: [{ id: "answer-1" }, { id: "answer-2" }],
     });
 
-    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never);
+    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never, mockSmartScore as never);
     jest.spyOn(service, "autoGrade").mockResolvedValue({ id: "submission-existing" } as never);
 
     await service.submit("student-1", {
@@ -164,7 +168,7 @@ describe("SubmissionsService", () => {
     prisma.submissionAnswer.update.mockResolvedValue({ id: "answer-1", isCorrect: true });
     prisma.submission.update.mockResolvedValue({ id: "submission-1", status: "submitted" });
 
-    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never);
+    const service = new SubmissionsService(prisma as never, mockWrongAnswers as never, mockMastery as never, mockSmartScore as never);
 
     await service.autoGrade("submission-1");
 
