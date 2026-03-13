@@ -30,6 +30,7 @@ import { ParentAnalyticsModule } from "./parent-analytics/parent-analytics.modul
 import { GamificationModule } from "./gamification/gamification.module";
 import { ClassMonitorModule } from "./class-monitor/class-monitor.module";
 import { OperationsModule } from "./operations/operations.module";
+import { IntegrationsModule } from "./integrations/integrations.module";
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { OperationsModule } from "./operations/operations.module";
     GamificationModule,
     ClassMonitorModule,
     OperationsModule,
+    IntegrationsModule,
   ],
   controllers: [AppController],
 })

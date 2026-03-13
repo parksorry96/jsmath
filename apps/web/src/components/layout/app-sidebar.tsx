@@ -21,6 +21,9 @@ import {
   MessageCircle,
   Award,
   Building2,
+  Trophy,
+  Radio,
+  Users,
 } from "lucide-react";
 import {
   Sidebar,
@@ -47,7 +50,9 @@ const teacherNav = [
   { title: "AI 진단", href: "/diagnostics", icon: BrainCircuit },
   { title: "AI 튜터", href: "/tutor", icon: MessageCircle },
   { title: "등급 예측", href: "/grade-prediction", icon: Award },
+  { title: "실시간 모니터", href: "/class-monitor", icon: Radio },
   { title: "학원 운영", href: "/operations", icon: Building2 },
+  { title: "학부모 리포트", href: "/parent-reports", icon: Users },
 ];
 
 const studentNav = [
@@ -60,6 +65,7 @@ const studentNav = [
   { title: "오늘의 복습", href: "/review-daily", icon: RotateCcw },
   { title: "AI 튜터", href: "/tutor", icon: MessageCircle },
   { title: "등급 예측", href: "/grade-prediction", icon: Award },
+  { title: "업적", href: "/achievements", icon: Trophy },
 ];
 
 const parentNav = [

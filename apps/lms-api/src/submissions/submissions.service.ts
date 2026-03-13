@@ -18,6 +18,7 @@ import {
 } from "../common/access-control";
 import { WrongAnswersService } from "../wrong-answers/wrong-answers.service";
 import { MasteryService } from "../mastery/mastery.service";
+import { GamificationService } from "../gamification/gamification.service";
 import { SmartScoreService } from "./smart-score.service";
 
 @Injectable()
@@ -26,6 +27,7 @@ export class SubmissionsService {
     private prisma: PrismaService,
     private wrongAnswers: WrongAnswersService,
     private masteryService: MasteryService,
+    private gamification: GamificationService,
     private smartScore: SmartScoreService,
   ) {}
 
@@ -335,6 +337,11 @@ export class SubmissionsService {
         ).catch(() => {});
       }
     }
+
+    // Gamification: fire-and-forget
+    this.gamification.awardXp(graded.studentId, 10, "auto_grade").catch(() => {});
+    this.gamification.updateStreak(graded.studentId, "daily_solve").catch(() => {});
+    this.gamification.checkAndAwardAchievements(graded.studentId).catch(() => {});
 
     return graded;
   }
