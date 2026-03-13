@@ -14,6 +14,7 @@ import {
   Calendar,
   Printer,
   BookX,
+  TrendingUp,
 } from "lucide-react";
 import {
   Sidebar,
@@ -37,6 +38,7 @@ const mainNav = [
   { title: "과제/채점", href: "/assignments", icon: GraduationCap },
   { title: "시험지 제작", href: "/exam-builder", icon: Printer },
   { title: "오답노트", href: "/wrong-answers", icon: BookX },
+  { title: "학습 현황", href: "/mastery", icon: TrendingUp },
 ];
 
 const ocrNav = [
