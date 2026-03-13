@@ -124,6 +124,7 @@ export default function StudentHome() {
   const sections = [
     { key: "header" },
     { key: "lessons" },
+    { key: "learning" },
     { key: "assignments" },
     { key: "notifications" },
   ];
@@ -196,6 +197,43 @@ export default function StudentHome() {
                   </View>
                 ))
               )}
+            </View>
+          );
+
+        case "learning":
+          return (
+            <View className="px-5 mt-6">
+              <Text className="text-brand-beige text-lg font-bold mb-2">
+                학습 도구
+              </Text>
+              <View className="flex-row gap-3">
+                <Pressable
+                  className="flex-1 bg-red-900/20 rounded-2xl p-4 border border-red-900/30"
+                  onPress={() => router.push("/(student)/wrong-answers")}
+                >
+                  <Text className="text-red-400 text-lg font-bold">오답노트</Text>
+                  <Text className="text-red-400/60 text-xs mt-1">틀린 문제 복습</Text>
+                </Pressable>
+                <Pressable
+                  className="flex-1 bg-blue-900/20 rounded-2xl p-4 border border-blue-900/30"
+                  onPress={() => router.push("/(student)/mastery")}
+                >
+                  <Text className="text-blue-400 text-lg font-bold">학습 현황</Text>
+                  <Text className="text-blue-400/60 text-xs mt-1">교육과정 진도</Text>
+                </Pressable>
+              </View>
+              <Pressable
+                className="bg-brand-accent/15 rounded-2xl p-4 mt-3 border border-brand-accent/20"
+                onPress={() => router.push("/(student)/daily-review")}
+              >
+                <View className="flex-row items-center justify-between">
+                  <View>
+                    <Text className="text-brand-accent text-lg font-bold">오늘의 복습</Text>
+                    <Text className="text-brand-accent/60 text-xs mt-1">간격 반복 학습</Text>
+                  </View>
+                  <Text className="text-brand-accent text-2xl font-bold">→</Text>
+                </View>
+              </Pressable>
             </View>
           );
 

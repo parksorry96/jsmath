@@ -56,6 +56,27 @@ export default function StudentLayout() {
           title: "과제 상세",
         }}
       />
+      <Tabs.Screen
+        name="wrong-answers"
+        options={{
+          href: null,
+          title: "오답노트",
+        }}
+      />
+      <Tabs.Screen
+        name="mastery"
+        options={{
+          href: null,
+          title: "학습 현황",
+        }}
+      />
+      <Tabs.Screen
+        name="daily-review"
+        options={{
+          href: null,
+          title: "오늘의 복습",
+        }}
+      />
     </Tabs>
   );
 }
