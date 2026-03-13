@@ -18,6 +18,7 @@ import {
 } from "../common/access-control";
 import { WrongAnswersService } from "../wrong-answers/wrong-answers.service";
 import { MasteryService } from "../mastery/mastery.service";
+import { SmartScoreService } from "./smart-score.service";
 
 @Injectable()
 export class SubmissionsService {
@@ -25,6 +26,7 @@ export class SubmissionsService {
     private prisma: PrismaService,
     private wrongAnswers: WrongAnswersService,
     private masteryService: MasteryService,
+    private smartScore: SmartScoreService,
   ) {}
 
   private normalizeStatus(status?: string): SubmissionStatus | undefined {
@@ -300,12 +302,22 @@ export class SubmissionsService {
         ? (correctCount / autoGradableCount) * (submission.assignment.maxScore ?? 100)
         : 0;
 
+    const smartScoreBreakdown = await this.smartScore
+      .calculate(submissionId)
+      .catch(() => null);
+
     const graded = await this.prisma.submission.update({
       where: { id: submissionId },
       data: {
         score,
         status: "graded",
         gradedAt: new Date(),
+        ...(smartScoreBreakdown
+          ? {
+              smartScore: smartScoreBreakdown.finalScore,
+              smartScoreMeta: smartScoreBreakdown,
+            }
+          : {}),
       },
       include: { answers: true },
     });

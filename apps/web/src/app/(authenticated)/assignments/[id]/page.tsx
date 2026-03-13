@@ -29,6 +29,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { buildProblemPreview } from "@/lib/problem-preview";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -65,8 +71,19 @@ interface Assignment {
   maxScore: number;
   status: string;
   createdAt: string;
+  targetStudentId?: string | null;
+  targetStudent?: { id: string; name: string } | null;
   class?: { id: string; title: string; _count?: { enrollments: number } };
   problems?: AssignmentProblem[];
+}
+
+interface SmartScoreBreakdown {
+  rawScore: number;
+  difficultyWeight: number;
+  consistencyBonus: number;
+  streakBonus: number;
+  timeFactor: number;
+  finalScore: number;
 }
 
 interface Submission {
@@ -76,6 +93,8 @@ interface Submission {
   status: string;
   score: number | null;
   maxScore: number;
+  smartScore: number | null;
+  smartScoreMeta: SmartScoreBreakdown | null;
   feedback: string | null;
   submittedAt: string | null;
   gradedAt: string | null;
@@ -122,6 +141,7 @@ interface PaginatedResponse<T> {
 const TYPE_LABELS: Record<string, string> = {
   problem_set: "문제풀이",
   text_task: "일반과제",
+  remediation: "보충과제",
 };
 
 const STATUS_LABELS: Record<string, { label: string; className: string }> = {
@@ -162,17 +182,6 @@ function formatDate(dateStr: string): string {
     day: "numeric",
     weekday: "short",
   });
-}
-
-function stripLatexForPreview(text: string): string {
-  return text
-    .replace(/\$\$[\s\S]*?\$\$/g, "[수식]")
-    .replace(/\$[^$]+?\$/g, "[수식]")
-    .replace(/\\[a-zA-Z]+\{[^}]*\}/g, "")
-    .replace(/\\[a-zA-Z]+/g, "")
-    .replace(/[{}]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 // --- Add Problem Modal ---
@@ -329,11 +338,7 @@ function AddProblemModal({
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm">
-                        {stripLatexForPreview(
-                          (problem.stemText || problem.stemLatex || "")
-                            .split("\n")[0]
-                            .slice(0, 100)
-                        )}
+                        {buildProblemPreview(problem, 100)}
                       </p>
                       <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                         {problem.subject && <span>{problem.subject}</span>}
@@ -448,6 +453,44 @@ function GradingRow({
           <span className="text-sm font-bold text-brand-beige">
             {submission.score}/{submission.maxScore}
           </span>
+        )}
+        {submission.smartScore != null && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className={`rounded px-1.5 py-0.5 text-xs font-semibold ${
+                  submission.smartScore > (submission.score ?? 0)
+                    ? "bg-green-500/20 text-green-400"
+                    : "bg-amber-500/20 text-amber-400"
+                }`}
+              >
+                S {submission.smartScore}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="left" className="w-48 space-y-1 text-xs">
+              <p className="font-semibold">SmartScore 분석</p>
+              {submission.smartScoreMeta && (
+                <>
+                  <p>원점수: {submission.smartScoreMeta.rawScore}%</p>
+                  <p>
+                    난이도 가중: x
+                    {submission.smartScoreMeta.difficultyWeight}
+                  </p>
+                  <p>
+                    일관성 보너스: +
+                    {(submission.smartScoreMeta.consistencyBonus * 100).toFixed(
+                      0,
+                    )}
+                    %
+                  </p>
+                  <p>
+                    연속정답 보너스: +
+                    {(submission.smartScoreMeta.streakBonus * 100).toFixed(1)}%
+                  </p>
+                </>
+              )}
+            </TooltipContent>
+          </Tooltip>
         )}
         <ChevronDown
           className={`h-4 w-4 text-muted-foreground transition-transform ${
@@ -771,6 +814,11 @@ export default function AssignmentDetailPage() {
             </span>
           )}
           <Badge variant="outline">{typeLabel}</Badge>
+          {assignment.targetStudent && (
+            <Badge variant="outline" className="border-orange-400/30 bg-orange-900/30 text-orange-400">
+              대상: {assignment.targetStudent.name}
+            </Badge>
+          )}
           {assignment.dueAt && (
             <span className="flex items-center gap-1">
               <Calendar className="h-3.5 w-3.5" />
@@ -785,9 +833,9 @@ export default function AssignmentDetailPage() {
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue={assignment.type === "problem_set" ? "problems" : "submissions"}>
+      <Tabs defaultValue={assignment.type === "problem_set" || assignment.type === "remediation" ? "problems" : "submissions"}>
         <TabsList>
-          {assignment.type === "problem_set" && (
+          {(assignment.type === "problem_set" || assignment.type === "remediation") && (
             <TabsTrigger value="problems">
               문제 ({problems.length})
             </TabsTrigger>
