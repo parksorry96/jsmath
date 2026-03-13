@@ -24,6 +24,7 @@ import {
   Trophy,
   Radio,
   Users,
+  Plug,
 } from "lucide-react";
 import {
   Sidebar,
