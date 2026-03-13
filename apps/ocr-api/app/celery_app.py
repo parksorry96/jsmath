@@ -40,5 +40,6 @@ celery.conf.update(
         "app.workers.match_answers",
         "app.workers.finalize_textbook",
         "app.workers.analyze_photo",
+        "app.workers.rubric_grader",
     ],
 )

@@ -62,12 +62,18 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
     await this.redisSubscriber.subscribe(
       "photo:analysis:completed",
       "photo:analysis:failed",
+      "photo:rubric:completed",
+      "photo:rubric:failed",
     );
     this.redisSubscriber.on("message", (channel, message) => {
       if (channel === "photo:analysis:completed") {
         void this.handleAnalysisCompleted(message);
       } else if (channel === "photo:analysis:failed") {
         void this.handleAnalysisFailed(message);
+      } else if (channel === "photo:rubric:completed") {
+        void this.handleRubricCompleted(message);
+      } else if (channel === "photo:rubric:failed") {
+        void this.handleRubricFailed(message);
       }
     });
   }
@@ -121,6 +127,94 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       this.logger.error(
         "Failed to process photo:analysis:failed",
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  private async handleRubricCompleted(message: string) {
+    try {
+      const payload = JSON.parse(message) as {
+        submissionPhotoId: string;
+        submissionAnswerId: string | null;
+        problemId: string | null;
+        rubricResult: unknown;
+        rubricScore: number;
+        rubricVersion: number;
+      };
+
+      // If we have a direct submissionAnswerId, update it
+      if (payload.submissionAnswerId) {
+        await this.prisma.submissionAnswer.update({
+          where: { id: payload.submissionAnswerId },
+          data: {
+            rubricResult: payload.rubricResult as any,
+            rubricScore: payload.rubricScore,
+            rubricVersion: payload.rubricVersion,
+          },
+        });
+        this.logger.log(
+          `Rubric grading completed for answer ${payload.submissionAnswerId}: ${payload.rubricScore}/10`,
+        );
+        return;
+      }
+
+      // Otherwise, find the SubmissionAnswer via photo -> submission + problemId
+      if (payload.problemId) {
+        const photo = await this.prisma.submissionPhoto.findUnique({
+          where: { id: payload.submissionPhotoId },
+          select: { submissionId: true },
+        });
+        if (photo) {
+          const answer = await this.prisma.submissionAnswer.findUnique({
+            where: {
+              submissionId_problemId: {
+                submissionId: photo.submissionId,
+                problemId: payload.problemId,
+              },
+            },
+          });
+          if (answer) {
+            await this.prisma.submissionAnswer.update({
+              where: { id: answer.id },
+              data: {
+                rubricResult: payload.rubricResult as any,
+                rubricScore: payload.rubricScore,
+                rubricVersion: payload.rubricVersion,
+              },
+            });
+            this.logger.log(
+              `Rubric grading completed for photo ${payload.submissionPhotoId} -> answer ${answer.id}: ${payload.rubricScore}/10`,
+            );
+            return;
+          }
+        }
+      }
+
+      this.logger.warn(
+        `Rubric grading completed for photo ${payload.submissionPhotoId} but no matching SubmissionAnswer found`,
+      );
+    } catch (error) {
+      this.logger.error(
+        "Failed to process photo:rubric:completed",
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  private async handleRubricFailed(message: string) {
+    try {
+      const payload = JSON.parse(message) as {
+        submissionPhotoId: string;
+        submissionAnswerId: string | null;
+        reason: string;
+      };
+      this.logger.warn(
+        `Rubric grading failed for photo ${payload.submissionPhotoId}: ${payload.reason}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        "Failed to process photo:rubric:failed",
         error instanceof Error ? error.stack : String(error),
       );
     }

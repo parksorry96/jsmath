@@ -11,6 +11,7 @@ import json
 import logging
 
 import redis.asyncio as aioredis
+from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session
@@ -26,8 +27,8 @@ async def listen_for_events() -> None:
         r = aioredis.from_url(settings.redis_url, decode_responses=True)
         pubsub = r.pubsub()
         try:
-            await pubsub.subscribe("ocr:submit", "analysis:request", "photo:analyze")
-            logger.info("Listening for ocr:submit, analysis:request, photo:analyze events on Redis")
+            await pubsub.subscribe("ocr:submit", "analysis:request", "photo:analyze", "photo:rubric")
+            logger.info("Listening for ocr:submit, analysis:request, photo:analyze, photo:rubric events on Redis")
 
             async for message in pubsub.listen():
                 if message["type"] != "message":
@@ -40,6 +41,8 @@ async def listen_for_events() -> None:
                         await _handle_analysis_request(json.loads(message["data"]))
                     elif channel == "photo:analyze":
                         await _handle_photo_analyze(json.loads(message["data"]))
+                    elif channel == "photo:rubric":
+                        await _handle_photo_rubric(json.loads(message["data"]))
                 except Exception:
                     logger.exception("Error handling %s event", channel)
         except asyncio.CancelledError:
@@ -52,7 +55,7 @@ async def listen_for_events() -> None:
             await asyncio.sleep(RECONNECT_DELAY_SEC)
         finally:
             try:
-                await pubsub.unsubscribe("ocr:submit", "analysis:request", "photo:analyze")
+                await pubsub.unsubscribe("ocr:submit", "analysis:request", "photo:analyze", "photo:rubric")
             except Exception:
                 logger.debug("Redis unsubscribe failed during shutdown", exc_info=True)
             await r.aclose()
@@ -61,13 +64,15 @@ async def listen_for_events() -> None:
 async def _handle_submit(raw: str) -> None:
     """Handle an ocr:submit event from NestJS.
 
-    Expected payload: {"fileId": "...", "s3Key": "...", "ocrJobId": "...",
-                       "documentType": "exam"|"textbook", "bookTitle": "...", "publisher": "..."}
+    Expected payload: {"fileId": "...", "s3Key": "...", "answerS3Key": "...",
+                       "ocrJobId": "...", "documentType": "exam"|"textbook",
+                       "bookTitle": "...", "publisher": "..."}
     """
     payload = json.loads(raw)
     ocr_job_id = payload.get("jobId") or payload.get("ocrJobId")
     source_file_id = payload.get("sourceFileId") or payload.get("fileId")
     s3_key = payload.get("s3Key")
+    answer_s3_key = payload.get("answerS3Key")
     document_type = payload.get("documentType", "exam")
     book_title = payload.get("bookTitle")
     publisher = payload.get("publisher")
@@ -103,7 +108,13 @@ async def _handle_submit(raw: str) -> None:
     from app.workers.pipeline import start_ocr_pipeline
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, start_ocr_pipeline, ocr_job_id, document_type)
+    await loop.run_in_executor(
+        None,
+        start_ocr_pipeline,
+        ocr_job_id,
+        document_type,
+        answer_s3_key,
+    )
 
 
 async def _handle_analysis_request(data: dict) -> None:
@@ -142,3 +153,22 @@ async def _handle_photo_analyze(data: dict) -> None:
 
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, analyze_submission_photo.delay, data)
+
+
+async def _handle_photo_rubric(data: dict) -> None:
+    """Handle photo:rubric event from NestJS (explicit rubric grading request).
+
+    Expected payload: {
+        submissionPhotoId, submissionAnswerId, s3Key, problem
+    }
+    """
+    photo_id = data.get("submissionPhotoId")
+    if not photo_id:
+        logger.warning("photo:rubric missing submissionPhotoId")
+        return
+    logger.info("Received photo:rubric for %s", photo_id)
+
+    from app.workers.rubric_grader import rubric_grade_photo
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, rubric_grade_photo.delay, data)

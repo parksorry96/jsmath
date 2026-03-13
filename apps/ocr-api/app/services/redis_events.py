@@ -12,6 +12,9 @@ Channels:
   - photo:analyze      — NestJS -> FastAPI: analyze submission photo
   - photo:analysis:completed — FastAPI -> NestJS: photo analysis done
   - photo:analysis:failed    — FastAPI -> NestJS: photo analysis failed
+  - photo:rubric             — NestJS -> FastAPI: explicit rubric grading request
+  - photo:rubric:completed   — FastAPI -> NestJS: rubric grading done
+  - photo:rubric:failed      — FastAPI -> NestJS: rubric grading failed
 """
 
 from __future__ import annotations

@@ -31,10 +31,22 @@ _MEDIA_TYPE_MAP = {
     "webp": "image/webp",
 }
 
-SYSTEM_PROMPT = (
-    "당신은 수학 과외 선생님입니다. 학생의 손글씨 풀이를 정확하게 분석하고, "
-    "친절하면서도 교육적인 피드백을 제공합니다. JSON으로만 응답하세요."
-)
+SYSTEM_PROMPT = """당신은 한국 수학 과외 선생님이자 첨삭자입니다.
+
+# 목표
+학생의 손글씨 풀이 사진에서 실제로 보이는 내용만 근거로 채점하고 피드백을 제공합니다.
+
+# 판단 원칙
+- 사진에 보이지 않는 계산이나 의도를 추측해서 단정하지 마세요.
+- 글씨가 흐리거나 잘린 경우, 확실히 읽히는 부분만 평가하고 불확실성은 feedback 또는 overallFeedback에 반영하세요.
+- 문제 후보가 여러 개면 가장 잘 맞는 하나만 고르되, 낮은 확신이면 보수적으로 채점하세요.
+- 점수는 정답 여부뿐 아니라 풀이의 진행 정도를 반영하세요.
+- steps는 사진에서 보이는 순서대로 작성하세요.
+
+# 출력 규칙
+- JSON 객체 하나만 반환하세요.
+- 마크다운, 코드블록, 설명 문장, 추가 키를 출력하지 마세요.
+- overallFeedback은 한국어 2-3문장으로 작성하세요."""
 
 
 def _build_user_prompt(payload: dict) -> str:
@@ -71,6 +83,7 @@ def _build_user_prompt(payload: dict) -> str:
 
 아래 문항 후보 중에서 사진과 가장 잘 맞는 문제를 먼저 판단한 뒤, 그 문제 기준으로 풀이를 분석하세요.
 후보가 많아도 반드시 하나만 선택하세요.
+사진이 불분명하면 보이는 범위까지만 평가하고, 억지로 완성된 풀이를 상상하지 마세요.
 
 {chr(10).join(candidate_sections)}
 
@@ -109,6 +122,8 @@ def _build_user_prompt(payload: dict) -> str:
 문제: {payload.get("problemStemLatex", "문제 정보 없음")}
 정답: {answer_info}
 {solution_context}
+
+사진이 불분명하면 보이는 범위까지만 평가하고, 확실하지 않은 부분은 추측하지 마세요.
 
 학생의 풀이를 분석하고 아래 JSON 형식으로만 응답하세요:
 {{
@@ -166,6 +181,36 @@ def _parse_llm_response(text: str) -> dict:
             "conceptHint": None,
             "overallFeedback": "풀이 분석에 실패했습니다. 다시 시도해주세요.",
         }
+
+
+def _maybe_chain_rubric_grading(payload: dict, feedback: dict) -> None:
+    """Dispatch rubric grading if the matched problem has solutionSteps."""
+    matched_id = feedback.get("matchedProblemId")
+    problems = payload.get("problems")
+    if not matched_id or not isinstance(problems, list):
+        return
+
+    matched = next((p for p in problems if p.get("id") == matched_id), None)
+    if not matched:
+        return
+
+    steps = matched.get("solutionSteps")
+    if not steps or not isinstance(steps, list):
+        return
+
+    from app.workers.rubric_grader import rubric_grade_photo
+
+    rubric_grade_photo.delay({
+        "submissionPhotoId": payload["submissionPhotoId"],
+        "submissionAnswerId": None,
+        "s3Key": payload["s3Key"],
+        "problem": matched,
+    })
+    logger.info(
+        "Chained rubric grading for photo %s (problem %s)",
+        payload["submissionPhotoId"],
+        matched_id,
+    )
 
 
 @celery.task(
@@ -234,6 +279,10 @@ def analyze_submission_photo(self, payload: dict) -> dict:
             photo_id,
             feedback.get("score"),
         )
+
+        # 5. Chain rubric grading if matched problem has solutionSteps
+        _maybe_chain_rubric_grading(payload, feedback)
+
         return feedback
 
     except anthropic.APIError as exc:
