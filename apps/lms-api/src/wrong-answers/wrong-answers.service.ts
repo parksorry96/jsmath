@@ -44,6 +44,28 @@ export class WrongAnswersService {
       ),
     );
 
+    // Idempotently create a ReviewSchedule for each wrong answer.
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    await Promise.all(
+      results.map((wa) =>
+        this.prisma.reviewSchedule.upsert({
+          where: { wrongAnswerId: wa.id },
+          create: {
+            studentId: wa.studentId,
+            wrongAnswerId: wa.id,
+            problemId: wa.problemId,
+            nextReviewAt: tomorrow,
+            interval: 1,
+            easeFactor: 2.5,
+            repetitions: 0,
+          },
+          update: {},
+        }),
+      ),
+    );
+
     return results;
   }
 

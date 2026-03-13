@@ -21,6 +21,7 @@ import { ExamDocumentsModule } from "./exam-documents/exam-documents.module";
 import { CurriculumModule } from "./curriculum/curriculum.module";
 import { WrongAnswersModule } from "./wrong-answers/wrong-answers.module";
 import { MasteryModule } from "./mastery/mastery.module";
+import { ReviewsModule } from "./reviews/reviews.module";
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { MasteryModule } from "./mastery/mastery.module";
     CurriculumModule,
     WrongAnswersModule,
     MasteryModule,
+    ReviewsModule,
   ],
   controllers: [AppController],
 })
