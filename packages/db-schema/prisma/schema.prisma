@@ -31,6 +31,12 @@ model User {
   reviewSchedules ReviewSchedule[] @relation("StudentReviews")
   diagnosticSessions DiagnosticSession[]
   tutorSessions      TutorSession[]
+  xp              Int       @default(0)
+  level           Int       @default(1)
+  streaks         StudentStreak[]      @relation("StudentStreaks")
+  achievements    StudentAchievement[] @relation("StudentAchievements")
+  attendances     Attendance[]         @relation("StudentAttendances")
+  billingRecords  BillingRecord[]      @relation("StudentBillings")
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
@@ -58,6 +64,7 @@ model Class {
   enrollments    Enrollment[]
   assignments    Assignment[]
   lessons        Lesson[]
+  attendances    Attendance[]
   deletedAt      DateTime?    @map("deleted_at")
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
@@ -523,6 +530,163 @@ enum MessageRole {
   student
   tutor
 
+  @@schema("public")
+}
+
+// ─── Phase 4: Operations & Expansion Models ───
+
+model ParentWeeklyReport {
+  id                       String   @id @default(cuid())
+  parentId                 String   @map("parent_id")
+  studentId                String   @map("student_id")
+  weekStart                DateTime @map("week_start")
+  weekEnd                  DateTime @map("week_end")
+  assignmentCompletionRate Float    @map("assignment_completion_rate")
+  avgScore                 Float?   @map("avg_score")
+  problemsSolved           Int      @map("problems_solved")
+  correctRate              Float?   @map("correct_rate")
+  lessonsAttended          Int      @map("lessons_attended")
+  lessonsTotal             Int      @map("lessons_total")
+  masteryProgress          Json?    @map("mastery_progress")
+  weaknessHeatmap          Json?    @map("weakness_heatmap")
+  scoreTrend               Json?    @map("score_trend")
+  createdAt                DateTime @default(now()) @map("created_at")
+
+  @@unique([parentId, studentId, weekStart])
+  @@index([parentId, weekStart])
+  @@index([studentId])
+  @@map("parent_weekly_reports")
+  @@schema("public")
+}
+
+model GradeCutoff {
+  id          String   @id @default(cuid())
+  examYear    Int      @map("exam_year")
+  examMonth   Int      @map("exam_month")
+  subject     String
+  grade       Int
+  minScore    Int      @map("min_score")
+  maxScore    Int      @map("max_score")
+  percentile  Float?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([examYear, examMonth, subject, grade])
+  @@index([examYear, examMonth, subject])
+  @@map("grade_cutoffs")
+  @@schema("public")
+}
+
+model StudentStreak {
+  id              String    @id @default(cuid())
+  studentId       String    @map("student_id")
+  student         User      @relation("StudentStreaks", fields: [studentId], references: [id])
+  streakType      String    @map("streak_type")
+  currentStreak   Int       @default(0) @map("current_streak")
+  longestStreak   Int       @default(0) @map("longest_streak")
+  lastActivityAt  DateTime? @map("last_activity_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([studentId, streakType])
+  @@map("student_streaks")
+  @@schema("public")
+}
+
+model StudentAchievement {
+  id             String   @id @default(cuid())
+  studentId      String   @map("student_id")
+  student        User     @relation("StudentAchievements", fields: [studentId], references: [id])
+  achievementKey String   @map("achievement_key")
+  metadata       Json?
+  earnedAt       DateTime @default(now()) @map("earned_at")
+
+  @@unique([studentId, achievementKey])
+  @@index([studentId])
+  @@map("student_achievements")
+  @@schema("public")
+}
+
+model Attendance {
+  id          String           @id @default(cuid())
+  studentId   String           @map("student_id")
+  student     User             @relation("StudentAttendances", fields: [studentId], references: [id])
+  classId     String           @map("class_id")
+  class       Class            @relation(fields: [classId], references: [id])
+  date        DateTime
+  status      AttendanceStatus @default(present)
+  note        String?
+  checkedInAt DateTime?        @map("checked_in_at")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@unique([studentId, classId, date])
+  @@index([classId, date])
+  @@index([studentId, date])
+  @@map("attendances")
+  @@schema("public")
+}
+
+enum AttendanceStatus {
+  present
+  absent
+  late
+  excused
+
+  @@schema("public")
+}
+
+model BillingRecord {
+  id           String        @id @default(cuid())
+  studentId    String        @map("student_id")
+  student      User          @relation("StudentBillings", fields: [studentId], references: [id])
+  classId      String?       @map("class_id")
+  type         BillingType
+  amount       Int
+  description  String?
+  billingMonth DateTime      @map("billing_month")
+  status       BillingStatus @default(pending)
+  paidAt       DateTime?     @map("paid_at")
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  @@index([studentId, billingMonth])
+  @@index([status])
+  @@map("billing_records")
+  @@schema("public")
+}
+
+enum BillingType {
+  tuition
+  material
+  extra_class
+  other
+
+  @@schema("public")
+}
+
+enum BillingStatus {
+  pending
+  paid
+  overdue
+  cancelled
+
+  @@schema("public")
+}
+
+model LtiPlatform {
+  id            String   @id @default(cuid())
+  name          String
+  issuer        String   @unique
+  clientId      String   @map("client_id")
+  authEndpoint  String   @map("auth_endpoint")
+  tokenEndpoint String   @map("token_endpoint")
+  jwksUri       String   @map("jwks_uri")
+  deploymentId  String?  @map("deployment_id")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("lti_platforms")
   @@schema("public")
 }
 
