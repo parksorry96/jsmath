@@ -38,6 +38,7 @@ model User {
   attendances     Attendance[]         @relation("StudentAttendances")
   billingRecords  BillingRecord[]      @relation("StudentBillings")
   ltiIdentities   LtiIdentity[]
+  weaknessProfile  StudentWeaknessProfile?
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
@@ -409,6 +410,48 @@ model StudentMastery {
   @@unique([studentId, curriculumNodeId])
   @@index([studentId, state])
   @@map("student_masteries")
+  @@schema("public")
+}
+
+model StudentWeaknessProfile {
+  id        String   @id @default(cuid())
+  studentId String
+  student   User     @relation(fields: [studentId], references: [id])
+
+  errorPatterns    Json
+  rootCauses       Json
+
+  aiSummary        String?
+  aiSummaryModel   String?
+
+  lastRecommendedAt DateTime?
+
+  units     StudentWeaknessUnit[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId])
+  @@map("student_weakness_profiles")
+  @@schema("public")
+}
+
+model StudentWeaknessUnit {
+  id        String   @id @default(cuid())
+  profileId String
+  profile   StudentWeaknessProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  subject      String
+  unitMajor    String   @map("unit_major")
+  accuracy     Float
+  attemptCount Int      @map("attempt_count")
+  topErrorType String?  @map("top_error_type")
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([profileId, subject, unitMajor])
+  @@index([subject, unitMajor])
+  @@map("student_weakness_units")
   @@schema("public")
 }
 
