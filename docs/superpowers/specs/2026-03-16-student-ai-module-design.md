@@ -71,31 +71,85 @@ apps/lms-api/src/student-ai/
 | `src/remediation/` | Move + extend as smart-recommend | `/remediation/*` → `/student-ai/recommendations/*` |
 | `src/analytics/knowledge-graph*` | Move into `weakness/` | `/analytics/knowledge-graph` → internal only |
 
-### Cross-Module Dependencies
+### Cross-Module Dependencies (Verified Call Graph)
 
-`SubmissionsService` currently imports `WrongAnswersService` and `MasteryService` for post-grading hooks. `AssignmentsService` imports `RemediationService` for remediation generation.
+Actual dependency graph from codebase analysis:
 
-**Resolution:** `StudentAiModule` exports `WrongAnswersService`, `MasteryService`, and `SmartRecommendService`. `SubmissionsModule` and `AssignmentsModule` import `StudentAiModule` to access these services. This preserves the call-site behavior while centralizing ownership.
+```
+app.module.ts
+├── imports: WrongAnswersModule (line 74) ← provides controller routes
+├── imports: MasteryModule (line 75)      ← provides controller routes
+├── imports: ReviewsModule (line 76)      ← provides controller routes
+├── imports: RemediationModule (line 77)  ← provides controller routes
+
+submissions.module.ts (line 11)
+├── imports: WrongAnswersModule  ← for WrongAnswersService injection
+├── imports: MasteryModule       ← for MasteryService injection
+└── submissions.service.ts
+    ├── injects: WrongAnswersService (line 30) → calls collectFromSubmission()
+    └── injects: MasteryService (line 31)      → calls updateOnAnswer()
+
+assignments.module.ts (line 8)
+├── imports: RemediationModule   ← for RemediationService injection
+└── assignments.controller.ts
+    └── injects: RemediationService (line 33) → calls generateForAssignment()
+```
+
+**Resolution:** `StudentAiModule` exports the absorbed services. Consumer modules update their imports. Service class names are preserved to minimize call-site changes.
 
 ```typescript
 // student-ai.module.ts
 @Module({
+  providers: [
+    WrongAnswersService,
+    MasteryService,
+    SmartRecommendService,  // replaces RemediationService
+    ReviewScheduleService,
+    TutorVisionService,
+    WeaknessProfileService,
+    KnowledgeGraphService,
+    CanvasUploadService,
+  ],
   exports: [WrongAnswersService, MasteryService, SmartRecommendService],
 })
 export class StudentAiModule {}
 
-// submissions.module.ts
+// submissions.module.ts — CHANGE:
+// Before: imports: [WrongAnswersModule, MasteryModule, ...]
+// After:
 @Module({
-  imports: [StudentAiModule],  // replaces WrongAnswersModule, MasteryModule
+  imports: [StudentAiModule, GamificationModule, ClassMonitorModule],
 })
 export class SubmissionsModule {}
 
-// assignments.module.ts
+// assignments.module.ts — CHANGE:
+// Before: imports: [RemediationModule, ProblemsModule]
+// After:
 @Module({
-  imports: [StudentAiModule],  // replaces RemediationModule
+  imports: [StudentAiModule, ProblemsModule],
 })
 export class AssignmentsModule {}
+
+// assignments.controller.ts — CHANGE:
+// Before: import { RemediationService } from "../remediation/remediation.service";
+// After:
+import { SmartRecommendService } from "../student-ai/recommend/smart-recommend.service";
+// SmartRecommendService exposes the same generateForAssignment() method
+
+// app.module.ts — CHANGE:
+// Remove: WrongAnswersModule, MasteryModule, ReviewsModule, RemediationModule
+// Add: StudentAiModule (provides all controllers and routes)
 ```
+
+**Migration execution order:**
+1. Create `StudentAiModule` with all services, controllers, and exports
+2. Update `submissions.module.ts`: replace `WrongAnswersModule, MasteryModule` → `StudentAiModule`
+3. Update `assignments.module.ts`: replace `RemediationModule` → `StudentAiModule`
+4. Update `assignments.controller.ts`: change `RemediationService` → `SmartRecommendService` import path
+5. Update `app.module.ts`: remove 4 old modules, add `StudentAiModule`
+6. Verify: `pnpm --filter @jsmath/lms-api build` must pass
+7. Delete old module directories
+8. Deploy redirect aliases for old endpoints (2-week transition)
 
 ### Endpoint Migration Strategy
 
@@ -150,7 +204,7 @@ Old module directories are deleted after the transition period.
 
 ## 3. Database Schema
 
-### New Table: `StudentWeaknessProfile`
+### New Tables
 
 ```prisma
 model StudentWeaknessProfile {
@@ -158,14 +212,16 @@ model StudentWeaknessProfile {
   studentId String
   student   User     @relation(fields: [studentId], references: [id])
 
-  weakUnits        Json     // [{ subject, unitMajor, accuracy, attemptCount, topErrorType }]
-  rootCauses       Json     // [{ subject, unitMajor, reason, prerequisiteGaps }]
+  // Aggregate error counts (for student dashboard, cheap to read)
   errorPatterns    Json     // { concept_gap: N, calculation_error: N, careless_mistake: N, pattern_gap: N }
+  rootCauses       Json     // [{ subject, unitMajor, reason, prerequisiteGaps }]
 
   aiSummary        String?  // GPT-generated weakness summary in Korean
   aiSummaryModel   String?  // "gpt-5.4"
 
   lastRecommendedAt DateTime?
+
+  units     StudentWeaknessUnit[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -173,6 +229,38 @@ model StudentWeaknessProfile {
   @@unique([studentId])
   @@schema("public")
 }
+
+// Child table: indexed per-unit weakness data for class heatmap queries
+model StudentWeaknessUnit {
+  id        String   @id @default(cuid())
+  profileId String
+  profile   StudentWeaknessProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  subject      String    // e.g. "미적분"
+  unitMajor    String    // e.g. "미분법"
+  accuracy     Float     // 0.0 - 1.0
+  attemptCount Int
+  topErrorType String?   // canonical ErrorType enum value
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([profileId, subject, unitMajor])
+  @@index([subject, unitMajor])  // enables class heatmap: WHERE subject=X GROUP BY unitMajor
+  @@schema("public")
+}
+```
+
+The `StudentWeaknessUnit` child table enables efficient class-level queries:
+
+```sql
+-- Class heatmap: average accuracy per unit across all students in a class
+SELECT swu.subject, swu.unit_major, AVG(swu.accuracy), COUNT(*)
+FROM student_weakness_units swu
+JOIN student_weakness_profiles swp ON swu.profile_id = swp.id
+JOIN enrollments e ON swp.student_id = e.student_id
+WHERE e.class_id = :classId
+GROUP BY swu.subject, swu.unit_major
+ORDER BY AVG(swu.accuracy) ASC;
 ```
 
 ### Profile Lifecycle
@@ -209,10 +297,19 @@ export class SendTutorMessageDto {
 When `imageS3Key` is present:
 
 1. Download image from S3, base64-encode.
-2. Build OpenAI messages array with `image_url` content part.
-3. Include conversation history: past images are NOT re-sent as base64. Instead, past image analyses (stored in `metadata.imageAnalysis`) are included as text summaries.
-4. Stream response via SSE (same pattern as existing tutor).
-5. Store in `TutorMessage` with `metadata: { imageS3Key, imageAnalysis }`.
+2. Build OpenAI messages array with `image_url` content part (inline `data:` URI, NOT S3 URL — GPT cannot access S3 directly).
+3. Stream response via SSE (same pattern as existing tutor).
+4. Store in `TutorMessage` with `metadata: { imageS3Key, imageAnalysis }`.
+
+### Image History Policy
+
+Sending all past images as base64 on every turn is prohibitively expensive. The following policy applies:
+
+- **Current turn image:** Sent as base64 `data:` URI in the `image_url` content part.
+- **Last 1 previous image** (if exists): Re-sent as base64 to allow "compare with my previous attempt" conversations.
+- **Older images (2+):** NOT re-sent. Only the structured `imageAnalysis` text from `metadata` is included as a system-injected assistant message: `"[Previous solution analysis: {imageAnalysis summary}]"`.
+
+This keeps the per-turn payload to at most 2 images (~2 × 1024×1024 PNG ≈ 1-2MB base64) while preserving conversational context.
 
 ### Session Limits
 
@@ -295,8 +392,16 @@ Priority 1: Prerequisite gap remediation
   Logic:  Select easy problems (difficulty 1-2) from root cause units
 
 Priority 2: Error pattern correction
-  Source: WeaknessProfile errorPatterns
-  Logic:  Select problems known to trigger the same error type
+  Source: WeaknessProfile errorPatterns + Problem.commonMistakes JSON
+  Logic:  Query problems in the same curriculumNode where commonMistakes JSON
+          contains entries matching the student's top error type.
+          Fallback: if commonMistakes is null or no match, select same-unit
+          problems at appropriate difficulty for the error type.
+  Implementation: Prisma JSON filter on Problem.commonMistakes,
+          e.g. { commonMistakes: { path: ['$[*].type'], array_contains: 'sign_error' } }
+          Since commonMistakes is unstructured, a runtime filter on the
+          fetched candidate set is acceptable for the initial version.
+          Future: add a ProblemErrorTag indexed table if query performance degrades.
 
 Priority 3: SM-2 spaced repetition review
   Source: ReviewSchedule (nextReviewAt <= now, wrongAnswer.resolvedAt IS NULL)
