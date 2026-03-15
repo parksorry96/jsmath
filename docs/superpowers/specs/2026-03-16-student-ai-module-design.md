@@ -19,6 +19,8 @@ A self-contained NestJS module (`student-ai/`) that consolidates all student-fac
 | Weakness audience | Student + Teacher | Students see own profile; teachers see class heatmap |
 | Recommendation trigger | Auto daily + on-demand | SM-2 cron + manual "generate" button |
 | Architecture | Standalone module, absorb existing services | Clean boundaries for future extraction as separate service |
+| Cross-schema access | student-ai reads `ocr.*` tables via Prisma (read-only) | Existing absorbed services already query `Problem`, `CurriculumNode`, `ProblemSimilarity` |
+| OCR migration scope | Separate companion PR, tested independently | Different service boundary (Python/Celery vs NestJS) |
 
 ## 1. Module Structure
 
@@ -36,9 +38,12 @@ apps/lms-api/src/student-ai/
 │   └── knowledge-graph.service.ts     # ← absorb from src/analytics/knowledge-graph
 ├── recommend/
 │   ├── smart-recommend.service.ts     # ← absorb + extend src/remediation/
-│   └── review-schedule.service.ts     # ← absorb from src/reviews/ (SM-2)
+│   ├── review-schedule.service.ts     # ← absorb from src/reviews/ (SM-2)
+│   └── sm2.ts                         # ← SM-2 algorithm utility (from src/reviews/sm2.ts)
 ├── canvas/
 │   └── canvas-upload.service.ts       # S3 upload for canvas/photo
+├── seed/
+│   └── prerequisite-data.ts           # ← prerequisite graph seed data (from src/analytics/seed/)
 ├── processors/
 │   └── weakness-aggregation.processor.ts  # BullMQ daily batch
 └── dto/
@@ -50,6 +55,7 @@ apps/lms-api/src/student-ai/
 ### Dependency Rules
 
 - Access DB via Prisma only — no imports from other NestJS modules.
+- Cross-schema reads permitted: `student-ai` may read `ocr.*` tables (`Problem`, `CurriculumNode`, `ProblemSimilarity`) via Prisma. This is consistent with existing absorbed services. Write access to `ocr.*` is prohibited.
 - Existing services (`TutorService`, `RemediationService`, `MasteryService`, `WrongAnswersService`, `ReviewsService`, `KnowledgeGraphService`) are absorbed, not imported.
 - Code duplication is acceptable where it preserves module independence.
 - The folder is extractable as-is for future microservice deployment.
@@ -65,7 +71,48 @@ apps/lms-api/src/student-ai/
 | `src/remediation/` | Move + extend as smart-recommend | `/remediation/*` → `/student-ai/recommendations/*` |
 | `src/analytics/knowledge-graph*` | Move into `weakness/` | `/analytics/knowledge-graph` → internal only |
 
-Old module directories are deleted after migration. Old endpoints are removed (mobile app updated to use new paths).
+### Cross-Module Dependencies
+
+`SubmissionsService` currently imports `WrongAnswersService` and `MasteryService` for post-grading hooks. `AssignmentsService` imports `RemediationService` for remediation generation.
+
+**Resolution:** `StudentAiModule` exports `WrongAnswersService`, `MasteryService`, and `SmartRecommendService`. `SubmissionsModule` and `AssignmentsModule` import `StudentAiModule` to access these services. This preserves the call-site behavior while centralizing ownership.
+
+```typescript
+// student-ai.module.ts
+@Module({
+  exports: [WrongAnswersService, MasteryService, SmartRecommendService],
+})
+export class StudentAiModule {}
+
+// submissions.module.ts
+@Module({
+  imports: [StudentAiModule],  // replaces WrongAnswersModule, MasteryModule
+})
+export class SubmissionsModule {}
+
+// assignments.module.ts
+@Module({
+  imports: [StudentAiModule],  // replaces RemediationModule
+})
+export class AssignmentsModule {}
+```
+
+### Endpoint Migration Strategy
+
+Old endpoints are preserved as redirect aliases during a transition period (2 weeks), then removed. This allows the mobile app to be updated independently without coordinated deployment.
+
+```typescript
+// Temporary redirect controller (removed after mobile app update)
+@Controller('tutor')
+export class TutorRedirectController {
+  @All('*')
+  redirect(@Req() req) {
+    return { statusCode: 301, url: `/student-ai/tutor${req.path}` };
+  }
+}
+```
+
+Old module directories are deleted after the transition period.
 
 ## 2. API Endpoints
 
@@ -82,11 +129,16 @@ Old module directories are deleted after migration. Old endpoints are removed (m
 | GET | `/student-ai/recommendations` | Get recommended problems |
 | POST | `/student-ai/recommendations/generate` | Trigger immediate recommendation |
 | GET | `/student-ai/wrong-answers` | List wrong answers (with filters) |
+| GET | `/student-ai/wrong-answers/stats` | Wrong answer statistics |
 | PATCH | `/student-ai/wrong-answers/:id/classify` | Reclassify error type |
+| PATCH | `/student-ai/wrong-answers/:id/resolve` | Mark wrong answer as resolved |
+| POST | `/student-ai/wrong-answers/:id/retry` | Record a retry attempt |
 | GET | `/student-ai/reviews/daily` | Get daily SM-2 review problems |
+| GET | `/student-ai/reviews/stats` | Review statistics |
 | POST | `/student-ai/reviews/:id/grade` | Grade a review item |
 | GET | `/student-ai/mastery` | Get mastery dashboard |
 | GET | `/student-ai/mastery/tree` | Get curriculum mastery tree |
+| GET | `/student-ai/mastery/:nodeId` | Get mastery for specific node |
 
 ### Teacher Endpoints (`/student-ai/teacher/`)
 
@@ -94,6 +146,7 @@ Old module directories are deleted after migration. Old endpoints are removed (m
 |--------|------|-------------|
 | GET | `/student-ai/teacher/class/:id/weakness` | Class weakness heatmap |
 | GET | `/student-ai/teacher/student/:id/weakness` | Individual student weakness profile |
+| POST | `/student-ai/teacher/seed-prerequisites` | Seed prerequisite graph data |
 
 ## 3. Database Schema
 
@@ -107,7 +160,7 @@ model StudentWeaknessProfile {
 
   weakUnits        Json     // [{ subject, unitMajor, accuracy, attemptCount, topErrorType }]
   rootCauses       Json     // [{ subject, unitMajor, reason, prerequisiteGaps }]
-  errorPatterns    Json     // { concept_gap: N, calculation_error: N, ... }
+  errorPatterns    Json     // { concept_gap: N, calculation_error: N, careless_mistake: N, pattern_gap: N }
 
   aiSummary        String?  // GPT-generated weakness summary in Korean
   aiSummaryModel   String?  // "gpt-5.4"
@@ -121,6 +174,12 @@ model StudentWeaknessProfile {
   @@schema("public")
 }
 ```
+
+### Profile Lifecycle
+
+- **Creation:** Upsert on first submission grading or tutor session end. If no profile exists, create with initial data.
+- **Update:** Upsert (Prisma `upsert`) on every trigger — never manual create/delete.
+- **Daily batch scope:** Only students with activity in the last 7 days. Estimated max ~100 students per batch → ~100 GPT calls/day for AI summary regeneration.
 
 ### Existing Tables — No Changes
 
@@ -151,9 +210,15 @@ When `imageS3Key` is present:
 
 1. Download image from S3, base64-encode.
 2. Build OpenAI messages array with `image_url` content part.
-3. Include full conversation history (previous images included via S3 URLs in metadata).
+3. Include conversation history: past images are NOT re-sent as base64. Instead, past image analyses (stored in `metadata.imageAnalysis`) are included as text summaries.
 4. Stream response via SSE (same pattern as existing tutor).
 5. Store in `TutorMessage` with `metadata: { imageS3Key, imageAnalysis }`.
+
+### Session Limits
+
+- Maximum 5 images per session.
+- Maximum 30 messages per session (auto-close with summary).
+- Rate limit: 10 messages per minute per student.
 
 ### System Prompt Extension
 
@@ -162,7 +227,8 @@ Existing Socratic tutor rules are preserved. When an image is present, append:
 ```
 When the student sends a handwritten solution image:
 - Analyze each step of the solution in order.
-- Identify the specific line and type of error (sign error, calculation error, concept gap, etc.).
+- Identify the specific line and type of error.
+- Classify the error as one of: concept_gap, pattern_gap, calculation_error, careless_mistake.
 - Point out what went wrong WITHOUT giving the correct answer.
 - Guide the student to find the error themselves through questions.
 - Respond in Korean.
@@ -171,7 +237,7 @@ When the student sends a handwritten solution image:
 ### Conversation Context
 
 - Previous messages with images: `metadata.imageS3Key` stored per message.
-- GPT receives full history including past image analyses.
+- Past images are represented as text summaries of analysis results (not re-sent as base64).
 - Student can reference previous work: "아까 그 풀이에서 3번째 줄..."
 
 ## 5. Weakness Profile
@@ -185,10 +251,27 @@ When the student sends a handwritten solution image:
 | `TutorMessage.metadata` | AI-identified error patterns from tutor conversations |
 | `KnowledgeGraph` (CurriculumPrerequisite) | Prerequisite gaps, root cause analysis via BFS |
 
+### Error Type Taxonomy (Canonical)
+
+A single canonical taxonomy used across all components:
+
+| ErrorType (Prisma enum) | Description | Sources |
+|------------------------|-------------|---------|
+| `concept_gap` | Fundamental misunderstanding | Tutor vision, wrong answer heuristic |
+| `pattern_gap` | Cannot recognize problem pattern | Wrong answer heuristic |
+| `calculation_error` | Arithmetic/algebraic mistake | Tutor vision, wrong answer heuristic |
+| `careless_mistake` | Sign errors, transcription errors | Tutor vision, wrong answer heuristic |
+
+The tutor vision system prompt instructs GPT to classify errors using these exact enum values. The `analyze_photo.py` prompt's finer-grained types (`sign_error`, `formula_error`, `logic_error`, `transcription_error`) are mapped to the canonical enum:
+- `sign_error`, `transcription_error` → `careless_mistake`
+- `formula_error`, `concept_error` → `concept_gap`
+- `logic_error` → `pattern_gap`
+- `calculation_error` → `calculation_error`
+
 ### Update Triggers
 
 - **Event-driven:** After submission grading, after tutor session ends.
-- **Daily batch:** BullMQ cron at 03:00 AM — regenerate AI summary.
+- **Daily batch:** BullMQ cron at 03:00 AM — regenerate AI summary for students with activity in the last 7 days.
 
 ### AI Summary Generation
 
@@ -241,7 +324,7 @@ Priority 4: Similar problem expansion
 
 ### Triggers
 
-- **Automatic:** BullMQ cron at 02:00 AM daily, per student.
+- **Automatic:** BullMQ cron at 02:00 AM daily. Scope: students with activity in the last 7 days.
 - **Manual:** `POST /student-ai/recommendations/generate`.
 
 ### Output Shape
@@ -302,12 +385,27 @@ Priority 4: Similar problem expansion
 
 ## 8. Photo Pipeline GPT Migration
 
+**Note:** This is a companion change in a separate PR, tested independently from the NestJS module work. It affects the Python/Celery service boundary (`apps/ocr-api`).
+
 ### Scope
 
 | File | Change |
 |------|--------|
 | `apps/ocr-api/app/workers/analyze_photo.py` | `anthropic.Anthropic` → `openai.OpenAI` |
 | `apps/ocr-api/app/workers/rubric_grader.py` | Same migration |
+| `apps/ocr-api/app/config.py` | Remove `anthropic_api_key`, ensure `ai_api_key`/`ai_model`/`ai_api_base_url` exist |
+
+### Python Settings
+
+Ensure these fields exist in `app/config.py` `Settings` class (some may already exist for other workers):
+
+```python
+ai_api_key: str = Field(alias="AI_API_KEY")
+ai_model: str = Field(default="gpt-5.4", alias="AI_MODEL")
+ai_api_base_url: str = Field(default="https://api.openai.com/v1", alias="AI_API_BASE_URL")
+```
+
+Remove: `anthropic_api_key` (no longer needed after migration).
 
 ### API Call Conversion
 
@@ -326,7 +424,7 @@ text = response.content[0].text
 # After (OpenAI GPT 5.4)
 client = openai.OpenAI(api_key=settings.ai_api_key, base_url=settings.ai_api_base_url)
 response = client.chat.completions.create(
-    model=settings.ai_model,  # "gpt-5.4"
+    model=settings.ai_model,
     messages=[{"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": f"data:{mt};base64,{b64}"}},
         {"type": "text", "text": prompt}
@@ -359,7 +457,7 @@ text = response.choices[0].message.content
 ### New Files
 
 ```
-apps/lms-api/src/student-ai/          # Entire new module (~15 files)
+apps/lms-api/src/student-ai/          # Entire new module (~18 files)
 apps/mobile/components/canvas/         # React Native Skia canvas component
 packages/db-schema/prisma/migrations/  # StudentWeaknessProfile migration
 ```
@@ -367,15 +465,23 @@ packages/db-schema/prisma/migrations/  # StudentWeaknessProfile migration
 ### Modified Files
 
 ```
-apps/lms-api/src/app.module.ts         # Import StudentAiModule, remove old modules
-apps/ocr-api/app/workers/analyze_photo.py   # Anthropic → OpenAI
-apps/ocr-api/app/workers/rubric_grader.py   # Anthropic → OpenAI
-apps/mobile/app/(student)/              # Canvas integration in student screens
+apps/lms-api/src/app.module.ts             # Import StudentAiModule, remove old modules
+apps/lms-api/src/submissions/submissions.module.ts  # Import StudentAiModule (replaces WrongAnswersModule, MasteryModule)
+apps/lms-api/src/assignments/assignments.module.ts   # Import StudentAiModule (replaces RemediationModule)
+apps/mobile/app/(student)/                  # Canvas integration in student screens
 packages/db-schema/prisma/schema.prisma     # Add StudentWeaknessProfile
 packages/shared-types/src/index.ts          # Add student-ai types
 ```
 
-### Deleted Files (after migration)
+### Modified Files (Separate PR: GPT Migration)
+
+```
+apps/ocr-api/app/workers/analyze_photo.py   # Anthropic → OpenAI
+apps/ocr-api/app/workers/rubric_grader.py   # Anthropic → OpenAI
+apps/ocr-api/app/config.py                  # Settings field updates
+```
+
+### Deleted Files (after 2-week transition period)
 
 ```
 apps/lms-api/src/tutor/                # Absorbed into student-ai/tutor/
@@ -383,4 +489,5 @@ apps/lms-api/src/wrong-answers/        # Absorbed into student-ai/weakness/
 apps/lms-api/src/mastery/              # Absorbed into student-ai/weakness/
 apps/lms-api/src/reviews/              # Absorbed into student-ai/recommend/
 apps/lms-api/src/remediation/          # Absorbed into student-ai/recommend/
+apps/lms-api/src/analytics/seed/       # Moved to student-ai/seed/
 ```
