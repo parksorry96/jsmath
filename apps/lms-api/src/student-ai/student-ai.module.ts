@@ -12,12 +12,27 @@ import { ReviewScheduleService } from "./recommend/review-schedule.service";
 import { WeaknessAggregationProcessor } from "./processors/weakness-aggregation.processor";
 import { StudentAiController } from "./student-ai.controller";
 import { StudentAiTeacherController } from "./student-ai-teacher.controller";
+import {
+  TutorRedirectController,
+  WrongAnswersRedirectController,
+  MasteryRedirectController,
+  ReviewsRedirectController,
+  RemediationRedirectController,
+} from "./redirect.controller";
 
 @Module({
   imports: [
     BullModule.registerQueue({ name: "student-ai-batch" }),
   ],
-  controllers: [StudentAiController, StudentAiTeacherController],
+  controllers: [
+    StudentAiController,
+    StudentAiTeacherController,
+    TutorRedirectController,
+    WrongAnswersRedirectController,
+    MasteryRedirectController,
+    ReviewsRedirectController,
+    RemediationRedirectController,
+  ],
   providers: [
     CanvasUploadService,
     TutorVisionService,
