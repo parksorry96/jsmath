@@ -4,6 +4,7 @@ import { TutorVisionService } from "./tutor/tutor-vision.service";
 import { WrongAnswersService } from "./weakness/wrong-answers.service";
 import { MasteryService } from "./weakness/mastery.service";
 import { KnowledgeGraphService } from "./weakness/knowledge-graph.service";
+import { WeaknessProfileService } from "./weakness/weakness-profile.service";
 import { SmartRecommendService } from "./recommend/smart-recommend.service";
 import { ReviewScheduleService } from "./recommend/review-schedule.service";
 
@@ -14,6 +15,7 @@ import { ReviewScheduleService } from "./recommend/review-schedule.service";
     WrongAnswersService,
     MasteryService,
     KnowledgeGraphService,
+    WeaknessProfileService,
     SmartRecommendService,
     ReviewScheduleService,
   ],
