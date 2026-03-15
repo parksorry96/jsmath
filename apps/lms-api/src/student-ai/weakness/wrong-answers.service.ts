@@ -5,7 +5,7 @@ import {
 } from "@nestjs/common";
 import { ErrorType } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
-import { ListWrongAnswersDto } from "../../wrong-answers/dto/list-wrong-answers.dto";
+import { ListWrongAnswersDto } from "../dto/list-wrong-answers.dto";
 import { canAccessStudentData, isPrivilegedRole } from "../../common/access-control";
 
 type ProblemSummary = {

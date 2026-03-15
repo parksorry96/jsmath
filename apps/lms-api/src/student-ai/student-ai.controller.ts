@@ -25,7 +25,7 @@ import { SmartRecommendService } from "./recommend/smart-recommend.service";
 import { ReviewScheduleService } from "./recommend/review-schedule.service";
 import { CanvasUploadService } from "./canvas/canvas-upload.service";
 import { SendTutorMessageDto } from "./dto/send-tutor-message.dto";
-import { ListWrongAnswersDto } from "../wrong-answers/dto/list-wrong-answers.dto";
+import { ListWrongAnswersDto } from "./dto/list-wrong-answers.dto";
 
 interface AuthRequest {
   user: { id: string; email: string; role: string };
