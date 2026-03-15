@@ -11,12 +11,13 @@ import { SmartRecommendService } from "./recommend/smart-recommend.service";
 import { ReviewScheduleService } from "./recommend/review-schedule.service";
 import { WeaknessAggregationProcessor } from "./processors/weakness-aggregation.processor";
 import { StudentAiController } from "./student-ai.controller";
+import { StudentAiTeacherController } from "./student-ai-teacher.controller";
 
 @Module({
   imports: [
     BullModule.registerQueue({ name: "student-ai-batch" }),
   ],
-  controllers: [StudentAiController],
+  controllers: [StudentAiController, StudentAiTeacherController],
   providers: [
     CanvasUploadService,
     TutorVisionService,
