@@ -1,6 +1,6 @@
 """Celery task: Vision LLM photo analysis.
 
-Analyzes student handwritten solution photos using Anthropic Claude Vision API.
+Analyzes student handwritten solution photos using OpenAI Vision API.
 Receives work via Redis 'photo:analyze' channel, publishes results to
 'photo:analysis:completed' or 'photo:analysis:failed'.
 
@@ -15,8 +15,8 @@ import base64
 import json
 import logging
 
-import anthropic
 import boto3
+import openai
 
 from app.celery_app import celery
 from app.config import settings
@@ -232,28 +232,29 @@ def analyze_submission_photo(self, payload: dict) -> dict:
     """
     photo_id = payload["submissionPhotoId"]
     try:
-        if not settings.anthropic_api_key:
-            raise ValueError("ANTHROPIC_API_KEY is not configured")
+        if not settings.ai_api_key:
+            raise ValueError("AI_API_KEY is not configured")
 
         # 1. Download image from S3
         base64_data, media_type = _download_image(payload["s3Key"])
 
-        # 2. Call Anthropic Vision API
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        response = client.messages.create(
-            model="claude-sonnet-4-6-20250514",
+        # 2. Call OpenAI Vision API
+        client = openai.OpenAI(
+            api_key=settings.ai_api_key,
+            base_url=settings.ai_api_base_url,
+        )
+        response = client.chat.completions.create(
+            model=settings.ai_model,
             max_tokens=2000,
-            system=SYSTEM_PROMPT,
             messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": base64_data,
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{base64_data}",
                             },
                         },
                         {
@@ -261,12 +262,12 @@ def analyze_submission_photo(self, payload: dict) -> dict:
                             "text": _build_user_prompt(payload),
                         },
                     ],
-                }
+                },
             ],
         )
 
         # 3. Parse response
-        feedback = _parse_llm_response(response.content[0].text)
+        feedback = _parse_llm_response(response.choices[0].message.content)
 
         # 4. Publish completion event — NestJS updates submission_photos
         publish_sync("photo:analysis:completed", {
@@ -285,8 +286,8 @@ def analyze_submission_photo(self, payload: dict) -> dict:
 
         return feedback
 
-    except anthropic.APIError as exc:
-        logger.error("Anthropic API error for %s: %s", photo_id, exc)
+    except openai.APIError as exc:
+        logger.error("OpenAI API error for %s: %s", photo_id, exc)
         raise self.retry(exc=exc)
     except Exception as exc:
         logger.error("Photo analysis failed for %s: %s", photo_id, exc)

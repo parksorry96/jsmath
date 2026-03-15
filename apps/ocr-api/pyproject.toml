@@ -19,7 +19,6 @@ dependencies = [
     "httpx>=0.28",
     "boto3>=1.35",
     "pgvector>=0.3",
-    "anthropic>=0.40",
     "openai>=1.0",
     "alembic>=1.14",
 ]

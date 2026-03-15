@@ -1,8 +1,8 @@
-"""Celery task: Rubric-based partial credit grading with Claude Vision.
+"""Celery task: Rubric-based partial credit grading with OpenAI Vision.
 
 Downloads the student's handwritten solution image from S3, builds a scoring
-rubric from the matched problem's solutionSteps, and calls Anthropic Claude
-Vision to grade each rubric step independently.
+rubric from the matched problem's solutionSteps, and calls OpenAI Vision API
+to grade each rubric step independently.
 
 Publishes results to 'photo:rubric:completed' for NestJS to persist on
 SubmissionAnswer (rubricResult, rubricScore, rubricVersion).
@@ -16,8 +16,8 @@ import base64
 import json
 import logging
 
-import anthropic
 import boto3
+import openai
 
 from app.celery_app import celery
 from app.config import settings
@@ -181,8 +181,8 @@ def rubric_grade_photo(self, payload: dict) -> dict:
     problem = payload["problem"]
 
     try:
-        if not settings.anthropic_api_key:
-            raise ValueError("ANTHROPIC_API_KEY is not configured")
+        if not settings.ai_api_key:
+            raise ValueError("AI_API_KEY is not configured")
 
         solution_steps = problem.get("solutionSteps")
         if not solution_steps or not isinstance(solution_steps, list):
@@ -199,22 +199,23 @@ def rubric_grade_photo(self, payload: dict) -> dict:
         # 2. Download image from S3
         base64_data, media_type = _download_image(payload["s3Key"])
 
-        # 3. Call Anthropic Vision API
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        response = client.messages.create(
-            model="claude-sonnet-4-6-20250514",
+        # 3. Call OpenAI Vision API
+        client = openai.OpenAI(
+            api_key=settings.ai_api_key,
+            base_url=settings.ai_api_base_url,
+        )
+        response = client.chat.completions.create(
+            model=settings.ai_model,
             max_tokens=2000,
-            system=RUBRIC_SYSTEM_PROMPT,
             messages=[
+                {"role": "system", "content": RUBRIC_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": base64_data,
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{base64_data}",
                             },
                         },
                         {
@@ -222,12 +223,12 @@ def rubric_grade_photo(self, payload: dict) -> dict:
                             "text": _build_user_prompt(problem, rubric),
                         },
                     ],
-                }
+                },
             ],
         )
 
         # 4. Parse response
-        result = _parse_rubric_response(response.content[0].text)
+        result = _parse_rubric_response(response.choices[0].message.content)
 
         # 5. Publish completion event
         publish_sync("photo:rubric:completed", {
@@ -247,8 +248,8 @@ def rubric_grade_photo(self, payload: dict) -> dict:
         )
         return result
 
-    except anthropic.APIError as exc:
-        logger.error("Anthropic API error for rubric grading %s: %s", photo_id, exc)
+    except openai.APIError as exc:
+        logger.error("OpenAI API error for rubric grading %s: %s", photo_id, exc)
         raise self.retry(exc=exc)
     except Exception as exc:
         logger.error("Rubric grading failed for %s: %s", photo_id, exc)
