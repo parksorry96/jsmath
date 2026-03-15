@@ -6,7 +6,9 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import OpenAI from "openai";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { PrismaService } from "../../prisma/prisma.service";
+import { CanvasUploadService } from "../canvas/canvas-upload.service";
 
 @Injectable()
 export class TutorVisionService {
@@ -15,6 +17,7 @@ export class TutorVisionService {
   constructor(
     private prisma: PrismaService,
     private config: ConfigService,
+    private canvasUpload: CanvasUploadService,
   ) {}
 
   private getClient(): OpenAI {
@@ -32,18 +35,21 @@ export class TutorVisionService {
     return this.client;
   }
 
-  private buildSystemPrompt(problem: {
-    stemLatex: string;
-    stemText: string;
-    answerText: string | null;
-    answerLatex: string | null;
-    solutionStrategy: string | null;
-    solutionSteps: unknown;
-    requiredConcepts: unknown;
-    commonMistakes: unknown;
-    subject: string | null;
-    unitMajor: string | null;
-  }): string {
+  private buildSystemPrompt(
+    problem: {
+      stemLatex: string;
+      stemText: string;
+      answerText: string | null;
+      answerLatex: string | null;
+      solutionStrategy: string | null;
+      solutionSteps: unknown;
+      requiredConcepts: unknown;
+      commonMistakes: unknown;
+      subject: string | null;
+      unitMajor: string | null;
+    },
+    hasImages: boolean,
+  ): string {
     const answer = problem.answerText || problem.answerLatex || "unknown";
     const strategy = problem.solutionStrategy || "not available";
     const steps = problem.solutionSteps
@@ -56,7 +62,7 @@ export class TutorVisionService {
       ? JSON.stringify(problem.commonMistakes)
       : "not available";
 
-    return `You are a Socratic math tutor for Korean high school students.
+    let prompt = `You are a Socratic math tutor for Korean high school students.
 
 RULES (STRICT):
 1. NEVER give the answer directly. Your goal is to guide the student to find the answer themselves.
@@ -78,6 +84,137 @@ PROBLEM INFORMATION (hidden from student):
 - Common Mistakes: ${mistakes}
 
 Use this information to guide your questioning. Lead the student toward the correct reasoning path without revealing the answer.`;
+
+    if (hasImages) {
+      prompt += `
+
+When the student sends a handwritten solution image:
+- Analyze each step of the solution in order.
+- Identify the specific line and type of error.
+- Classify the error as one of: concept_gap, pattern_gap, calculation_error, careless_mistake.
+- Point out what went wrong WITHOUT giving the correct answer.
+- Guide the student to find the error themselves through questions.
+- Respond in Korean.`;
+    }
+
+    return prompt;
+  }
+
+  validateSessionLimits(
+    session: { messages: unknown[] },
+    imageS3Key?: string,
+  ) {
+    const messageCount = session.messages.length;
+    if (messageCount >= 30) {
+      throw new BadRequestException("Maximum 30 messages per session reached");
+    }
+    if (imageS3Key) {
+      const imageCount = session.messages.filter(
+        (m) => m && typeof m === "object" && "metadata" in m && (m as any).metadata && (m as any).metadata.imageS3Key,
+      ).length;
+      if (imageCount >= 5) {
+        throw new BadRequestException("Maximum 5 images per session reached");
+      }
+    }
+  }
+
+  private async buildMessagesWithImages(
+    dbMessages: Array<{
+      role: string;
+      content: string;
+      metadata: unknown;
+    }>,
+    currentImageData: { base64: string; mimeType: string } | null,
+  ): Promise<ChatCompletionMessageParam[]> {
+    const messages: ChatCompletionMessageParam[] = [];
+
+    // Find indices of messages with images (excluding the last/current one)
+    const imageIndices: number[] = [];
+    for (let i = 0; i < dbMessages.length; i++) {
+      const meta = dbMessages[i].metadata as any;
+      if (meta?.imageS3Key) {
+        imageIndices.push(i);
+      }
+    }
+
+    // The last message is the current turn (already has currentImageData)
+    const currentTurnIndex = dbMessages.length - 1;
+    const previousImageIndices = imageIndices.filter(
+      (idx) => idx !== currentTurnIndex,
+    );
+
+    // Last 1 previous image gets re-downloaded; older ones become text-only
+    const recentPreviousIdx =
+      previousImageIndices.length > 0
+        ? previousImageIndices[previousImageIndices.length - 1]
+        : -1;
+
+    for (let i = 0; i < dbMessages.length; i++) {
+      const msg = dbMessages[i];
+      const role = msg.role === "student" ? "user" : "assistant";
+      const meta = msg.metadata as any;
+
+      if (role === "assistant") {
+        messages.push({ role: "assistant", content: msg.content });
+        continue;
+      }
+
+      // Current turn with image
+      if (i === currentTurnIndex && currentImageData) {
+        messages.push({
+          role: "user",
+          content: [
+            { type: "text" as const, text: msg.content },
+            {
+              type: "image_url" as const,
+              image_url: {
+                url: `data:${currentImageData.mimeType};base64,${currentImageData.base64}`,
+              },
+            },
+          ],
+        });
+        continue;
+      }
+
+      // Last 1 previous image: re-download from S3
+      if (i === recentPreviousIdx && meta?.imageS3Key) {
+        try {
+          const { base64, mimeType } = await this.canvasUpload.downloadAsBase64(
+            meta.imageS3Key,
+          );
+          messages.push({
+            role: "user",
+            content: [
+              { type: "text" as const, text: msg.content },
+              {
+                type: "image_url" as const,
+                image_url: { url: `data:${mimeType};base64,${base64}` },
+              },
+            ],
+          });
+          continue;
+        } catch {
+          // Fall through to text-only if download fails
+        }
+      }
+
+      // Older images (2+): text-only with analysis summary
+      if (meta?.imageS3Key && i !== currentTurnIndex) {
+        const analysis = meta.imageAnalysis
+          ? `\n[Previous solution analysis: ${meta.imageAnalysis}]`
+          : "";
+        messages.push({
+          role: "user",
+          content: msg.content + analysis,
+        });
+        continue;
+      }
+
+      // Regular text message
+      messages.push({ role, content: msg.content });
+    }
+
+    return messages;
   }
 
   async createSession(studentId: string, problemId: string) {
@@ -92,11 +229,12 @@ Use this information to guide your questioning. Lead the student toward the corr
       throw new NotFoundException("Problem not found");
     }
 
-    const systemPrompt = this.buildSystemPrompt(problem);
+    const model = this.config.get("AI_MODEL") ?? "gpt-5.4";
+    const systemPrompt = this.buildSystemPrompt(problem, false);
 
     // Generate initial greeting via OpenAI (non-streaming)
     const completion = await this.getClient().chat.completions.create({
-      model: "gpt-5.4",
+      model,
       temperature: 0.7,
       messages: [
         { role: "system", content: systemPrompt },
@@ -154,9 +292,11 @@ Use this information to guide your questioning. Lead the student toward the corr
     sessionId: string,
     studentId: string,
     content: string,
+    imageS3Key?: string,
   ): AsyncGenerator<string> {
     const session = await this.prisma.tutorSession.findUnique({
       where: { id: sessionId },
+      include: { messages: { orderBy: { createdAt: "asc" } } },
     });
 
     if (!session) {
@@ -169,12 +309,21 @@ Use this information to guide your questioning. Lead the student toward the corr
       throw new BadRequestException("Session is no longer active");
     }
 
+    this.validateSessionLimits(session, imageS3Key);
+
+    // Download image if provided
+    let imageData: { base64: string; mimeType: string } | null = null;
+    if (imageS3Key) {
+      imageData = await this.canvasUpload.downloadAsBase64(imageS3Key);
+    }
+
     // Store student message
-    await this.prisma.tutorMessage.create({
+    const studentMessage = await this.prisma.tutorMessage.create({
       data: {
         sessionId,
         role: "student",
         content,
+        metadata: imageS3Key ? { imageS3Key } : undefined,
       },
     });
 
@@ -191,22 +340,29 @@ Use this information to guide your questioning. Lead the student toward the corr
       orderBy: { createdAt: "asc" },
     });
 
-    const systemPrompt = this.buildSystemPrompt(problem);
-    const chatMessages: Array<{
-      role: "system" | "user" | "assistant";
-      content: string;
-    }> = [{ role: "system", content: systemPrompt }];
+    const hasImages = dbMessages.some(
+      (m) => m.metadata && (m.metadata as any).imageS3Key,
+    );
+    const systemPrompt = this.buildSystemPrompt(problem, hasImages);
 
-    for (const msg of dbMessages) {
-      chatMessages.push({
-        role: msg.role === "student" ? "user" : "assistant",
-        content: msg.content,
-      });
-    }
+    const chatMessages: ChatCompletionMessageParam[] = [
+      { role: "system", content: systemPrompt },
+    ];
+
+    const historyMessages = await this.buildMessagesWithImages(
+      dbMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        metadata: m.metadata,
+      })),
+      imageData,
+    );
+    chatMessages.push(...historyMessages);
 
     // Stream from OpenAI
+    const model = this.config.get("AI_MODEL") ?? "gpt-5.4";
     const stream = await this.getClient().chat.completions.create({
-      model: "gpt-5.4",
+      model,
       temperature: 0.7,
       stream: true,
       messages: chatMessages,
@@ -231,6 +387,19 @@ Use this information to guide your questioning. Lead the student toward the corr
           content: fullResponse,
         },
       });
+
+      // Update student message metadata with image analysis if applicable
+      if (imageS3Key && fullResponse) {
+        await this.prisma.tutorMessage.update({
+          where: { id: studentMessage.id },
+          data: {
+            metadata: {
+              imageS3Key,
+              imageAnalysis: fullResponse.slice(0, 500),
+            },
+          },
+        });
+      }
     }
   }
 
