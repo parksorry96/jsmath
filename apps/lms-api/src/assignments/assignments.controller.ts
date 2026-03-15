@@ -18,7 +18,7 @@ import { UpdateAssignmentDto } from "./dto/update-assignment.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Roles } from "../auth/roles.decorator";
-import { RemediationService } from "../remediation/remediation.service";
+import { SmartRecommendService } from "../student-ai/recommend/smart-recommend.service";
 import { GenerateAssignmentRemediationDto } from "./dto/generate-assignment-remediation.dto";
 
 interface AuthRequest {
@@ -30,7 +30,7 @@ interface AuthRequest {
 export class AssignmentsController {
   constructor(
     private assignments: AssignmentsService,
-    private remediation: RemediationService,
+    private remediation: SmartRecommendService,
   ) {}
 
   @Post("classes/:classId/assignments")

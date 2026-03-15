@@ -20,12 +20,8 @@ import { AnalyticsModule } from "./analytics/analytics.module";
 import { SubmissionPhotosModule } from "./submission-photos/submission-photos.module";
 import { ExamDocumentsModule } from "./exam-documents/exam-documents.module";
 import { CurriculumModule } from "./curriculum/curriculum.module";
-import { WrongAnswersModule } from "./wrong-answers/wrong-answers.module";
-import { MasteryModule } from "./mastery/mastery.module";
-import { ReviewsModule } from "./reviews/reviews.module";
-import { RemediationModule } from "./remediation/remediation.module";
 import { DiagnosticsModule } from "./diagnostics/diagnostics.module";
-import { TutorModule } from "./tutor/tutor.module";
+import { StudentAiModule } from "./student-ai/student-ai.module";
 import { GradePredictionModule } from "./grade-prediction/grade-prediction.module";
 import { ParentAnalyticsModule } from "./parent-analytics/parent-analytics.module";
 import { GamificationModule } from "./gamification/gamification.module";
@@ -71,12 +67,8 @@ import { IngestionModule } from "./ingestion/ingestion.module";
     SubmissionPhotosModule,
     ExamDocumentsModule,
     CurriculumModule,
-    WrongAnswersModule,
-    MasteryModule,
-    ReviewsModule,
-    RemediationModule,
     DiagnosticsModule,
-    TutorModule,
+    StudentAiModule,
     GradePredictionModule,
     ParentAnalyticsModule,
     GamificationModule,

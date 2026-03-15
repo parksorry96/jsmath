@@ -1,14 +1,13 @@
 import { Module } from "@nestjs/common";
 import { SubmissionsService } from "./submissions.service";
 import { SubmissionsController } from "./submissions.controller";
-import { WrongAnswersModule } from "../wrong-answers/wrong-answers.module";
-import { MasteryModule } from "../mastery/mastery.module";
+import { StudentAiModule } from "../student-ai/student-ai.module";
 import { GamificationModule } from "../gamification/gamification.module";
 import { ClassMonitorModule } from "../class-monitor/class-monitor.module";
 import { SmartScoreService } from "./smart-score.service";
 
 @Module({
-  imports: [WrongAnswersModule, MasteryModule, GamificationModule, ClassMonitorModule],
+  imports: [StudentAiModule, GamificationModule, ClassMonitorModule],
   controllers: [SubmissionsController],
   providers: [SubmissionsService, SmartScoreService],
 })

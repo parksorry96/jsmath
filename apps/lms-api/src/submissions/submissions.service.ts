@@ -18,8 +18,8 @@ import {
   getLinkedStudentIds,
   isPrivilegedRole,
 } from "../common/access-control";
-import { WrongAnswersService } from "../wrong-answers/wrong-answers.service";
-import { MasteryService } from "../mastery/mastery.service";
+import { WrongAnswersService } from "../student-ai/weakness/wrong-answers.service";
+import { MasteryService } from "../student-ai/weakness/mastery.service";
 import { GamificationService } from "../gamification/gamification.service";
 import { SmartScoreService } from "./smart-score.service";
 
