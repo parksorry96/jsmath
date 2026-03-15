@@ -24,7 +24,7 @@ interface WeakArea {
   representativeStemText: string;
 }
 
-interface RecommendationItem {
+export interface RecommendationItem {
   problemId: string;
   reason: string;
   reasonDetail: string;
