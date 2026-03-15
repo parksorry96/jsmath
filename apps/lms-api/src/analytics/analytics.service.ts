@@ -5,6 +5,67 @@ import { PrismaService } from "../prisma/prisma.service";
 export class AnalyticsService {
   constructor(private prisma: PrismaService) {}
 
+  /**
+   * Lightweight report from pre-aggregated daily stats.
+   * Returns activity summary without per-unit breakdown (use getStudentReport for that).
+   */
+  async getStudentDailySummary(
+    studentId: string,
+    from?: Date,
+    to?: Date,
+  ) {
+    const where: { studentId: string; statDate?: object } = { studentId };
+    if (from || to) {
+      where.statDate = {
+        ...(from ? { gte: from } : {}),
+        ...(to ? { lte: to } : {}),
+      };
+    }
+
+    const stats = await this.prisma.learningEventDailyStat.findMany({
+      where,
+      orderBy: { statDate: "asc" },
+    });
+
+    const totals = stats.reduce(
+      (acc, s) => {
+        acc.problemsViewed += s.problemsViewed;
+        acc.problemsSolved += s.problemsSolved;
+        acc.problemsCorrect += s.problemsCorrect;
+        acc.totalDurationMs += Number(s.totalDurationMs);
+        acc.sessionCount += s.sessionCount;
+        return acc;
+      },
+      {
+        problemsViewed: 0,
+        problemsSolved: 0,
+        problemsCorrect: 0,
+        totalDurationMs: 0,
+        sessionCount: 0,
+      },
+    );
+
+    return {
+      studentId,
+      days: stats.length,
+      ...totals,
+      accuracy:
+        totals.problemsSolved > 0
+          ? Math.round(
+              (totals.problemsCorrect / totals.problemsSolved) * 100,
+            )
+          : 0,
+      daily: stats.map((s) => ({
+        date: s.statDate,
+        problemsViewed: s.problemsViewed,
+        problemsSolved: s.problemsSolved,
+        problemsCorrect: s.problemsCorrect,
+        totalDurationMs: Number(s.totalDurationMs),
+        sessionCount: s.sessionCount,
+      })),
+    };
+  }
+
   async getStudentReport(studentId: string, classId?: string) {
     const submissions = await this.prisma.submission.findMany({
       where: {
@@ -153,35 +214,61 @@ export class AnalyticsService {
 
     // Student completion rates
     const enrollments = await this.prisma.enrollment.findMany({
-      where: { classId },
+      where: {
+        classId,
+        user: { role: "student" },
+      },
       include: { user: { select: { id: true, name: true } } },
     });
 
-    const studentStats = await Promise.all(
-      enrollments.map(async (e) => {
-        const subs = await this.prisma.submission.findMany({
+    const studentIds = enrollments.map((enrollment) => enrollment.userId);
+    const submissions = studentIds.length
+      ? await this.prisma.submission.findMany({
           where: {
-            studentId: e.userId,
+            studentId: { in: studentIds },
             assignment: { classId },
             status: { in: ["graded", "returned"] },
           },
-          select: { score: true },
-        });
-        return {
-          studentId: e.userId,
-          name: e.user.name,
-          completedAssignments: subs.length,
-          avgScore:
-            subs.length > 0
-              ? Math.round(
-                  (subs.reduce((s, sub) => s + (sub.score || 0), 0) /
-                    subs.length) *
-                    10,
-                ) / 10
-              : null,
-        };
-      }),
-    );
+          select: {
+            studentId: true,
+            score: true,
+          },
+        })
+      : [];
+
+    const submissionStats = new Map<
+      string,
+      { completedAssignments: number; totalScore: number; scoredAssignments: number }
+    >();
+
+    for (const submission of submissions) {
+      const current = submissionStats.get(submission.studentId) ?? {
+        completedAssignments: 0,
+        totalScore: 0,
+        scoredAssignments: 0,
+      };
+
+      current.completedAssignments += 1;
+      if (submission.score !== null) {
+        current.totalScore += submission.score;
+        current.scoredAssignments += 1;
+      }
+
+      submissionStats.set(submission.studentId, current);
+    }
+
+    const studentStats = enrollments.map((enrollment) => {
+      const stats = submissionStats.get(enrollment.userId);
+      return {
+        studentId: enrollment.userId,
+        name: enrollment.user.name,
+        completedAssignments: stats?.completedAssignments ?? 0,
+        avgScore:
+          stats && stats.scoredAssignments > 0
+            ? Math.round((stats.totalScore / stats.scoredAssignments) * 10) / 10
+            : null,
+      };
+    });
 
     return {
       classId,

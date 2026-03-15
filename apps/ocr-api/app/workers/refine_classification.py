@@ -22,47 +22,69 @@ from app.schemas.problem import CURRICULUM_TREE, SUBJECTS
 
 logger = logging.getLogger(__name__)
 
-REFINE_PROMPT = """You are a Korean CSAT (수능) math classification expert specializing in the 2015 개정교육과정.
+REFINE_SYSTEM_PROMPT = """You are a Korean CSAT (수능) math classification expert specializing in the 2015 개정교육과정.
 
-Re-classify this math problem using ONLY the following subjects and curriculum:
-Subjects: {subjects}
+# Goal
+Re-classify the problem using only the allowed subjects and the provided curriculum hierarchy.
 
-Curriculum hierarchy (2015 개정교육과정):
+# Evidence Priority
+- Problem content is the primary evidence.
+- The provided curriculum hierarchy is the source of truth for valid unit names.
+- Current classification is only a weak hint and may be wrong.
+
+# Classification Rules
+- subject MUST be one of: 수학I, 수학II, 확률과 통계, 미적분, 기하.
+- unit_major, unit_minor, unit_sub must come from the provided curriculum hierarchy.
+- Do not invent new unit names or merge unrelated units.
+- If the evidence is mixed, choose the closest valid curriculum node and lower confidence.
+- difficulty_refined must be a float from 1.0 to 5.0.
+- is_common must be true only for 수학I or 수학II.
+
+# Reasoning Field
+- reasoning must be a short evidence summary in Korean.
+- Explain the decisive concepts, the best-fit subject/unit, and the difficulty basis.
+- Do not output hidden chain-of-thought or speculative internal monologue.
+
+# Output Contract
+- Return exactly one JSON object with these keys only:
+  reasoning, subject, unit_major, unit_minor, unit_sub, difficulty_refined, is_common, confidence
+- Do not add markdown, code fences, or extra keys."""
+
+REFINE_USER_PROMPT = """# Allowed Subjects
+{subjects}
+
+# Curriculum Hierarchy (2015 개정교육과정)
 {curriculum}
 
-Subject details (2015 개정교육과정):
+# Subject Details
 - 수학I: 지수함수와 로그함수, 삼각함수, 수열. 고2 과정. 수능 공통과목.
 - 수학II: 함수의 극한과 연속, 미분(다항함수), 적분(다항함수). 고2 과정. 수능 공통과목.
 - 확률과 통계: 경우의 수(순열/조합), 확률, 통계(확률분포/정규분포/통계적 추정). 고2-3 선택과목.
 - 미적분: 수열의 극한, 급수, 여러 가지 함수의 미분법(지수/로그/삼각), 여러 가지 적분법, 정적분의 활용. 고3 선택과목.
 - 기하: 이차곡선(포물선/타원/쌍곡선), 평면벡터(벡터연산/내적), 공간도형과 공간벡터. 고3 선택과목.
 
-Difficulty scale (수능 기준):
+# Difficulty Scale (수능 기준)
 - 1 (기초): 교과서 기본 예제 수준. 개념 직접 적용.
 - 2 (쉬움): 교과서 응용 문제 수준. 한두 단계 풀이.
 - 3 (보통): 수능 기본 문항 수준 (2~3점). 표준적 풀이 방법 적용.
 - 4 (어려움): 수능 고난도 3점/4점 문항 수준. 복합 개념, 다단계 추론 필요.
 - 5 (최상): 킬러문항 (21번, 29번, 30번급). 창의적 풀이, 고도의 추론 필요.
 
-Problem (LaTeX):
+# Problem
+<problem_latex>
 {stem_latex}
+</problem_latex>
 
-Problem (plain text):
+<problem_text>
 {stem_text}
+</problem_text>
 
-Current classification (may be incorrect):
+# Current Classification Hint
 - Subject: {current_subject}
 - Unit Major: {current_unit_major}
 - Difficulty: {current_difficulty}
 
-STEP 1: First, explain your reasoning in "reasoning" field:
-- What mathematical concepts appear in this problem?
-- Which subject and unit does it belong to and why?
-- How difficult is it compared to typical CSAT problems?
-
-STEP 2: Then provide the classification.
-
-Respond in JSON:
+# Return JSON
 {{
   "reasoning": "This problem involves ... therefore it belongs to ...",
   "subject": "one of the subjects above",
@@ -72,17 +94,7 @@ Respond in JSON:
   "difficulty_refined": 3.5,
   "is_common": true,
   "confidence": 0.9
-}}
-
-Rules:
-- subject MUST be one of: 수학I, 수학II, 확률과 통계, 미적분, 기하
-- is_common: true if subject is 수학I or 수학II, false otherwise
-- difficulty_refined: float from 1.0 to 5.0, use decimals for precision
-- unit_major/minor/sub must come from the curriculum hierarchy above
-- confidence: 0.0 to 1.0 — your genuine certainty about this classification
-- reasoning: explain BEFORE deciding, so your classification is grounded
-
-Respond with JSON only."""
+}}"""
 
 COMMON_SUBJECTS = {"수학I", "수학II"}
 
@@ -114,7 +126,7 @@ async def _refine(task, problem_id: str) -> dict:
         if not problem:
             raise ValueError(f"Problem {problem_id} not found")
 
-        prompt = REFINE_PROMPT.format(
+        user_prompt = REFINE_USER_PROMPT.format(
             subjects=", ".join(SUBJECTS),
             curriculum=json.dumps(CURRICULUM_TREE, ensure_ascii=False, indent=2),
             stem_latex=problem.stem_latex,
@@ -133,7 +145,10 @@ async def _refine(task, problem_id: str) -> dict:
     try:
         response = await client.chat.completions.create(
             model=settings.ai_model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": REFINE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
             response_format={"type": "json_object"},
             max_completion_tokens=1500,
         )

@@ -1,5 +1,7 @@
 import { IsString, IsOptional, IsUrl } from "class-validator";
 
+const HTTPS_URL = { protocols: ["https"], require_protocol: true };
+
 export class RegisterPlatformDto {
   @IsString()
   name: string;
@@ -10,13 +12,13 @@ export class RegisterPlatformDto {
   @IsString()
   clientId: string;
 
-  @IsUrl()
+  @IsUrl(HTTPS_URL)
   authEndpoint: string;
 
-  @IsUrl()
+  @IsUrl(HTTPS_URL)
   tokenEndpoint: string;
 
-  @IsUrl()
+  @IsUrl(HTTPS_URL)
   jwksUri: string;
 
   @IsOptional()

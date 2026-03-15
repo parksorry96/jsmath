@@ -16,6 +16,68 @@ interface Segment {
   alt?: string;
 }
 
+function escapeRegexPattern(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const HANGUL_PATTERN = /[가-힣]/u;
+const MATH_OPERATOR_PATTERN = /[=<>≤≥≠≈±×÷·]/u;
+const MATH_FUNCTION_PATTERN = /\b(?:sin|cos|tan|sec|csc|cot|log|ln|lim|max|min|sup|inf)\s*\(/i;
+const GEOMETRY_TOKEN_PATTERN = /^(?:[A-Z]{1,5}|∠[A-Z]{1,5}|[A-Z]{1,5}‾)$/u;
+const MATH_CONTINUATION_PATTERN =
+  /[0-9A-Za-z\\{}()[\]|.,:+\-*/=<>≤≥≠≈∞±·×÷_^'∠‾]/u;
+const EXPLICIT_MATH_PATTERN =
+  String.raw`\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\$[^\n$]+?\$|\\\([\s\S]*?\\\)`;
+const MATH_SEGMENT_SPLIT_PATTERN = new RegExp(`(${EXPLICIT_MATH_PATTERN})`, "g");
+const IMAGE_OR_MATH_SPLIT_PATTERN = new RegExp(
+  String.raw`(!\[[^\]]*\]\(https?:\/\/[^)]+\)|${EXPLICIT_MATH_PATTERN})`,
+  "g",
+);
+const IMAGE_OR_MATH_PARSE_PATTERN =
+  /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\$([^\n$]+?)\$|\\\(([\s\S]+?)\\\)/g;
+const CROSS_DELIMITED_LEFT_RIGHT_PATTERN = new RegExp(
+  String.raw`\\left\s*(\\\{|\\\}|[(){}\[\]|.])\s*(${EXPLICIT_MATH_PATTERN})\s*\\right\s*(\\\{|\\\}|[(){}\[\]|.])`,
+  "g",
+);
+const BARE_MATH_ENVIRONMENTS = [
+  "array",
+  "aligned",
+  "alignedat",
+  "gathered",
+  "matrix",
+  "pmatrix",
+  "bmatrix",
+  "Bmatrix",
+  "vmatrix",
+  "Vmatrix",
+  "smallmatrix",
+  "cases",
+  "subarray",
+  "split",
+] as const;
+const DISPLAY_MATH_ENVIRONMENTS = new Set<string>([
+  "array",
+  "aligned",
+  "alignedat",
+  "gathered",
+  "cases",
+  "subarray",
+  "split",
+]);
+const BARE_MATH_ENVIRONMENT_START_PATTERN = new RegExp(
+  String.raw`\\begin\{(${BARE_MATH_ENVIRONMENTS.map(escapeRegexPattern).join("|")})\}`,
+  "g",
+);
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 /**
  * Strip LaTeX commands that shouldn't render in the UI:
  * \section*{...}, \footnotetext{...}, etc.
@@ -23,6 +85,8 @@ interface Segment {
 function cleanLatexCommands(input: string): string {
   return (
     input
+      // Remove invisible OCR/control characters that break math tokenization
+      .replace(/[\u200B-\u200D\u2060\u2061]/gu, "")
       // \section*{...} or \section{...}
       .replace(/\\section\*?\{[^}]*\}/g, "")
       // \footnotetext{ ... } — may span multiple lines
@@ -33,45 +97,359 @@ function cleanLatexCommands(input: string): string {
   );
 }
 
-/**
- * Convert \begin{tabular} to \begin{array} for KaTeX compatibility,
- * then wrap only truly bare tabular blocks (those outside $$) in $$.
- */
-function wrapBareEnvironments(input: string): string {
-  // Convert tabular → array (KaTeX doesn't support tabular)
-  let result = input
-    .replace(/\\begin\{tabular\}/g, "\\begin{array}")
-    .replace(/\\end\{tabular\}/g, "\\end{array}");
+function unwrapExplicitMath(value: string): { body: string; displayMode: boolean } {
+  if (value.startsWith("$$") && value.endsWith("$$")) {
+    return { body: value.slice(2, -2).trim(), displayMode: true };
+  }
 
-  // Only wrap \begin{array}...\end{array} that appear OUTSIDE $$...$$ blocks.
-  // Strategy: split on $$, wrap only in non-math segments.
-  const parts = result.split(/(\$\$[\s\S]*?\$\$)/g);
+  if (value.startsWith("\\[") && value.endsWith("\\]")) {
+    return { body: value.slice(2, -2).trim(), displayMode: true };
+  }
+
+  if (value.startsWith("$") && value.endsWith("$")) {
+    return { body: value.slice(1, -1).trim(), displayMode: false };
+  }
+
+  if (value.startsWith("\\(") && value.endsWith("\\)")) {
+    return { body: value.slice(2, -2).trim(), displayMode: false };
+  }
+
+  return { body: value.trim(), displayMode: false };
+}
+
+function normalizeCrossDelimitedMath(input: string): string {
+  return input.replace(
+    CROSS_DELIMITED_LEFT_RIGHT_PATTERN,
+    (_match, leftDelimiter: string, innerMath: string, rightDelimiter: string) => {
+      const { body, displayMode } = unwrapExplicitMath(innerMath);
+      if (!body) {
+        return innerMath;
+      }
+
+      const delimiter = displayMode ? "$$" : "$";
+      return `${delimiter}\\left${leftDelimiter}${body}\\right${rightDelimiter}${delimiter}`;
+    },
+  );
+}
+
+function nextNonWhitespaceIndex(input: string, index: number): number {
+  let cursor = index;
+  while (cursor < input.length && /\s/.test(input[cursor])) {
+    cursor += 1;
+  }
+  return cursor;
+}
+
+function isMathContinuationChar(char: string): boolean {
+  return MATH_CONTINUATION_PATTERN.test(char);
+}
+
+function isMathStartCandidate(input: string, index: number): boolean {
+  const char = input[index];
+  if (!char || char === "\n" || HANGUL_PATTERN.test(char)) {
+    return false;
+  }
+
+  if (/[A-Z]/.test(char)) {
+    const prev = index > 0 ? input[index - 1] : "";
+    return !prev || !/[A-Za-z0-9]/.test(prev);
+  }
+
+  if (/[a-z0-9\\]/.test(char)) {
+    const prev = index > 0 ? input[index - 1] : "";
+    return !prev || (!/[A-Za-z0-9]/.test(prev) && !HANGUL_PATTERN.test(prev));
+  }
+
+  if ("|([{±∞".includes(char)) {
+    const next = input[nextNonWhitespaceIndex(input, index + 1)] ?? "";
+    return /[A-Za-z0-9\\∠]/.test(next);
+  }
+
+  return false;
+}
+
+function isPlausibleBareMathRun(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || !/[A-Za-z0-9\\]/.test(trimmed)) {
+    return false;
+  }
+
+  return (
+    /\\[A-Za-z]+/.test(trimmed) ||
+    /[_^]/.test(trimmed) ||
+    MATH_OPERATOR_PATTERN.test(trimmed) ||
+    /\d\s*\/\s*\d/.test(trimmed) ||
+    MATH_FUNCTION_PATTERN.test(trimmed) ||
+    GEOMETRY_TOKEN_PATTERN.test(trimmed)
+  );
+}
+
+function normalizeBareMathRun(value: string): string {
+  return value
+    .trim()
+    .replace(/([_^])\s*(?!\{)([A-Za-z0-9]+)/g, "$1{$2}")
+    .replace(/≤/g, " \\le ")
+    .replace(/≥/g, " \\ge ")
+    .replace(/≠/g, " \\ne ")
+    .replace(/≈/g, " \\approx ")
+    .replace(/±/g, " \\pm ")
+    .replace(/∓/g, " \\mp ")
+    .replace(/×/g, " \\times ")
+    .replace(/÷/g, " \\div ")
+    .replace(/·/g, " \\cdot ")
+    .replace(/∞/g, " \\infty ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function consumeBareMathRun(input: string, start: number): number {
+  let cursor = start;
+
+  while (cursor < input.length) {
+    const char = input[cursor];
+    if (!char || char === "\n" || HANGUL_PATTERN.test(char)) {
+      break;
+    }
+
+    if (/\s/.test(char)) {
+      const nextIndex = nextNonWhitespaceIndex(input, cursor + 1);
+      const next = input[nextIndex] ?? "";
+      if (!next || next === "\n" || HANGUL_PATTERN.test(next) || !isMathContinuationChar(next)) {
+        break;
+      }
+      cursor += 1;
+      continue;
+    }
+
+    if (!isMathContinuationChar(char)) {
+      break;
+    }
+
+    cursor += 1;
+  }
+
+  let end = cursor;
+  while (end > start && /\s/.test(input[end - 1])) {
+    end -= 1;
+  }
+
+  while (end > start && /[.,;:!?]/.test(input[end - 1])) {
+    if (input[end - 1] === "." && /\d\.\d$/.test(input.slice(start, end))) {
+      break;
+    }
+    end -= 1;
+  }
+
+  return isPlausibleBareMathRun(input.slice(start, end)) ? end : start;
+}
+
+/**
+ * Recover common AI output mistakes where math is emitted without $...$ delimiters.
+ * This keeps mixed Korean narrative intact while wrapping only likely math runs.
+ */
+function wrapBareMathRuns(input: string): string {
+  const parts = input.split(IMAGE_OR_MATH_SPLIT_PATTERN);
+
   return parts
     .map((part) => {
-      // If this part is a $$...$$ block, leave it as-is
-      if (part.startsWith("$$") && part.endsWith("$$")) return part;
-      // Otherwise, wrap bare \begin{array}...\end{array}
-      return part.replace(
-        /(\\begin\{array\}[\s\S]*?\\end\{array\})/g,
-        (m) => {
-          // Strip inner $...$ delimiters: tabular uses $ for inline math,
-          // but array is already math-mode so inner $ causes KaTeX errors.
-          // Add spaces around content to prevent merging (e.g. \hline$z$ → \hline z)
-          const stripped = m.replace(/\$([^$]+?)\$/g, " $1 ");
-          return `$$${stripped}$$`;
-        },
-      );
+      if (
+        !part ||
+        part.startsWith("$") ||
+        part.startsWith("\\(") ||
+        part.startsWith("\\[") ||
+        part.startsWith("![")
+      ) {
+        return part;
+      }
+
+      let output = "";
+      let cursor = 0;
+
+      while (cursor < part.length) {
+        const runEnd = isMathStartCandidate(part, cursor)
+          ? consumeBareMathRun(part, cursor)
+          : cursor;
+
+        if (runEnd > cursor) {
+          output += `$${normalizeBareMathRun(part.slice(cursor, runEnd))}$`;
+          cursor = runEnd;
+          continue;
+        }
+
+        output += part[cursor];
+        cursor += 1;
+      }
+
+      return output;
     })
     .join("");
 }
 
+function sanitizeMixedExplicitMath(input: string): string {
+  return input.replace(
+    /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\$([^\n$]+?)\$|\\\(([\s\S]+?)\\\)/g,
+    (match, dollarBlock, bracketBlock, dollarInline, parenInline) => {
+      const inner = String(
+        dollarBlock ?? bracketBlock ?? dollarInline ?? parenInline ?? "",
+      );
+      if (!HANGUL_PATTERN.test(inner)) {
+        return match;
+      }
+
+      if (/\\(?:text|textrm|textsf|textbf|mathrm|operatorname)\s*\{/u.test(inner)) {
+        return match;
+      }
+
+      return wrapBareMathRuns(inner);
+    },
+  );
+}
 
 /**
- * Parse content string into segments of plain text, inline math ($...$),
- * block math ($$...$$), and images (![alt](url)).
+ * Wrap bare LaTeX commands (e.g. \left\{, \right., \frac{}{}) that
+ * appear outside of $...$ delimiters into inline math.
+ */
+function wrapBareLatexCommands(input: string): string {
+  const parts = input.split(MATH_SEGMENT_SPLIT_PATTERN);
+  return parts
+    .map((part) => {
+      // Skip existing math blocks
+      if (part.startsWith("$")) return part;
+      if (part.startsWith("\\(") || part.startsWith("\\[")) return part;
+      // Wrap \left\{...\right. spans
+      part = part.replace(
+        /\\left\s*[\\{([\|.][\s\S]*?\\right\s*[\\})\]|.]/g,
+        (m) => `$${m}$`,
+      );
+      // Wrap remaining bare commands: \frac, \sqrt, \left, \right, \sum, etc.
+      part = part.replace(
+        /\\(?:left|right)\s*[\\{}()\[\]|.]/g,
+        (m) => `$${m}$`,
+      );
+      return part;
+    })
+    .join("");
+}
+
+function normalizeBareMathEnvironmentNames(input: string): string {
+  return input
+    .replace(/\\begin\{tabular\}/g, "\\begin{array}")
+    .replace(/\\end\{tabular\}/g, "\\end{array}")
+    .replace(/\\begin\{align\*?\}/g, "\\begin{aligned}")
+    .replace(/\\end\{align\*?\}/g, "\\end{aligned}")
+    .replace(/\\begin\{gather\*?\}/g, "\\begin{gathered}")
+    .replace(/\\end\{gather\*?\}/g, "\\end{gathered}");
+}
+
+function stripInnerMathDelimiters(value: string): string {
+  return value
+    .replace(
+      /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\$([^\n$]+?)\$|\\\(([\s\S]+?)\\\)/g,
+      (_match, dollarBlock, bracketBlock, dollarInline, parenInline) => {
+        const inner = String(
+          dollarBlock ?? bracketBlock ?? dollarInline ?? parenInline ?? "",
+        ).trim();
+        return inner ? ` ${inner} ` : " ";
+      },
+    )
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function wrapMathEnvironment(value: string, envName: string): string {
+  const delimiter = DISPLAY_MATH_ENVIRONMENTS.has(envName) ? "$$" : "$";
+  return `${delimiter}${stripInnerMathDelimiters(value)}${delimiter}`;
+}
+
+/**
+ * Convert \begin{tabular} to \begin{array} for KaTeX compatibility,
+ * and wrap bare math environments before heuristic inline wrapping runs.
+ */
+function wrapBareEnvironments(input: string): string {
+  const result = normalizeBareMathEnvironmentNames(input);
+  const protectedPattern = new RegExp(
+    IMAGE_OR_MATH_PARSE_PATTERN.source,
+    IMAGE_OR_MATH_PARSE_PATTERN.flags,
+  );
+  const environmentPattern = new RegExp(
+    BARE_MATH_ENVIRONMENT_START_PATTERN.source,
+    BARE_MATH_ENVIRONMENT_START_PATTERN.flags,
+  );
+  let output = "";
+  let cursor = 0;
+
+  while (cursor < result.length) {
+    protectedPattern.lastIndex = cursor;
+    const protectedMatch = protectedPattern.exec(result);
+
+    environmentPattern.lastIndex = cursor;
+    const environmentMatch = environmentPattern.exec(result);
+
+    const nextProtectedIndex = protectedMatch?.index ?? Number.POSITIVE_INFINITY;
+    const nextEnvironmentIndex =
+      environmentMatch?.index ?? Number.POSITIVE_INFINITY;
+
+    if (
+      nextProtectedIndex === Number.POSITIVE_INFINITY &&
+      nextEnvironmentIndex === Number.POSITIVE_INFINITY
+    ) {
+      output += result.slice(cursor);
+      break;
+    }
+
+    if (nextProtectedIndex <= nextEnvironmentIndex) {
+      if (nextProtectedIndex > cursor) {
+        output += result.slice(cursor, nextProtectedIndex);
+      }
+      output += protectedMatch![0];
+      cursor = nextProtectedIndex + protectedMatch![0].length;
+      continue;
+    }
+
+    if (nextEnvironmentIndex > cursor) {
+      output += result.slice(cursor, nextEnvironmentIndex);
+    }
+
+    const environmentStart = environmentMatch![0];
+    const environmentName = environmentMatch![1];
+    const environmentEndToken = `\\end{${environmentName}}`;
+    const environmentEndIndex = result.indexOf(
+      environmentEndToken,
+      environmentPattern.lastIndex,
+    );
+
+    if (environmentEndIndex === -1) {
+      output += environmentStart;
+      cursor = environmentPattern.lastIndex;
+      continue;
+    }
+
+    const environment = result.slice(
+      nextEnvironmentIndex,
+      environmentEndIndex + environmentEndToken.length,
+    );
+    output += wrapMathEnvironment(environment, environmentName);
+    cursor = environmentEndIndex + environmentEndToken.length;
+  }
+
+  return output;
+}
+
+
+/**
+ * Parse content string into segments of plain text, inline math ($...$ or \(...\)),
+ * block math ($$...$$ or \[...\]), and images (![alt](url)).
  */
 function parseLatex(input: string): Segment[] {
-  const cleaned = wrapBareEnvironments(cleanLatexCommands(input));
+  const cleaned = wrapBareMathRuns(
+    wrapBareEnvironments(
+      wrapBareLatexCommands(
+        normalizeCrossDelimitedMath(
+          sanitizeMixedExplicitMath(cleanLatexCommands(input)),
+        ),
+      ),
+    ),
+  );
   const segments: Segment[] = [];
 
   // Replace escaped dollars with a placeholder to avoid false matches
@@ -82,8 +460,7 @@ function parseLatex(input: string): Segment[] {
   // 1. ![alt](url)
   // 2. $$...$$ block math
   // 3. $...$ inline math
-  const pattern =
-    /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)|\$\$([\s\S]+?)\$\$|\$([^\n$]+?)\$/g;
+  const pattern = IMAGE_OR_MATH_PARSE_PATTERN;
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -102,12 +479,12 @@ function parseLatex(input: string): Segment[] {
     if (match[2] !== undefined) {
       // Image: ![alt](url)
       segments.push({ type: "image", value: match[2], alt: match[1] || "" });
-    } else if (match[3] !== undefined) {
-      // Block math ($$...$$)
-      segments.push({ type: "block-math", value: match[3].trim() });
-    } else if (match[4] !== undefined) {
-      // Inline math ($...$)
-      segments.push({ type: "inline-math", value: match[4].trim() });
+    } else if (match[3] !== undefined || match[4] !== undefined) {
+      // Block math ($$...$$ or \[...\])
+      segments.push({ type: "block-math", value: String(match[3] ?? match[4]).trim() });
+    } else if (match[5] !== undefined || match[6] !== undefined) {
+      // Inline math ($...$ or \(...\))
+      segments.push({ type: "inline-math", value: String(match[5] ?? match[6]).trim() });
     }
 
     lastIndex = match.index + match[0].length;
@@ -143,11 +520,11 @@ function renderKatex(latex: string, displayMode: boolean): string {
       displayMode,
       throwOnError: false,
       strict: false,
-      trust: true,
+      trust: false,
     });
   } catch {
     // Fallback: show raw LaTeX in a styled span
-    return `<code class="text-red-400">${latex}</code>`;
+    return `<code class="text-red-400">${escapeHtml(latex)}</code>`;
   }
 }
 

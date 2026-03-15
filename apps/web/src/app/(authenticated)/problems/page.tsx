@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { LatexRenderer } from "@/components/math/latex-renderer";
+import { ProblemSourcePreview } from "@/components/problems/problem-source-preview";
 import { toast } from "sonner";
 
 interface CurriculumNode {
@@ -62,6 +63,11 @@ interface Problem {
     label?: string;
     contentText?: string;
     contentLatex?: string;
+  }>;
+  assets?: Array<{
+    id: string;
+    kind: string;
+    s3Key: string;
   }>;
   bookSource?: {
     title?: string;
@@ -784,10 +790,12 @@ export default function ProblemsPage() {
               </DialogHeader>
               <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
                 <div className="space-y-6">
+                  <ProblemSourcePreview assets={previewProblem.assets} />
+
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                        원문 문제
+                        OCR 추출 문제
                       </p>
                     </div>
                     <div className="rounded-xl border border-border bg-brand-dark p-5">
@@ -918,22 +926,22 @@ export default function ProblemsPage() {
                           )}
                         </div>
 
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <div className="rounded-xl border border-border bg-brand-dark/50 p-4">
+                        <div className="rounded-xl border border-border bg-brand-dark/50 p-4">
+                          <div className="flex items-center gap-3">
                             <p className="text-xs font-medium text-muted-foreground">
                               정답
                             </p>
                             {activeTwin.problem.correctChoiceLabel && (
-                              <Badge variant="outline" className="mt-2">
-                                정답 선지 {activeTwin.problem.correctChoiceLabel}
+                              <Badge variant="outline" className="text-xs">
+                                {activeTwin.problem.correctChoiceLabel}
                               </Badge>
                             )}
                             <LatexRenderer
                               content={activeTwin.problem.answerText}
-                              className="mt-3 text-sm leading-relaxed"
+                              className="text-sm font-medium"
                             />
                           </div>
-                          <div className="rounded-xl border border-border bg-brand-dark/50 p-4">
+                          <div className="mt-4 border-t border-border pt-4">
                             <p className="text-xs font-medium text-muted-foreground">
                               풀이
                             </p>

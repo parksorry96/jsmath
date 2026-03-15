@@ -95,6 +95,16 @@ export interface SolutionStep {
   concept: string;
 }
 
+export interface CurriculumClassification {
+  curriculumYear: 2015 | 2022;
+  subject: string | null;
+  unitMajor: string | null;
+  unitMinor: string | null;
+  unitSub: string | null;
+  curriculumNodeId: string | null;
+  confidence: number | null;
+}
+
 export interface Problem {
   id: string;
   ocrJobId: string;
@@ -112,6 +122,8 @@ export interface Problem {
   unitMajor: string | null;
   unitMinor: string | null;
   unitSub: string | null;
+  classification2015: CurriculumClassification | null;
+  classification2022: CurriculumClassification | null;
   difficulty: Difficulty | null;
   classificationConfidence: number | null;
   solutionConfidence: number | null;
@@ -150,6 +162,23 @@ export interface ProblemSearchParams {
   page?: number;
   limit?: number;
 }
+
+// ─── Redis Streams (durable event delivery) ───
+
+export const REDIS_STREAMS = {
+  OCR_SUBMIT: 'stream:ocr:submit',
+  OCR_COMPLETED: 'stream:ocr:completed',
+  OCR_FAILED: 'stream:ocr:failed',
+  ANALYSIS_REQUEST: 'stream:analysis:request',
+  ANALYSIS_COMPLETED: 'stream:analysis:completed',
+  ANALYSIS_FAILED: 'stream:analysis:failed',
+  PHOTO_ANALYZE: 'stream:photo:analyze',
+  PHOTO_COMPLETED: 'stream:photo:analysis:completed',
+  PHOTO_FAILED: 'stream:photo:analysis:failed',
+  PHOTO_RUBRIC: 'stream:photo:rubric',
+  PHOTO_RUBRIC_COMPLETED: 'stream:photo:rubric:completed',
+  PHOTO_RUBRIC_FAILED: 'stream:photo:rubric:failed',
+} as const;
 
 // ─── Redis Event Payloads ───
 
@@ -296,4 +325,75 @@ export interface PhotoAnalysisRequestPayload {
 export interface PhotoAnalysisCompletedPayload {
   submissionPhotoId: string;
   feedback: PhotoFeedback;
+}
+
+// ─── Gamification Types ───
+
+export interface StudentGamificationProfile {
+  xp: number;
+  level: number;
+  streaks: { streakType: string; currentStreak: number; longestStreak: number }[];
+  achievements: { achievementKey: string; earnedAt: string }[];
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  studentId: string;
+  name: string;
+  xp: number;
+  level: number;
+}
+
+// ─── Attendance Types ───
+
+export type AttendanceStatus = "present" | "absent" | "late" | "excused";
+
+// ─── Billing Types ───
+
+export type BillingType = "tuition" | "material" | "extra_class" | "other";
+export type BillingStatus = "pending" | "paid" | "overdue" | "cancelled";
+
+// ─── Grade Prediction Types ───
+
+export interface GradePrediction {
+  subject: string;
+  predictedScore: number;
+  predictedGrade: number;
+  percentile: number | null;
+  confidence: number;
+}
+
+// ─── Parent Weekly Report Types ───
+
+export interface WeeklyReportSummary {
+  assignmentCompletionRate: number;
+  avgScore: number | null;
+  problemsSolved: number;
+  correctRate: number | null;
+  lessonsAttended: number;
+  lessonsTotal: number;
+}
+
+// ─── Exam Blueprint Types ───
+
+export interface UnitDistributionEntry {
+  curriculumNodeId?: string;
+  subject?: string;
+  unitMajor?: string;
+  label: string;
+  percentage: number;
+  minCount?: number;
+  maxCount?: number;
+}
+
+export interface DifficultyDistributionEntry {
+  min: number;
+  max: number;
+  label: string;
+  percentage: number;
+}
+
+export interface TypeDistributionEntry {
+  problemType: string;
+  count: number;
 }

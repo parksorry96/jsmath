@@ -4,6 +4,7 @@ import {
   ACHIEVEMENT_DEFINITIONS,
   ACHIEVEMENT_MAP,
 } from "./achievement-definitions";
+import { getAccessibleClassIds, getRequesterOrganizationId } from "../common/access-control";
 
 @Injectable()
 export class GamificationService {
@@ -244,19 +245,47 @@ export class GamificationService {
   }
 
   /** Leaderboard: top students by xp. Optionally filter by classId. */
-  async getLeaderboard(classId?: string, limit = 20) {
-    const where = classId
-      ? {
-          role: "student" as const,
-          enrollments: { some: { classId } },
-        }
-      : { role: "student" as const };
+  async getLeaderboard(
+    requesterId: string,
+    requesterRole: string,
+    classId?: string,
+    limit = 20,
+  ) {
+    const sanitizedLimit = Math.max(1, Math.min(limit, 100));
+    const where: Record<string, unknown> = { role: "student" };
+
+    if (classId) {
+      where.enrollments = { some: { classId } };
+    } else if (requesterRole === "teacher") {
+      const organizationId = await getRequesterOrganizationId(
+        this.prisma,
+        requesterId,
+      );
+      if (!organizationId) {
+        return [];
+      }
+      where.organizationId = organizationId;
+    } else if (requesterRole === "student") {
+      const classIds = await getAccessibleClassIds(
+        this.prisma,
+        requesterId,
+        requesterRole,
+      );
+      if (!classIds || classIds.length === 0) {
+        return [];
+      }
+      where.enrollments = {
+        some: {
+          classId: { in: classIds },
+        },
+      };
+    }
 
     const students = await this.prisma.user.findMany({
       where,
       select: { id: true, name: true, xp: true, level: true },
       orderBy: { xp: "desc" },
-      take: limit,
+      take: sanitizedLimit,
     });
 
     return students.map((s, i) => ({

@@ -7,6 +7,7 @@ import {
   Min,
   IsIn,
   IsArray,
+  IsBoolean,
 } from "class-validator";
 
 export class CreateAssignmentDto {
@@ -39,4 +40,12 @@ export class CreateAssignmentDto {
   @IsString({ each: true })
   @IsOptional()
   problemIds?: string[];
+
+  @IsString()
+  @IsOptional()
+  examDocumentId?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  attachPdf?: boolean;
 }

@@ -67,8 +67,22 @@ export class LessonsService {
     };
   }
 
-  async create(dto: CreateLessonDto) {
+  async create(
+    dto: CreateLessonDto,
+    requesterId: string,
+    requesterRole: string,
+  ) {
     const normalized = this.normalizeCreate(dto);
+
+    const allowed = await canAccessClass(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      normalized.classId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to manage this class");
+    }
 
     if (normalized.recurrenceRule) {
       return this.expandRecurrence(normalized);
@@ -132,8 +146,13 @@ export class LessonsService {
     return lessons.map((lesson) => this.serializeLesson(lesson));
   }
 
-  async update(id: string, dto: UpdateLessonDto) {
-    await this.assertLessonExists(id);
+  async update(
+    id: string,
+    dto: UpdateLessonDto,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    await this.assertLessonAccess(id, requesterId, requesterRole);
     const normalized = this.normalizeUpdate(dto);
 
     const data: any = {};
@@ -156,8 +175,8 @@ export class LessonsService {
     return this.serializeLesson(updated);
   }
 
-  async cancel(id: string) {
-    await this.assertLessonExists(id);
+  async cancel(id: string, requesterId: string, requesterRole: string) {
+    await this.assertLessonAccess(id, requesterId, requesterRole);
     const updated = await this.prisma.lesson.update({
       where: { id },
       data: { status: "cancelled" },
@@ -168,8 +187,8 @@ export class LessonsService {
     return this.serializeLesson(updated);
   }
 
-  async complete(id: string) {
-    await this.assertLessonExists(id);
+  async complete(id: string, requesterId: string, requesterRole: string) {
+    await this.assertLessonAccess(id, requesterId, requesterRole);
     const updated = await this.prisma.lesson.update({
       where: { id },
       data: { status: "completed" },
@@ -180,7 +199,16 @@ export class LessonsService {
     return this.serializeLesson(updated);
   }
 
-  async deleteSeries(recurrenceParentId: string) {
+  async deleteSeries(
+    recurrenceParentId: string,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    await this.assertLessonSeriesAccess(
+      recurrenceParentId,
+      requesterId,
+      requesterRole,
+    );
     const now = new Date();
     // Delete future lessons in the series (including parent if future)
     return this.prisma.lesson.deleteMany({
@@ -243,5 +271,58 @@ export class LessonsService {
     const lesson = await this.prisma.lesson.findUnique({ where: { id } });
     if (!lesson) throw new NotFoundException("Lesson not found");
     return lesson;
+  }
+
+  private async assertLessonAccess(
+    id: string,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id },
+      select: { classId: true },
+    });
+    if (!lesson) {
+      throw new NotFoundException("Lesson not found");
+    }
+
+    const allowed = await canAccessClass(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      lesson.classId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to manage this class");
+    }
+  }
+
+  private async assertLessonSeriesAccess(
+    recurrenceParentId: string,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    const lesson = await this.prisma.lesson.findFirst({
+      where: {
+        OR: [
+          { id: recurrenceParentId },
+          { recurrenceParentId },
+        ],
+      },
+      select: { classId: true },
+    });
+    if (!lesson) {
+      throw new NotFoundException("Lesson not found");
+    }
+
+    const allowed = await canAccessClass(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      lesson.classId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to manage this class");
+    }
   }
 }

@@ -4,7 +4,6 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import {
   FileText,
   Search,
-  GripVertical,
   Plus,
   X,
   Download,
@@ -12,36 +11,32 @@ import {
   ChevronLeft,
   ChevronRight,
   History,
-  Trash2,
   BookOpen,
   ClipboardList,
   Check,
   Eye,
+  Sparkles,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-  arrayMove,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { LatexRenderer } from "@/components/math/latex-renderer";
+import { resolveProblemChoices } from "@/components/exam-builder/choice-utils";
+import { buildProblemPreview } from "@/lib/problem-preview";
+import {
+  ExamPreviewPanel,
+  type ExamPreviewLayoutPlan,
+} from "@/components/exam-builder/exam-preview-panel";
+import { BlueprintMode } from "@/components/exam-builder/blueprint-mode";
+import { WorkbookCoverEditor } from "@/components/exam-builder/workbook-cover-editor";
+import {
+  getCoverPalette,
+  resetCoverLayerPositions,
+  type CoverLayoutStyle,
+} from "@/components/exam-builder/workbook-cover";
 import Link from "next/link";
 
 // ---------------------------------------------------------------------------
@@ -99,30 +94,7 @@ const PROBLEM_TYPE_LABELS: Record<string, string> = {
   true_false: "O/X",
 };
 
-const COVER_COLORS = [
-  { label: "Blue", value: "blue!80!black", tw: "bg-blue-700" },
-  { label: "Red", value: "red!80!black", tw: "bg-red-700" },
-  { label: "Green", value: "green!80!black", tw: "bg-green-700" },
-  { label: "Purple", value: "purple!80!black", tw: "bg-purple-700" },
-  { label: "Gray", value: "gray!80!black", tw: "bg-gray-600" },
-];
-
 const PAGE_SIZE = 20;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function stripLatexForPreview(text: string): string {
-  return text
-    .replace(/\$\$[\s\S]*?\$\$/g, "[수식]")
-    .replace(/\$[^$]+?\$/g, "[수식]")
-    .replace(/\\[a-zA-Z]+\{[^}]*\}/g, "")
-    .replace(/\\[a-zA-Z]+/g, "")
-    .replace(/[{}]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 function difficultyLabel(d: number | null): string | null {
   if (d === null) return null;
@@ -136,67 +108,6 @@ function difficultyColor(d: number | null): string {
   if (d <= 2) return "bg-green-900/30 text-green-400";
   if (d <= 4) return "bg-yellow-900/30 text-yellow-400";
   return "bg-red-900/30 text-red-400";
-}
-
-// ---------------------------------------------------------------------------
-// Sortable item component
-// ---------------------------------------------------------------------------
-
-function SortableItem({
-  problem,
-  index,
-  onRemove,
-}: {
-  problem: Problem;
-  index: number;
-  onRemove: () => void;
-}) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: problem.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-
-  const preview = stripLatexForPreview(
-    (problem.stemText || problem.stemLatex || "").split("\n")[0].slice(0, 80),
-  );
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className="flex items-center gap-3 rounded-lg border border-border bg-brand-charcoal p-3"
-    >
-      <button
-        type="button"
-        className="shrink-0 cursor-grab text-muted-foreground hover:text-foreground"
-        {...attributes}
-        {...listeners}
-      >
-        <GripVertical className="h-4 w-4" />
-      </button>
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-brand-dark text-xs font-bold text-brand-beige">
-        {index + 1}
-      </div>
-      <p className="min-w-0 flex-1 truncate text-sm">{preview || "문제"}</p>
-      <button
-        type="button"
-        onClick={onRemove}
-        className="shrink-0 text-muted-foreground hover:text-red-400"
-      >
-        <Trash2 className="h-4 w-4" />
-      </button>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -219,12 +130,18 @@ export default function ExamBuilderPage() {
   const [subtitle, setSubtitle] = useState("");
   const [author, setAuthor] = useState("");
   const [year, setYear] = useState(String(new Date().getFullYear()));
-  const [bgColor, setBgColor] = useState(COVER_COLORS[0].value);
+  const [coverPaletteId, setCoverPaletteId] = useState("paper");
+  const [coverLayoutStyle, setCoverLayoutStyle] =
+    useState<CoverLayoutStyle>("editorial");
+  const [coverPositions, setCoverPositions] = useState(resetCoverLayerPositions);
   // common
   const [problemsPerPage, setProblemsPerPage] = useState(4);
 
   // Step 2 — problem selection
+  const [selectionMode, setSelectionMode] = useState<"manual" | "blueprint">("manual");
   const [selectedProblems, setSelectedProblems] = useState<Problem[]>([]);
+  const [previewLayoutPlan, setPreviewLayoutPlan] =
+    useState<ExamPreviewLayoutPlan | null>(null);
   const [searchPage, setSearchPage] = useState(1);
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -235,6 +152,7 @@ export default function ExamBuilderPage() {
 
   // Step 3 — generation
   const [includeAnswers, setIncludeAnswers] = useState(true);
+  const [visibility, setVisibility] = useState<"private" | "public">("private");
   const [generating, setGenerating] = useState(false);
   const [examDoc, setExamDoc] = useState<ExamDocument | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
@@ -242,6 +160,9 @@ export default function ExamBuilderPage() {
 
   // Problem preview modal
   const [previewProblem, setPreviewProblem] = useState<Problem | null>(null);
+  const previewProblemContent = previewProblem
+    ? resolveProblemChoices(previewProblem)
+    : null;
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -287,28 +208,6 @@ export default function ExamBuilderPage() {
   const problems = problemsData?.data ?? [];
   const totalPages = problemsData?.totalPages ?? 0;
 
-  // DnD sensors
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
-  );
-
-  const handleDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (over && active.id !== over.id) {
-        setSelectedProblems((prev) => {
-          const oldIndex = prev.findIndex((p) => p.id === active.id);
-          const newIndex = prev.findIndex((p) => p.id === over.id);
-          return arrayMove(prev, oldIndex, newIndex);
-        });
-      }
-    },
-    [],
-  );
-
   const addProblem = useCallback((problem: Problem) => {
     setSelectedProblems((prev) => {
       if (prev.some((p) => p.id === problem.id)) return prev;
@@ -333,9 +232,11 @@ export default function ExamBuilderPage() {
     setExamDoc(null);
 
     try {
+      const activeCoverPalette = getCoverPalette(coverPaletteId);
       const payload = {
         title,
         type: docType,
+        visibility,
         problemIds: selectedProblems.map((p) => p.id),
         generateAnswerSheet: includeAnswers,
         headerConfig: {
@@ -350,6 +251,7 @@ export default function ExamBuilderPage() {
         },
         layoutConfig: {
           problemsPerPage,
+          previewPlan: previewLayoutPlan ?? undefined,
           showNameField: docType === "exam" ? showNameField : false,
         },
         ...(docType === "workbook"
@@ -359,7 +261,13 @@ export default function ExamBuilderPage() {
                 subtitle: subtitle || undefined,
                 author: author || undefined,
                 year: year || String(new Date().getFullYear()),
-                backgroundColor: bgColor,
+                backgroundColor: activeCoverPalette.background,
+                accentColor: activeCoverPalette.accent,
+                textColor: activeCoverPalette.text,
+                mutedTextColor: activeCoverPalette.mutedText,
+                paletteId: coverPaletteId,
+                style: coverLayoutStyle,
+                elements: coverPositions,
               },
             }
           : {}),
@@ -590,71 +498,70 @@ export default function ExamBuilderPage() {
                 <p className="text-sm font-medium text-muted-foreground">
                   표지 설정
                 </p>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-1 block text-sm text-muted-foreground">
-                      표지 제목
-                    </label>
-                    <Input
-                      placeholder={title || "문서 제목과 동일"}
-                      className="bg-brand-dark border-transparent"
-                      value={coverTitle}
-                      onChange={(e) => setCoverTitle(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-sm text-muted-foreground">
-                      부제목
-                    </label>
-                    <Input
-                      placeholder="선택 사항"
-                      className="bg-brand-dark border-transparent"
-                      value={subtitle}
-                      onChange={(e) => setSubtitle(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-sm text-muted-foreground">
-                      저자
-                    </label>
-                    <Input
-                      placeholder="선택 사항"
-                      className="bg-brand-dark border-transparent"
-                      value={author}
-                      onChange={(e) => setAuthor(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-sm text-muted-foreground">
-                      연도
-                    </label>
-                    <Input
-                      placeholder={String(new Date().getFullYear())}
-                      className="bg-brand-dark border-transparent"
-                      value={year}
-                      onChange={(e) => setYear(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm text-muted-foreground">
-                    배경 색상
-                  </label>
-                  <div className="flex gap-2">
-                    {COVER_COLORS.map((c) => (
-                      <button
-                        key={c.value}
-                        type="button"
-                        onClick={() => setBgColor(c.value)}
-                        className={`h-8 w-8 rounded-full ${c.tw} ring-offset-brand-dark transition-all ${
-                          bgColor === c.value
-                            ? "ring-2 ring-brand-beige ring-offset-2"
-                            : "ring-1 ring-border"
-                        }`}
-                        title={c.label}
+                <div className="grid gap-6 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm text-muted-foreground">
+                        표지 제목
+                      </label>
+                      <Input
+                        placeholder={title || "문서 제목과 동일"}
+                        className="bg-brand-dark border-transparent"
+                        value={coverTitle}
+                        onChange={(e) => setCoverTitle(e.target.value)}
                       />
-                    ))}
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm text-muted-foreground">
+                        부제목
+                      </label>
+                      <Input
+                        placeholder="선택 사항"
+                        className="bg-brand-dark border-transparent"
+                        value={subtitle}
+                        onChange={(e) => setSubtitle(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm text-muted-foreground">
+                        저자
+                      </label>
+                      <Input
+                        placeholder="선택 사항"
+                        className="bg-brand-dark border-transparent"
+                        value={author}
+                        onChange={(e) => setAuthor(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm text-muted-foreground">
+                        연도
+                      </label>
+                      <Input
+                        placeholder={String(new Date().getFullYear())}
+                        className="bg-brand-dark border-transparent"
+                        value={year}
+                        onChange={(e) => setYear(e.target.value)}
+                      />
+                    </div>
+                    <div className="sm:col-span-2 rounded-xl border border-border/70 bg-background/40 p-3 text-sm text-muted-foreground">
+                      표지 미리보기 안에서 제목, 부제목, 저자, 연도 블록을 직접 드래그해서 위치를 조정할 수 있습니다.
+                    </div>
                   </div>
+
+                  <WorkbookCoverEditor
+                    author={author}
+                    fallbackTitle={title || "교재 제목"}
+                    onPaletteChange={setCoverPaletteId}
+                    onPositionsChange={setCoverPositions}
+                    onStyleChange={setCoverLayoutStyle}
+                    paletteId={coverPaletteId}
+                    positions={coverPositions}
+                    styleId={coverLayoutStyle}
+                    subtitle={subtitle}
+                    title={coverTitle}
+                    year={year}
+                  />
                 </div>
               </div>
             )}
@@ -696,6 +603,61 @@ export default function ExamBuilderPage() {
       {/* ================================================================= */}
       {step === 2 && (
         <>
+          {/* Mode toggle */}
+          <div className="flex gap-1 rounded-lg bg-muted p-1">
+            <button
+              className={`flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+                selectionMode === "manual"
+                  ? "bg-background shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setSelectionMode("manual")}
+            >
+              <Search className="h-3.5 w-3.5" />
+              수동 선택
+            </button>
+            <button
+              className={`flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+                selectionMode === "blueprint"
+                  ? "bg-background shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setSelectionMode("blueprint")}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              블루프린트 모드
+            </button>
+          </div>
+
+          {/* Blueprint mode */}
+          {selectionMode === "blueprint" && (
+            <>
+              <BlueprintMode
+                filterOptions={filterOptions}
+                onAccept={(problems) => {
+                  setSelectedProblems(problems);
+                  setStep(3);
+                }}
+              />
+              {/* Navigation */}
+              <div className="flex items-center justify-between">
+                <Button variant="ghost" onClick={() => setStep(1)}>
+                  <ChevronLeft className="mr-1 h-4 w-4" />
+                  이전
+                </Button>
+                <Button
+                  onClick={() => setStep(3)}
+                  disabled={selectedProblems.length === 0}
+                >
+                  다음
+                  <ChevronRight className="ml-1 h-4 w-4" />
+                </Button>
+              </div>
+            </>
+          )}
+
+          {/* Manual selection mode */}
+          {selectionMode === "manual" && (<>
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             {/* Left — Search */}
             <Card>
@@ -824,11 +786,7 @@ export default function ExamBuilderPage() {
                       const isSelected = selectedProblems.some(
                         (p) => p.id === problem.id,
                       );
-                      const preview = stripLatexForPreview(
-                        (problem.stemText || problem.stemLatex || "")
-                          .split("\n")[0]
-                          .slice(0, 100),
-                      );
+                      const preview = buildProblemPreview(problem, 100);
                       const typeLabel =
                         PROBLEM_TYPE_LABELS[problem.problemType] ??
                         problem.problemType;
@@ -937,126 +895,24 @@ export default function ExamBuilderPage() {
               </CardContent>
             </Card>
 
-            {/* Right — PDF-style preview */}
+            {/* Right — PDF-style preview with pagination & DnD */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium">
-                  미리보기 ({selectedProblems.length}개)
-                </h3>
-                {selectedProblems.length > 0 && (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                  >
-                    <SortableContext
-                      items={selectedProblems.map((p) => p.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <div className="flex gap-1 overflow-x-auto pb-1">
-                        {selectedProblems.map((problem, index) => (
-                          <SortableItem
-                            key={problem.id}
-                            problem={problem}
-                            index={index}
-                            onRemove={() => removeProblem(problem.id)}
-                          />
-                        ))}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
-                )}
-              </div>
-
-              {/* PDF page preview */}
-              <div className="max-h-[70vh] overflow-y-auto rounded-lg border border-border bg-white shadow-lg">
-                {selectedProblems.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-32 text-gray-400">
-                    <FileText className="mb-3 h-12 w-12" />
-                    <p className="text-sm">문제를 추가하면 미리보기가 표시됩니다</p>
-                  </div>
-                ) : (
-                  <div className="p-8">
-                    {/* Header */}
-                    <div className="mb-4 border-b border-gray-300 pb-3">
-                      <h2 className="text-center text-base font-bold text-black">
-                        {title || "제목 없음"}
-                      </h2>
-                      {docType === "exam" && (schoolName || examDate) && (
-                        <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
-                          <span>{schoolName}</span>
-                          <span>{examDate}</span>
-                        </div>
-                      )}
-                      {docType === "exam" && duration && (
-                        <p className="mt-1 text-center text-xs text-gray-500">
-                          시험 시간: {duration}분
-                        </p>
-                      )}
-                    </div>
-
-                    {/* Name field */}
-                    {docType === "exam" && showNameField && (
-                      <div className="mb-4 flex gap-4 text-xs text-black">
-                        <div className="flex items-center gap-1">
-                          <span className="font-medium">학년/반</span>
-                          <span className="inline-block w-20 border-b border-gray-400" />
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <span className="font-medium">이름</span>
-                          <span className="inline-block w-20 border-b border-gray-400" />
-                        </div>
-                      </div>
-                    )}
-
-                    {/* 2-column layout */}
-                    <div className="columns-2 gap-6" style={{ columnRule: "1px solid #e5e7eb" }}>
-                      {selectedProblems.map((problem, idx) => (
-                        <div
-                          key={problem.id}
-                          className="mb-4 break-inside-avoid"
-                          style={
-                            problemsPerPage > 0 &&
-                            (idx + 1) % problemsPerPage === 0 &&
-                            idx + 1 < selectedProblems.length
-                              ? { breakAfter: "column" }
-                              : {}
-                          }
-                        >
-                          <div className="flex gap-2">
-                            <span className="shrink-0 text-sm font-bold text-black">
-                              {idx + 1}.
-                            </span>
-                            <div className="min-w-0 flex-1 text-sm text-black">
-                              <LatexRenderer
-                                content={problem.stemLatex || problem.stemText}
-                                className="text-black [&_*]:text-black"
-                              />
-                              {problem.choices && problem.choices.length > 0 && (
-                                <div className="mt-2 space-y-1">
-                                  {problem.choices.map((c) => (
-                                    <div key={c.label} className="flex gap-1.5 text-xs">
-                                      <span className="shrink-0 font-medium text-black">
-                                        {c.label}.
-                                      </span>
-                                      <span className="text-black">
-                                        <LatexRenderer
-                                          content={c.contentLatex || c.contentText}
-                                          className="text-black [&_*]:text-black"
-                                        />
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <h3 className="text-sm font-medium">
+                미리보기 ({selectedProblems.length}개)
+              </h3>
+              <ExamPreviewPanel
+                selectedProblems={selectedProblems}
+                problemsPerPage={problemsPerPage}
+                title={title || "제목 없음"}
+                docType={docType}
+                schoolName={schoolName}
+                examDate={examDate}
+                duration={duration}
+                showNameField={docType === "exam" && showNameField}
+                onLayoutChange={setPreviewLayoutPlan}
+                onReorder={setSelectedProblems}
+                onRemove={removeProblem}
+              />
             </div>
           </div>
 
@@ -1074,6 +930,7 @@ export default function ExamBuilderPage() {
               <ChevronRight className="ml-1 h-4 w-4" />
             </Button>
           </div>
+          </>)}
         </>
       )}
 
@@ -1141,11 +998,7 @@ export default function ExamBuilderPage() {
             <CardContent>
               <div className="space-y-2">
                 {selectedProblems.map((problem, index) => {
-                  const preview = stripLatexForPreview(
-                    (problem.stemText || problem.stemLatex || "")
-                      .split("\n")[0]
-                      .slice(0, 100),
-                  );
+                  const preview = buildProblemPreview(problem, 100);
                   return (
                     <div
                       key={problem.id}
@@ -1182,6 +1035,16 @@ export default function ExamBuilderPage() {
                   className="rounded border-border"
                 />
                 해설지 포함
+              </label>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={visibility === "public"}
+                  onChange={(e) => setVisibility(e.target.checked ? "public" : "private")}
+                  className="rounded border-border"
+                />
+                다른 선생님에게 공개
               </label>
 
               {/* Error message */}
@@ -1339,28 +1202,39 @@ export default function ExamBuilderPage() {
 
             {/* Problem content with LaTeX rendering */}
             <div className="rounded-lg border border-border bg-brand-charcoal p-4">
-              <LatexRenderer content={previewProblem.stemLatex || previewProblem.stemText} />
+              <LatexRenderer content={previewProblemContent?.stemContent ?? ""} />
             </div>
 
             {/* Choices */}
-            {previewProblem.choices && previewProblem.choices.length > 0 && (
+            {previewProblemContent && previewProblemContent.choices.length > 0 && (
               <div className="mt-4 space-y-2">
                 <p className="text-sm font-medium text-muted-foreground">보기</p>
-                <div className="space-y-1.5">
-                  {previewProblem.choices.map((choice) => (
-                    <div
-                      key={choice.label}
-                      className="flex items-start gap-2 rounded-md border border-border bg-brand-charcoal px-3 py-2"
-                    >
-                      <span className="shrink-0 text-sm font-medium text-brand-beige">
-                        {choice.label}.
-                      </span>
-                      <div className="text-sm">
+                {previewProblemContent.choiceLayout === "spread" ? (
+                  <div className="grid grid-cols-5 gap-2 rounded-md border border-border bg-brand-charcoal px-3 py-3">
+                    {previewProblemContent.choices.map((choice) => (
+                      <div key={`${choice.position}-${choice.label}`} className="flex min-w-0 items-baseline gap-1 text-sm">
+                        <span className="shrink-0 text-brand-beige">{choice.label}</span>
                         <LatexRenderer content={choice.contentLatex || choice.contentText} />
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {previewProblemContent.choices.map((choice) => (
+                      <div
+                        key={`${choice.position}-${choice.label}`}
+                        className="flex items-start gap-2 rounded-md border border-border bg-brand-charcoal px-3 py-2"
+                      >
+                        <span className="shrink-0 text-sm font-medium text-brand-beige">
+                          {choice.label}
+                        </span>
+                        <div className="text-sm">
+                          <LatexRenderer content={choice.contentLatex || choice.contentText} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 

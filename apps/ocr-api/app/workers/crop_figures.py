@@ -15,6 +15,8 @@ import logging
 import cv2
 import numpy as np
 from PIL import Image
+
+Image.MAX_IMAGE_PIXELS = 100_000_000  # ~10K x 10K — prevent decompression bombs
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 

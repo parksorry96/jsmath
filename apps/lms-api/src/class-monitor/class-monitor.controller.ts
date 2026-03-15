@@ -48,6 +48,7 @@ export class ClassMonitorController {
     return this.monitor.getStatus(classId, assignmentId);
   }
 
+  /** @deprecated Use WebSocket gateway (/class-monitor namespace) instead */
   @Get(":classId/stream")
   async stream(
     @Param("classId") classId: string,

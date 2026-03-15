@@ -14,36 +14,39 @@ import { api } from "@/lib/api";
 
 interface WrongAnswerStats {
   total: number;
+  resolved: number;
+  unresolved: number;
   byErrorType: Record<string, number>;
 }
 
 interface WrongAnswer {
   id: string;
-  problemId: string;
   problemContent: string;
   solution: string;
   errorType: string;
-  studentAnswer: string;
+  studentAnswer: string | null;
   createdAt: string;
   resolved: boolean;
+  retryCount: number;
+}
+
+interface WrongAnswersResponse {
+  items: WrongAnswer[];
+  total: number;
 }
 
 const ERROR_TYPE_LABELS: Record<string, string> = {
-  calculation: "계산 실수",
-  concept: "개념 오류",
-  reading: "문제 해석",
-  formula: "공식 오류",
-  sign: "부호 실수",
-  other: "기타",
+  calculation_error: "계산 실수",
+  concept_gap: "개념 부족",
+  pattern_gap: "유형 미숙",
+  careless_mistake: "부주의",
 };
 
 const ERROR_TYPE_COLORS: Record<string, { bg: string; text: string }> = {
-  calculation: { bg: "bg-red-900/40", text: "text-red-400" },
-  concept: { bg: "bg-purple-900/40", text: "text-purple-400" },
-  reading: { bg: "bg-blue-900/40", text: "text-blue-400" },
-  formula: { bg: "bg-yellow-900/40", text: "text-yellow-400" },
-  sign: { bg: "bg-orange-900/40", text: "text-orange-400" },
-  other: { bg: "bg-[#333]", text: "text-gray-400" },
+  calculation_error: { bg: "bg-red-900/40", text: "text-red-400" },
+  concept_gap: { bg: "bg-purple-900/40", text: "text-purple-400" },
+  pattern_gap: { bg: "bg-blue-900/40", text: "text-blue-400" },
+  careless_mistake: { bg: "bg-yellow-900/40", text: "text-yellow-400" },
 };
 
 function errorLabel(type: string) {
@@ -51,7 +54,7 @@ function errorLabel(type: string) {
 }
 
 function errorColor(type: string) {
-  return ERROR_TYPE_COLORS[type] ?? ERROR_TYPE_COLORS.other;
+  return ERROR_TYPE_COLORS[type] ?? ERROR_TYPE_COLORS.careless_mistake;
 }
 
 export default function WrongAnswersScreen() {
@@ -68,14 +71,16 @@ export default function WrongAnswersScreen() {
     queryKey: ["wrong-answers", filter],
     queryFn: () => {
       const params = filter ? `?errorType=${filter}` : "";
-      return api.get<WrongAnswer[]>(`/wrong-answers${params}`);
+      return api.get<WrongAnswersResponse>(`/wrong-answers${params}`);
     },
   });
 
   const retryMutation = useMutation({
-    mutationFn: (id: string) => api.post(`/wrong-answers/${id}/retry`),
+    mutationFn: ({ id, isCorrect }: { id: string; isCorrect: boolean }) =>
+      api.post(`/wrong-answers/${id}/retry`, { isCorrect }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["wrong-answers"] });
+      queryClient.invalidateQueries({ queryKey: ["wrong-answers", "stats"] });
     },
   });
 
@@ -86,7 +91,7 @@ export default function WrongAnswersScreen() {
   const isLoading = statsQuery.isLoading || listQuery.isLoading;
   const isRefreshing = statsQuery.isRefetching || listQuery.isRefetching;
   const stats = statsQuery.data;
-  const items = listQuery.data ?? [];
+  const items = listQuery.data?.items ?? [];
 
   const errorTypes = stats
     ? Object.entries(stats.byErrorType).sort(([, a], [, b]) => b - a)
@@ -116,32 +121,54 @@ export default function WrongAnswersScreen() {
                 </Text>
               </View>
             </View>
-            <Text className="text-gray-500 text-xs mt-1">
-              {new Date(item.createdAt).toLocaleDateString("ko-KR")}
-            </Text>
+            <View className="flex-row items-center justify-between mt-1">
+              <Text className="text-gray-500 text-xs">
+                {new Date(item.createdAt).toLocaleDateString("ko-KR")}
+              </Text>
+              <Text
+                className={`text-xs ${item.resolved ? "text-green-400" : "text-orange-400"}`}
+              >
+                {item.resolved ? "해결됨" : "미해결"}
+              </Text>
+            </View>
           </View>
 
           {isExpanded && (
             <View className="border-t border-[#333] px-4 py-3">
               <Text className="text-gray-400 text-xs mb-1">내 답안</Text>
               <Text className="text-red-400 text-sm mb-3">
-                {item.studentAnswer}
+                {item.studentAnswer ?? "기록 없음"}
               </Text>
 
               <Text className="text-gray-400 text-xs mb-1">풀이</Text>
               <Text className="text-brand-beige text-sm mb-4">
-                {item.solution}
+                {item.solution || "등록된 풀이가 없습니다"}
               </Text>
 
-              <Pressable
-                className="bg-brand-accent/20 rounded-xl py-3 items-center"
-                onPress={() => retryMutation.mutate(item.id)}
-                disabled={retryMutation.isPending}
-              >
-                <Text className="text-brand-accent font-semibold text-sm">
-                  {retryMutation.isPending ? "처리 중..." : "다시 풀기"}
-                </Text>
-              </Pressable>
+              <View className="flex-row gap-2">
+                <Pressable
+                  className="flex-1 bg-green-900/20 rounded-xl py-3 items-center border border-green-900/30"
+                  onPress={() =>
+                    retryMutation.mutate({ id: item.id, isCorrect: true })
+                  }
+                  disabled={retryMutation.isPending}
+                >
+                  <Text className="text-green-400 font-semibold text-sm">
+                    맞았어요
+                  </Text>
+                </Pressable>
+                <Pressable
+                  className="flex-1 bg-brand-accent/20 rounded-xl py-3 items-center"
+                  onPress={() =>
+                    retryMutation.mutate({ id: item.id, isCorrect: false })
+                  }
+                  disabled={retryMutation.isPending}
+                >
+                  <Text className="text-brand-accent font-semibold text-sm">
+                    아직 어려워요
+                  </Text>
+                </Pressable>
+              </View>
             </View>
           )}
         </Pressable>
@@ -177,7 +204,6 @@ export default function WrongAnswersScreen() {
         contentContainerStyle={{ paddingBottom: 16 }}
         ListHeaderComponent={
           <View>
-            {/* Stats summary */}
             {stats && (
               <View className="flex-row mx-4 mt-4 mb-3 gap-3">
                 <View className="flex-1 bg-[#2a2a2a] rounded-2xl p-4 border border-[#333]/40 items-center">
@@ -188,23 +214,25 @@ export default function WrongAnswersScreen() {
                     전체 오답
                   </Text>
                 </View>
-                {errorTypes.slice(0, 2).map(([type, count]) => (
-                  <View
-                    key={type}
-                    className="flex-1 bg-[#2a2a2a] rounded-2xl p-4 border border-[#333]/40 items-center"
-                  >
-                    <Text className="text-brand-beige text-2xl font-bold">
-                      {count}
-                    </Text>
-                    <Text className="text-gray-400 text-xs mt-1">
-                      {errorLabel(type)}
-                    </Text>
-                  </View>
-                ))}
+                <View className="flex-1 bg-[#2a2a2a] rounded-2xl p-4 border border-[#333]/40 items-center">
+                  <Text className="text-orange-400 text-2xl font-bold">
+                    {stats.unresolved}
+                  </Text>
+                  <Text className="text-gray-400 text-xs mt-1">
+                    미해결
+                  </Text>
+                </View>
+                <View className="flex-1 bg-[#2a2a2a] rounded-2xl p-4 border border-[#333]/40 items-center">
+                  <Text className="text-green-400 text-2xl font-bold">
+                    {stats.resolved}
+                  </Text>
+                  <Text className="text-gray-400 text-xs mt-1">
+                    해결
+                  </Text>
+                </View>
               </View>
             )}
 
-            {/* Filter chips */}
             {errorTypes.length > 0 && (
               <ScrollView
                 horizontal

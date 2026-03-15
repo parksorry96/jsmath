@@ -2,6 +2,8 @@ import { Injectable } from "@nestjs/common";
 import { MasteryState } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 
+const MASTERY_THRESHOLD = 3;
+
 @Injectable()
 export class MasteryService {
   constructor(private prisma: PrismaService) {}
@@ -34,9 +36,8 @@ export class MasteryService {
     const newTotalCorrect = (current?.totalCorrect ?? 0) + (isCorrect ? 1 : 0);
 
     const newState = this.computeState(
-      prevState,
+      newTotalAttempts,
       newConsecutiveCorrect,
-      isCorrect,
     );
 
     const masteredAt =
@@ -68,38 +69,22 @@ export class MasteryService {
   }
 
   private computeState(
-    prev: MasteryState,
+    totalAttempts: number,
     consecutiveCorrect: number,
-    isCorrect: boolean,
   ): MasteryState {
-    // First attempt always moves to learning
-    if (prev === "not_started") {
+    if (consecutiveCorrect >= MASTERY_THRESHOLD) {
+      return "mastered";
+    }
+
+    if (totalAttempts >= 3) {
+      return "practicing";
+    }
+
+    if (totalAttempts >= 1) {
       return "learning";
     }
 
-    if (isCorrect) {
-      if (prev === "learning" && consecutiveCorrect >= 3) {
-        return "practicing";
-      }
-      if (prev === "practicing" && consecutiveCorrect >= 5) {
-        return "mastered";
-      }
-      // mastered stays mastered on correct answer
-      return prev;
-    } else {
-      // incorrect
-      if (prev === "mastered") {
-        return "practicing";
-      }
-      if (prev === "practicing" && consecutiveCorrect === 0) {
-        // 3 consecutive incorrect would mean reset hit 0 three times, but we
-        // track streaks via consecutiveCorrect (reset to 0 on any wrong answer).
-        // Demote practicing -> learning after a wrong answer (conservative policy).
-        return "learning";
-      }
-      // learning stays learning on wrong answer
-      return prev;
-    }
+    return "not_started";
   }
 
   async getByStudent(studentId: string) {
@@ -133,6 +118,7 @@ export class MasteryService {
       totalNodes > 0
         ? Math.round((mastered / totalNodes) * 100)
         : 0;
+    const notStarted = totalNodes - totalTracked;
 
     return {
       totalNodes,
@@ -140,8 +126,14 @@ export class MasteryService {
       mastered,
       practicing,
       learning,
-      notStarted: totalNodes - totalTracked,
+      notStarted,
       progressPct,
+      total: totalNodes,
+      masteredCount: mastered,
+      practicingCount: practicing,
+      learningCount: learning,
+      notStartedCount: notStarted,
+      progressPercent: progressPct,
     };
   }
 

@@ -29,6 +29,30 @@ export class AnalyticsController {
     private prisma: PrismaService,
   ) {}
 
+  @Get("student/:studentId/daily-summary")
+  async studentDailySummary(
+    @Param("studentId") studentId: string,
+    @Query("from") from: string | undefined,
+    @Query("to") to: string | undefined,
+    @Request() req: AuthRequest,
+  ) {
+    const canAccess = await canAccessStudentData(
+      this.prisma,
+      req.user.id,
+      req.user.role,
+      studentId,
+    );
+    if (!canAccess) {
+      throw new ForbiddenException();
+    }
+
+    return this.analytics.getStudentDailySummary(
+      studentId,
+      from ? new Date(from) : undefined,
+      to ? new Date(to) : undefined,
+    );
+  }
+
   @Get("student/:studentId")
   async studentReport(
     @Param("studentId") studentId: string,

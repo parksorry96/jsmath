@@ -23,17 +23,53 @@ from app.models.problem import AnalysisStatus, Problem, ProblemChoice
 
 logger = logging.getLogger(__name__)
 
-SOLUTION_ANALYSIS_PROMPT = """You are a Korean CSAT (수능) math education expert. Analyze the following math problem.
+SOLUTION_ANALYSIS_SYSTEM_PROMPT = """You are a Korean CSAT (수능) math education expert.
 
-Problem (LaTeX):
+# Goal
+Independently solve the given problem and return a student-facing solution analysis.
+
+# Evidence Priority
+- Use only the provided problem statement and choices as ground truth.
+- If LaTeX and plain text conflict, prefer LaTeX for formulas and plain text for prose unless one is obviously corrupted.
+- Do not invent diagrams, hidden conditions, or textbook context that are not present in the input.
+
+# Output Contract
+- Return exactly one JSON object with these keys only:
+  solution_strategy, required_concepts, solution_steps, estimated_time_sec, common_mistakes
+- Do not add markdown, code fences, commentary, or extra keys.
+
+# Field Rules
+- solution_strategy: concise Korean explanation of the overall solving approach.
+- required_concepts: Korean curriculum or concept names actually needed to solve the problem.
+- solution_steps: ordered steps; each description must match a real step in the solution and name the concept used.
+- estimated_time_sec: realistic time for an average student; use a conservative estimate.
+- common_mistakes: plausible mistakes for this exact problem type, not generic advice.
+
+# Language And Math Formatting
+- All descriptive text must be in Korean.
+- In solution_strategy, solution_steps.description, and common_mistakes, every mathematical expression must be written in LaTeX.
+- Use $...$ for inline math and $$...$$ for display or multi-line derivations.
+- Keep Korean explanation outside math delimiters.
+- Never leave raw math like x^2, a_n, \\frac{1}{2}, lim_{n\\to\\infty} outside math delimiters.
+
+# Self-Check
+- solution_strategy and solution_steps must agree.
+- required_concepts should be sufficient but not padded.
+- common_mistakes must correspond to actual failure modes of this problem.
+- The JSON must be valid and complete."""
+
+SOLUTION_ANALYSIS_USER_PROMPT = """# Problem
+<problem_latex>
 {stem_latex}
+</problem_latex>
 
-Problem (plain text):
+<problem_text>
 {stem_text}
+</problem_text>
 
 {choices_text}
 
-Provide a detailed analysis in JSON format:
+# Return JSON
 {{
   "solution_strategy": "Step-by-step explanation of how to solve this problem (Korean)",
   "required_concepts": ["concept1", "concept2", ...],
@@ -43,16 +79,7 @@ Provide a detailed analysis in JSON format:
   ],
   "estimated_time_sec": 120,
   "common_mistakes": ["mistake1 in Korean", "mistake2 in Korean", ...]
-}}
-
-Rules:
-- solution_strategy: Clear, concise explanation a student can follow
-- required_concepts: List of Korean math concepts needed (e.g., "이차방정식의 근의 공식", "판별식")
-- solution_steps: Ordered steps with the specific math concept used in each
-- estimated_time_sec: Realistic time for an average student (60-300 seconds typical)
-- common_mistakes: Typical errors students make on this type of problem
-
-Respond with JSON only."""
+}}"""
 
 
 @celery.task(
@@ -92,7 +119,7 @@ async def _analyze(task, problem_id: str) -> dict:
                 choices_lines.append(f"{choice.label} {choice.content_text}")
             choices_text = "Choices:\n" + "\n".join(choices_lines)
 
-        prompt = SOLUTION_ANALYSIS_PROMPT.format(
+        user_prompt = SOLUTION_ANALYSIS_USER_PROMPT.format(
             stem_latex=problem.stem_latex,
             stem_text=problem.stem_text,
             choices_text=choices_text,
@@ -115,7 +142,10 @@ async def _analyze(task, problem_id: str) -> dict:
     try:
         response = await client.chat.completions.create(
             model=settings.ai_model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": SOLUTION_ANALYSIS_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
             response_format={"type": "json_object"},
             max_completion_tokens=2000,
         )

@@ -50,3 +50,4 @@ packages/db-schema/prisma/*.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+.superpowers/

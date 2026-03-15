@@ -13,6 +13,7 @@ import {
 } from "@nestjs/common";
 import { ExamDocumentsService } from "./exam-documents.service";
 import { CreateExamDocumentDto } from "./dto/create-exam-document.dto";
+import { AssignFromExamDto } from "./dto/assign-from-exam.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Roles } from "../auth/roles.decorator";
@@ -29,12 +30,15 @@ export class ExamDocumentsController {
 
   @Post()
   create(@Body() dto: CreateExamDocumentDto, @Request() req: AuthRequest) {
-    return this.examDocuments.create(dto, req.user.id);
+    return this.examDocuments.create(dto, req.user.id, req.user.role);
   }
 
   @Get()
-  findAll(@Request() req: AuthRequest) {
-    return this.examDocuments.findAll(req.user.id);
+  findAll(
+    @Query("scope") scope: "mine" | "shared" | "all" = "mine",
+    @Request() req: AuthRequest,
+  ) {
+    return this.examDocuments.findAll(req.user.id, scope);
   }
 
   @Get(":id")
@@ -54,6 +58,20 @@ export class ExamDocumentsController {
   @Post(":id/regenerate")
   regenerate(@Param("id") id: string, @Request() req: AuthRequest) {
     return this.examDocuments.regenerate(id, req.user.id);
+  }
+
+  @Post(":id/duplicate")
+  duplicate(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.examDocuments.duplicate(id, req.user.id);
+  }
+
+  @Post(":id/assign")
+  assign(
+    @Param("id") id: string,
+    @Body() dto: AssignFromExamDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.examDocuments.assign(id, dto, req.user.id, req.user.role);
   }
 
   @Delete(":id")

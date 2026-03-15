@@ -10,6 +10,7 @@ import { RemediationService } from "./remediation.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
+import { GenerateRemediationDto } from "./dto/generate-remediation.dto";
 
 interface AuthRequest {
   user: { id: string; email: string; role: string };
@@ -30,7 +31,7 @@ export class RemediationController {
   @Roles("student")
   generate(
     @Request() req: AuthRequest,
-    @Body() body: { maxProblems?: number; sourceAssignmentId?: string },
+    @Body() body: GenerateRemediationDto,
   ) {
     return this.remediation.generateForStudent(req.user.id, {
       maxProblems: body.maxProblems,

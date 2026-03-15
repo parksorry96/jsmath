@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from app.api.health_routes import router as health_router
 from app.api.ocr_routes import router as ocr_router
 from app.config import settings
-from app.services.event_listener import listen_for_events
+from app.services.event_listener import listen_for_events, listen_for_events_stream
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -15,15 +15,18 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
-    """Start Redis event listener on startup, clean up on shutdown."""
-    task = asyncio.create_task(listen_for_events())
-    logger.info("OCR event listener started")
+    """Start Redis event listeners on startup, clean up on shutdown."""
+    pubsub_task = asyncio.create_task(listen_for_events())
+    stream_task = asyncio.create_task(listen_for_events_stream())
+    logger.info("OCR event listeners started (Pub/Sub + Streams)")
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    pubsub_task.cancel()
+    stream_task.cancel()
+    for task in (pubsub_task, stream_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

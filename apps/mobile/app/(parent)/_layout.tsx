@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { Home, Calendar, Bell } from "lucide-react-native";
+import { Home, Calendar, Bell, BarChart3 } from "lucide-react-native";
 
 export default function ParentLayout() {
   return (
@@ -33,6 +33,13 @@ export default function ParentLayout() {
         options={{
           title: "캘린더",
           tabBarIcon: ({ color, size }) => <Calendar color={color} size={size ?? 22} />,
+        }}
+      />
+      <Tabs.Screen
+        name="dashboard"
+        options={{
+          title: "리포트",
+          tabBarIcon: ({ color, size }) => <BarChart3 color={color} size={size ?? 22} />,
         }}
       />
       <Tabs.Screen

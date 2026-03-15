@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
+import { streamSse } from "@/lib/sse";
 
 interface PipelineProgress {
   ocrJobId: string;
@@ -25,7 +26,7 @@ const MAX_RECONNECT_DELAY = 10_000;
 export function usePipelineSSE(ocrJobId: string | null) {
   const [progress, setProgress] = useState<PipelineProgress | null>(null);
   const [connected, setConnected] = useState(false);
-  const esRef = useRef<EventSource | null>(null);
+  const streamController = useRef<AbortController | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelay = useRef(1000);
   const closed = useRef(false);
@@ -36,9 +37,9 @@ export function usePipelineSSE(ocrJobId: string | null) {
       clearTimeout(reconnectTimer.current);
       reconnectTimer.current = null;
     }
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
+    if (streamController.current) {
+      streamController.current.abort();
+      streamController.current = null;
       setConnected(false);
     }
   }, []);
@@ -54,32 +55,44 @@ export function usePipelineSSE(ocrJobId: string | null) {
       const apiUrl =
         process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
       const token = localStorage.getItem("token");
-      const query = token
-        ? `?access_token=${encodeURIComponent(token)}`
-        : "";
-      const es = new EventSource(`${apiUrl}/files/${ocrJobId}/events${query}`);
-      esRef.current = es;
+      if (!token) {
+        setConnected(false);
+        return;
+      }
 
-      es.onopen = () => {
-        setConnected(true);
-        reconnectDelay.current = 1000; // reset backoff on success
-      };
+      const controller = new AbortController();
+      streamController.current = controller;
 
-      es.addEventListener("progress", (e) => {
-        try {
-          const data = JSON.parse(e.data) as PipelineProgress;
-          setProgress(data);
-        } catch {
-          // Ignore parse errors
+      void streamSse({
+        url: `${apiUrl}/files/${ocrJobId}/events`,
+        token,
+        signal: controller.signal,
+        onOpen: () => {
+          setConnected(true);
+          reconnectDelay.current = 1000;
+        },
+        onMessage: (message) => {
+          if (message.event !== "progress") {
+            return;
+          }
+
+          try {
+            const data = JSON.parse(message.data) as PipelineProgress;
+            setProgress(data);
+          } catch {
+            // Ignore parse errors
+          }
+        },
+      }).catch(() => {
+        if (controller.signal.aborted) {
+          return;
         }
-      });
 
-      es.onerror = () => {
-        es.close();
-        esRef.current = null;
+        if (streamController.current === controller) {
+          streamController.current = null;
+        }
         setConnected(false);
 
-        // Auto-reconnect with exponential backoff
         if (!closed.current) {
           reconnectTimer.current = setTimeout(() => {
             reconnectDelay.current = Math.min(
@@ -89,7 +102,7 @@ export function usePipelineSSE(ocrJobId: string | null) {
             connect();
           }, reconnectDelay.current);
         }
-      };
+      });
     }
 
     connect();

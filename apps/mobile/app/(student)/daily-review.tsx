@@ -16,12 +16,32 @@ interface ReviewStats {
   completedToday: number;
 }
 
-interface ReviewItem {
-  id: string;
-  problemContent: string;
-  solution: string;
-  lastReviewed: string | null;
+interface ReviewProblem {
+  reviewScheduleId: string;
+  wrongAnswerId: string;
+  errorType: string;
   interval: number;
+  repetitions: number;
+  lastReviewedAt: string | null;
+  problem: {
+    id: string;
+    stemLatex: string;
+    stemText: string;
+    answerText: string | null;
+    answerLatex: string | null;
+    solutionText: string | null;
+    choices: Array<{
+      label: string;
+      contentLatex: string;
+      contentText: string;
+      position: number;
+    }>;
+  } | null;
+}
+
+interface DailyReviewResponse {
+  dueCount: number;
+  problems: ReviewProblem[];
 }
 
 const QUALITY_BUTTONS = [
@@ -46,7 +66,7 @@ export default function DailyReviewScreen() {
 
   const reviewsQuery = useQuery({
     queryKey: ["reviews", "daily"],
-    queryFn: () => api.get<ReviewItem[]>("/reviews/daily"),
+    queryFn: () => api.get<DailyReviewResponse>("/reviews/daily"),
   });
 
   const gradeMutation = useMutation({
@@ -54,13 +74,12 @@ export default function DailyReviewScreen() {
       api.post(`/reviews/${id}/grade`, { quality }),
     onSuccess: () => {
       setShowSolution(false);
-      setCompletedCount((c) => c + 1);
+      setCompletedCount((count) => count + 1);
 
-      const items = reviewsQuery.data ?? [];
+      const items = reviewsQuery.data?.problems ?? [];
       if (currentIndex < items.length - 1) {
-        setCurrentIndex((i) => i + 1);
+        setCurrentIndex((index) => index + 1);
       } else {
-        // All done - refetch
         queryClient.invalidateQueries({ queryKey: ["reviews"] });
         setCurrentIndex(0);
       }
@@ -77,7 +96,7 @@ export default function DailyReviewScreen() {
   const isLoading = statsQuery.isLoading || reviewsQuery.isLoading;
   const isRefreshing = statsQuery.isRefetching || reviewsQuery.isRefetching;
   const stats = statsQuery.data;
-  const items = reviewsQuery.data ?? [];
+  const items = reviewsQuery.data?.problems ?? [];
   const currentItem = items[currentIndex];
   const totalItems = items.length;
 
@@ -92,7 +111,6 @@ export default function DailyReviewScreen() {
     );
   }
 
-  // Empty state
   if (totalItems === 0) {
     return (
       <SafeAreaView className="flex-1 bg-brand-dark" edges={["left", "right"]}>
@@ -104,7 +122,12 @@ export default function DailyReviewScreen() {
               tintColor="#d4a574"
             />
           }
-          contentContainerStyle={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 24 }}
+          contentContainerStyle={{
+            flex: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            padding: 24,
+          }}
         >
           {stats && (
             <View className="flex-row gap-4 mb-8">
@@ -145,7 +168,6 @@ export default function DailyReviewScreen() {
         }
         contentContainerStyle={{ paddingBottom: 24 }}
       >
-        {/* Stats row */}
         {stats && (
           <View className="flex-row mx-4 mt-4 gap-3">
             <View className="flex-1 bg-[#2a2a2a] rounded-2xl p-4 border border-[#333]/40 items-center">
@@ -163,7 +185,6 @@ export default function DailyReviewScreen() {
           </View>
         )}
 
-        {/* Progress bar */}
         <View className="mx-4 mt-4 mb-2">
           <View className="flex-row items-center justify-between mb-1.5">
             <Text className="text-gray-400 text-xs">진행도</Text>
@@ -181,19 +202,29 @@ export default function DailyReviewScreen() {
           </View>
         </View>
 
-        {/* Review card */}
-        {currentItem && (
+        {currentItem?.problem && (
           <View className="mx-4 mt-4">
-            {/* Problem */}
             <View className="bg-[#2a2a2a] rounded-2xl border border-[#333]/40 overflow-hidden">
               <View className="p-5">
                 <Text className="text-gray-400 text-xs mb-2">문제</Text>
                 <Text className="text-brand-beige text-base leading-6">
-                  {currentItem.problemContent}
+                  {currentItem.problem.stemLatex || currentItem.problem.stemText}
                 </Text>
+
+                {currentItem.problem.choices.length > 0 && (
+                  <View className="mt-4 gap-2">
+                    {currentItem.problem.choices.map((choice) => (
+                      <Text
+                        key={`${currentItem.reviewScheduleId}-${choice.position}`}
+                        className="text-brand-beige/80 text-sm leading-6"
+                      >
+                        {choice.label}. {choice.contentLatex || choice.contentText}
+                      </Text>
+                    ))}
+                  </View>
+                )}
               </View>
 
-              {/* Solution reveal */}
               {!showSolution ? (
                 <Pressable
                   className="border-t border-[#333] py-4 items-center"
@@ -205,38 +236,43 @@ export default function DailyReviewScreen() {
                 </Pressable>
               ) : (
                 <View className="border-t border-[#333] p-5">
+                  <Text className="text-gray-400 text-xs mb-2">정답</Text>
+                  <Text className="text-green-400 text-sm leading-6 mb-4">
+                    {currentItem.problem.answerLatex ||
+                      currentItem.problem.answerText ||
+                      "등록된 정답이 없습니다"}
+                  </Text>
                   <Text className="text-gray-400 text-xs mb-2">풀이</Text>
                   <Text className="text-brand-beige text-base leading-6">
-                    {currentItem.solution}
+                    {currentItem.problem.solutionText || "등록된 풀이가 없습니다"}
                   </Text>
                 </View>
               )}
             </View>
 
-            {/* Quality grading buttons */}
             {showSolution && (
               <View className="mt-4">
                 <Text className="text-gray-400 text-xs mb-3 text-center">
                   얼마나 잘 기억했나요?
                 </Text>
                 <View className="flex-row flex-wrap gap-2">
-                  {QUALITY_BUTTONS.map((btn) => (
+                  {QUALITY_BUTTONS.map((button) => (
                     <Pressable
-                      key={btn.value}
-                      className={`flex-1 min-w-[30%] rounded-xl py-3 items-center ${btn.bg}`}
+                      key={button.value}
+                      className={`flex-1 min-w-[30%] rounded-xl py-3 items-center ${button.bg}`}
                       onPress={() =>
                         gradeMutation.mutate({
-                          id: currentItem.id,
-                          quality: btn.value,
+                          id: currentItem.reviewScheduleId,
+                          quality: button.value,
                         })
                       }
                       disabled={gradeMutation.isPending}
                     >
-                      <Text className={`text-lg font-bold ${btn.text}`}>
-                        {btn.value}
+                      <Text className={`text-lg font-bold ${button.text}`}>
+                        {button.value}
                       </Text>
-                      <Text className={`text-xs mt-0.5 ${btn.text}`}>
-                        {btn.label}
+                      <Text className={`text-xs mt-0.5 ${button.text}`}>
+                        {button.label}
                       </Text>
                     </Pressable>
                   ))}

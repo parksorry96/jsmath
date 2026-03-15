@@ -1,53 +1,229 @@
+<%
+const printLayout = helpers.buildPrintLayout(layout);
+const pages = helpers.resolvePrintPages(problems, layout);
+const metadataCount = [
+  Boolean(header.schoolName),
+  Boolean(header.date),
+  Boolean(header.duration),
+].filter(Boolean).length;
+const firstPageAreaHeight =
+  printLayout.columns === 1 ? "18.9cm" : "19.25cm";
+const regularPageAreaHeight =
+  printLayout.columns === 1 ? "22.05cm" : "21.95cm";
+%>
 \documentclass[10pt,a4paper]{article}
 \usepackage{kotex}
 \usepackage{amsmath,amssymb,amsfonts}
-\usepackage{multicol}
-\usepackage{geometry}
-\usepackage{graphicx}
+\usepackage{array}
 \usepackage{enumitem}
 \usepackage{fancyhdr}
-\usepackage{tikz}
+\usepackage{geometry}
+\usepackage{graphicx}
 \usepackage{setspace}
+\usepackage{tabularx}
+\usepackage{xcolor}
 
-\geometry{top=2cm, bottom=2cm, left=1.5cm, right=1.5cm}
+\geometry{top=2cm, bottom=2cm, left=1.55cm, right=1.55cm}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\setstretch{1.08}
+
+\definecolor{WorkbookRule}{HTML}{4B5563}
+\definecolor{WorkbookGuide}{HTML}{D1D5DB}
+
+\newcommand{\choiceLabel}[1]{%
+  \ifcase#1\or ①\or ②\or ③\or ④\or ⑤\or ⑥\or ⑦\or ⑧\or ⑨\or ⑩\else (#1)\fi
+}
 
 \pagestyle{fancy}
 \fancyhf{}
 <% if (header.title) { %>
-\fancyhead[C]{\textbf{<%= header.title %>}}
+\fancyhead[C]{\small\bfseries <%- helpers.renderText(header.title) %>}
 <% } %>
-\fancyfoot[C]{\thepage}
-\renewcommand{\headrulewidth}{0.4pt}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0pt}
 
-\setlength{\columnsep}{1.5cm}
-\setlength{\columnseprule}{0.2pt}
+\fancypagestyle{firstpage}{
+  \fancyhf{}
+  \fancyfoot[C]{\small\thepage}
+  \renewcommand{\headrulewidth}{0pt}
+}
+
+\newlength{\problemSlotGap}
+\setlength{\problemSlotGap}{0.3cm}
+\newlength{\firstPageProblemAreaHeight}
+\setlength{\firstPageProblemAreaHeight}{<%= firstPageAreaHeight %>}
+\newlength{\regularPageProblemAreaHeight}
+\setlength{\regularPageProblemAreaHeight}{<%= regularPageAreaHeight %>}
+\newlength{\firstPageProblemSlotHeight}
+\setlength{\firstPageProblemSlotHeight}{\dimexpr(\firstPageProblemAreaHeight - <%= Math.max(printLayout.rowsPerColumn - 1, 0) %>\problemSlotGap) / <%= printLayout.rowsPerColumn %>\relax}
+\newlength{\regularPageProblemSlotHeight}
+\setlength{\regularPageProblemSlotHeight}{\dimexpr(\regularPageProblemAreaHeight - <%= Math.max(printLayout.rowsPerColumn - 1, 0) %>\problemSlotGap) / <%= printLayout.rowsPerColumn %>\relax}
 
 \begin{document}
 
-\begin{multicols}{2}
-
-<% problems.forEach((p, idx) => { %>
-\noindent\textbf{<%= idx + 1 %>.}
-<%= p.stemLatex %>
-
-<% if (p.choices && p.choices.length > 0) { %>
-\begin{enumerate}[label=\textcircled{\small\arabic*}, itemsep=2pt, parsep=0pt]
-<% p.choices.forEach((c) => { %>
-\item <%= c.contentLatex %>
-<% }); %>
-\end{enumerate}
-<% } %>
-
-<% if (layout.problemsPerPage && (idx + 1) % layout.problemsPerPage === 0 && idx + 1 < problems.length) { %>
-\end{multicols}
+<% pages.forEach((page, pageIndex) => { const isFirstPage = pageIndex === 0; const slotHeight = isFirstPage ? '\\firstPageProblemSlotHeight' : '\\regularPageProblemSlotHeight'; %>
+<% if (pageIndex > 0) { %>
 \newpage
-\begin{multicols}{2}
+<% } %>
+<% if (isFirstPage) { %>
+\thispagestyle{firstpage}
+\begin{center}
+{\fontsize{18}{22}\selectfont\bfseries <%- helpers.renderText(header.title || "수학 문제집") %>\par}
+\vspace{0.3cm}
+{\small 풀이 공간을 포함한 연습용 문제 구성}
+\vspace{0.35cm}
+<% if (metadataCount > 0) { %>
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}lll}
+<% if (header.schoolName) { %>\textbf{학습 기관} <%- helpers.renderText(header.schoolName) %><% } else { %>~<% } %> &
+<% if (header.date) { %>\textbf{배포일} <%- helpers.renderText(header.date) %><% } else { %>~<% } %> &
+<% if (header.duration) { %>\textbf{권장 시간} <%- helpers.renderText(header.duration) %>분<% } else { %>~<% } %> \\
+\end{tabular*}
+\vspace{0.35cm}
+<% } %>
+\textcolor{WorkbookRule}{\rule{\textwidth}{0.5pt}}
+\end{center}
+\vspace{0.8cm}
 <% } else { %>
-\vspace{0.5cm}
+\vspace*{0.05cm}
 <% } %>
 
+<%- printLayout.fontCommand %>
+\noindent
+<% if (printLayout.columns === 1) { %>
+<% page.columns[0].items.forEach((item, rowIndex) => { const problem = item.problem; const printableProblem = helpers.resolveProblemForPrint(problem); const itemHeight = helpers.buildSlotHeightExpression(slotHeight, item.span); %>
+\begin{minipage}[t][<%- itemHeight %>][t]{\textwidth}
+\raggedright
+\begin{minipage}[t]{0.075\linewidth}
+\textbf{\large <%= item.globalIndex + 1 %>.}
+\end{minipage}
+\begin{minipage}[t]{0.91\linewidth}
+<%- helpers.renderLatexOrText(printableProblem.stemLatex, printableProblem.stemText) %>
+<% if (printableProblem.choices.length > 0) { %>
+<% if (printableProblem.choiceLayout === "spread") { %>
+\vspace{0.15cm}
+{\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.04}
+\begin{tabularx}{\linewidth}{@{}<%- ">{\\raggedright\\arraybackslash}X".repeat(printableProblem.choices.length) %>@{}}
+<% printableProblem.choices.forEach((choice, choiceIndex) => { %>
+\choiceLabel{<%= choice.position %>} <%- helpers.renderChoiceLatexOrText(choice.contentLatex, choice.contentText) %><% if (choiceIndex < printableProblem.choices.length - 1) { %> & <% } %>
+<% }); %> \\
+\end{tabularx}}
+<% } else { %>
+\begin{list}{}{\setlength{\leftmargin}{2.15em}\setlength{\labelwidth}{1.4em}\setlength{\labelsep}{0.45em}\setlength{\itemsep}{0.15cm}\setlength{\topsep}{0.2cm}\setlength{\parsep}{0pt}}
+<% printableProblem.choices.forEach((choice) => { %>
+\item[\choiceLabel{<%= choice.position %>}] <%- helpers.renderChoiceLatexOrText(choice.contentLatex, choice.contentText) %>
 <% }); %>
-
-\end{multicols}
+\end{list}
+<% } %>
+<% } %>
+\end{minipage}
+\vfill
+\textcolor{WorkbookGuide}{\rule{\linewidth}{0.35pt}}
+\end{minipage}
+<% if (rowIndex < page.columns[0].items.length - 1) { %>
+\vspace{\problemSlotGap}
+<% } %>
+<% }); %>
+<% if (page.columns[0].blanks > 0) { %>
+<% if (page.columns[0].items.length > 0) { %>
+\vspace{\problemSlotGap}
+<% } %>
+\begin{minipage}[t][<%- helpers.buildBlankHeightExpression(slotHeight, page.columns[0].blanks) %>][t]{\textwidth}
+\mbox{}
+\end{minipage}
+<% } %>
+<% } else { %>
+\begin{minipage}[t]{0.486\textwidth}
+<% page.columns[0].items.forEach((item, rowIndex) => { const leftProblem = item.problem; const printableProblem = helpers.resolveProblemForPrint(leftProblem); const itemHeight = helpers.buildSlotHeightExpression(slotHeight, item.span); %>
+\begin{minipage}[t][<%- itemHeight %>][t]{\linewidth}
+\raggedright
+\begin{minipage}[t]{0.09\linewidth}
+\textbf{\large <%= item.globalIndex + 1 %>.}
+\end{minipage}
+\begin{minipage}[t]{0.87\linewidth}
+<%- helpers.renderLatexOrText(printableProblem.stemLatex, printableProblem.stemText) %>
+<% if (printableProblem.choices.length > 0) { %>
+<% if (printableProblem.choiceLayout === "spread") { %>
+\vspace{0.15cm}
+{\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.04}
+\begin{tabularx}{\linewidth}{@{}<%- ">{\\raggedright\\arraybackslash}X".repeat(printableProblem.choices.length) %>@{}}
+<% printableProblem.choices.forEach((choice, choiceIndex) => { %>
+\choiceLabel{<%= choice.position %>} <%- helpers.renderChoiceLatexOrText(choice.contentLatex, choice.contentText) %><% if (choiceIndex < printableProblem.choices.length - 1) { %> & <% } %>
+<% }); %> \\
+\end{tabularx}}
+<% } else { %>
+\begin{list}{}{\setlength{\leftmargin}{2.05em}\setlength{\labelwidth}{1.35em}\setlength{\labelsep}{0.4em}\setlength{\itemsep}{0.13cm}\setlength{\topsep}{0.18cm}\setlength{\parsep}{0pt}}
+<% printableProblem.choices.forEach((choice) => { %>
+\item[\choiceLabel{<%= choice.position %>}] <%- helpers.renderChoiceLatexOrText(choice.contentLatex, choice.contentText) %>
+<% }); %>
+\end{list}
+<% } %>
+<% } %>
+\end{minipage}
+\vfill
+\textcolor{WorkbookGuide}{\rule{\linewidth}{0.35pt}}
+\end{minipage}
+<% if (rowIndex < page.columns[0].items.length - 1) { %>
+\vspace{\problemSlotGap}
+<% } %>
+<% }); %>
+<% if (page.columns[0].blanks > 0) { %>
+<% if (page.columns[0].items.length > 0) { %>
+\vspace{\problemSlotGap}
+<% } %>
+\begin{minipage}[t][<%- helpers.buildBlankHeightExpression(slotHeight, page.columns[0].blanks) %>][t]{\linewidth}
+\mbox{}
+\end{minipage}
+<% } %>
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.486\textwidth}
+<% page.columns[1].items.forEach((item, rowIndex) => { const rightProblem = item.problem; const printableProblem = helpers.resolveProblemForPrint(rightProblem); const itemHeight = helpers.buildSlotHeightExpression(slotHeight, item.span); %>
+\begin{minipage}[t][<%- itemHeight %>][t]{\linewidth}
+\raggedright
+\begin{minipage}[t]{0.09\linewidth}
+\textbf{\large <%= item.globalIndex + 1 %>.}
+\end{minipage}
+\begin{minipage}[t]{0.87\linewidth}
+<%- helpers.renderLatexOrText(printableProblem.stemLatex, printableProblem.stemText) %>
+<% if (printableProblem.choices.length > 0) { %>
+<% if (printableProblem.choiceLayout === "spread") { %>
+\vspace{0.15cm}
+{\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.04}
+\begin{tabularx}{\linewidth}{@{}<%- ">{\\raggedright\\arraybackslash}X".repeat(printableProblem.choices.length) %>@{}}
+<% printableProblem.choices.forEach((choice, choiceIndex) => { %>
+\choiceLabel{<%= choice.position %>} <%- helpers.renderChoiceLatexOrText(choice.contentLatex, choice.contentText) %><% if (choiceIndex < printableProblem.choices.length - 1) { %> & <% } %>
+<% }); %> \\
+\end{tabularx}}
+<% } else { %>
+\begin{list}{}{\setlength{\leftmargin}{2.05em}\setlength{\labelwidth}{1.35em}\setlength{\labelsep}{0.4em}\setlength{\itemsep}{0.13cm}\setlength{\topsep}{0.18cm}\setlength{\parsep}{0pt}}
+<% printableProblem.choices.forEach((choice) => { %>
+\item[\choiceLabel{<%= choice.position %>}] <%- helpers.renderChoiceLatexOrText(choice.contentLatex, choice.contentText) %>
+<% }); %>
+\end{list}
+<% } %>
+<% } %>
+\end{minipage}
+\vfill
+\textcolor{WorkbookGuide}{\rule{\linewidth}{0.35pt}}
+\end{minipage}
+<% if (rowIndex < page.columns[1].items.length - 1) { %>
+\vspace{\problemSlotGap}
+<% } %>
+<% }); %>
+<% if (page.columns[1].blanks > 0) { %>
+<% if (page.columns[1].items.length > 0) { %>
+\vspace{\problemSlotGap}
+<% } %>
+\begin{minipage}[t][<%- helpers.buildBlankHeightExpression(slotHeight, page.columns[1].blanks) %>][t]{\linewidth}
+\mbox{}
+\end{minipage}
+<% } %>
+\end{minipage}
+<% } %>
+<% }); %>
 
 \end{document}

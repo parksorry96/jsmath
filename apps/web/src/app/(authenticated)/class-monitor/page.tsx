@@ -11,8 +11,8 @@ import {
   Radio,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { io, Socket } from "socket.io-client";
 import { api } from "@/lib/api";
-import { streamSse } from "@/lib/sse";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -95,92 +95,58 @@ function progressPercent(student: StudentProgress): number {
   return Math.round((student.submittedCount / student.totalProblems) * 100);
 }
 
-// --- SSE Hook ---
+// --- WebSocket Hook ---
 
-function useClassMonitorSSE(classId: string | null, assignmentId: string | null) {
+function useClassMonitorWS(classId: string | null, assignmentId: string | null) {
   const [status, setStatus] = useState<ClassMonitorStatus | null>(null);
   const [connected, setConnected] = useState(false);
-  const controllerRef = useRef<AbortController | null>(null);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const closedRef = useRef(false);
-  const reconnectDelay = useRef(1000);
-
-  const close = useCallback(() => {
-    closedRef.current = true;
-    if (reconnectTimer.current) {
-      clearTimeout(reconnectTimer.current);
-      reconnectTimer.current = null;
-    }
-    if (controllerRef.current) {
-      controllerRef.current.abort();
-      controllerRef.current = null;
-      setConnected(false);
-    }
-  }, []);
+  const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
     if (!classId) return;
-    closedRef.current = false;
-    reconnectDelay.current = 1000;
 
-    function connect() {
-      if (closedRef.current) return;
-      const apiUrl =
-        process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
-      const token = localStorage.getItem("token");
-      if (!token) {
-        setConnected(false);
-        return;
-      }
-
-      const controller = new AbortController();
-      controllerRef.current = controller;
-
-      const qs = assignmentId ? `?assignmentId=${assignmentId}` : "";
-
-      void streamSse({
-        url: `${apiUrl}/class-monitor/${classId}/stream${qs}`,
-        token,
-        signal: controller.signal,
-        onOpen: () => {
-          setConnected(true);
-          reconnectDelay.current = 1000;
-        },
-        onMessage: (message) => {
-          if (message.event !== "status") return;
-          try {
-            const data = JSON.parse(message.data) as ClassMonitorStatus;
-            setStatus(data);
-          } catch {
-            // ignore parse errors
-          }
-        },
-      }).catch(() => {
-        if (controller.signal.aborted) return;
-        if (controllerRef.current === controller) {
-          controllerRef.current = null;
-        }
-        setConnected(false);
-
-        if (!closedRef.current) {
-          reconnectTimer.current = setTimeout(() => {
-            reconnectDelay.current = Math.min(
-              reconnectDelay.current * 2,
-              10_000,
-            );
-            connect();
-          }, reconnectDelay.current);
-        }
-      });
+    const apiBase =
+      process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
+    // Derive the socket.io server origin from the API URL
+    const origin = apiBase.replace(/\/v1\/?$/, "");
+    const token = localStorage.getItem("token");
+    if (!token) {
+      setConnected(false);
+      return;
     }
 
-    connect();
-    return () => {
-      close();
-    };
-  }, [classId, assignmentId, close]);
+    const socket = io(`${origin}/class-monitor`, {
+      auth: (cb) => {
+        cb({ token: localStorage.getItem("token") ?? "" });
+      },
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 10000,
+    });
+    socketRef.current = socket;
 
-  return { status, connected, close };
+    socket.on("connect", () => {
+      setConnected(true);
+      socket.emit("join:assignment", { classId, assignmentId: assignmentId ?? undefined });
+    });
+
+    socket.on("disconnect", () => {
+      setConnected(false);
+    });
+
+    socket.on("status", (data: ClassMonitorStatus) => {
+      setStatus(data);
+    });
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+      setConnected(false);
+    };
+  }, [classId, assignmentId]);
+
+  return { status, connected };
 }
 
 // --- Components ---
@@ -332,7 +298,7 @@ export default function ClassMonitorPage() {
     setSelectedAssignmentId("");
   }, [effectiveClassId]);
 
-  const { status, connected } = useClassMonitorSSE(
+  const { status, connected } = useClassMonitorWS(
     effectiveClassId || null,
     selectedAssignmentId || null,
   );

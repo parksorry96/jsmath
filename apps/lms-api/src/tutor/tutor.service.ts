@@ -19,11 +19,15 @@ export class TutorService {
 
   private getClient(): OpenAI {
     if (!this.client) {
-      const apiKey = this.config.get("OPENAI_API_KEY");
+      const apiKey =
+        this.config.get("AI_API_KEY") ??
+        this.config.get("OPENAI_API_KEY");
       if (!apiKey) {
-        throw new Error("OPENAI_API_KEY is not configured");
+        throw new Error("AI_API_KEY is not configured");
       }
-      this.client = new OpenAI({ apiKey });
+      const baseURL =
+        this.config.get("AI_API_BASE_URL") ?? "https://api.openai.com/v1";
+      this.client = new OpenAI({ apiKey, baseURL });
     }
     return this.client;
   }
@@ -77,8 +81,11 @@ Use this information to guide your questioning. Lead the student toward the corr
   }
 
   async createSession(studentId: string, problemId: string) {
-    const problem = await this.prisma.problem.findUnique({
-      where: { id: problemId },
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id: problemId,
+        reviewStatus: { in: ["approved", "auto_approved"] },
+      },
     });
 
     if (!problem) {
@@ -89,7 +96,7 @@ Use this information to guide your questioning. Lead the student toward the corr
 
     // Generate initial greeting via OpenAI (non-streaming)
     const completion = await this.getClient().chat.completions.create({
-      model: "gpt-4o",
+      model: "gpt-5.4",
       temperature: 0.7,
       messages: [
         { role: "system", content: systemPrompt },
@@ -199,7 +206,7 @@ Use this information to guide your questioning. Lead the student toward the corr
 
     // Stream from OpenAI
     const stream = await this.getClient().chat.completions.create({
-      model: "gpt-4o",
+      model: "gpt-5.4",
       temperature: 0.7,
       stream: true,
       messages: chatMessages,

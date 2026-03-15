@@ -16,6 +16,7 @@ import { basename } from "path";
 import { randomUUID } from "crypto";
 import { Redis } from "ioredis";
 import { canAccessSubmission } from "../common/access-control";
+import { RedisStreamService } from "../common/redis-stream.service";
 
 const ALLOWED_IMAGE_MIME_TYPES = new Map<string, string>([
   ["image/jpeg", ".jpg"],
@@ -34,6 +35,7 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private prisma: PrismaService,
     private config: ConfigService,
+    private redisStream: RedisStreamService,
   ) {
     const s3Region =
       this.config.get<string>("AWS_REGION") ??
@@ -59,6 +61,7 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
+    // Legacy Pub/Sub listener (kept during migration)
     await this.redisSubscriber.subscribe(
       "photo:analysis:completed",
       "photo:analysis:failed",
@@ -66,16 +69,25 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
       "photo:rubric:failed",
     );
     this.redisSubscriber.on("message", (channel, message) => {
-      if (channel === "photo:analysis:completed") {
-        void this.handleAnalysisCompleted(message);
-      } else if (channel === "photo:analysis:failed") {
-        void this.handleAnalysisFailed(message);
-      } else if (channel === "photo:rubric:completed") {
-        void this.handleRubricCompleted(message);
-      } else if (channel === "photo:rubric:failed") {
-        void this.handleRubricFailed(message);
-      }
+      this.dispatchPhotoEvent(channel, message);
     });
+
+    // Stream-based listener (durable)
+    this.redisStream.onMessage((channel, message) => {
+      this.dispatchPhotoEvent(channel, message);
+    });
+  }
+
+  private dispatchPhotoEvent(channel: string, message: string) {
+    if (channel === "photo:analysis:completed") {
+      void this.handleAnalysisCompleted(message);
+    } else if (channel === "photo:analysis:failed") {
+      void this.handleAnalysisFailed(message);
+    } else if (channel === "photo:rubric:completed") {
+      void this.handleRubricCompleted(message);
+    } else if (channel === "photo:rubric:failed") {
+      void this.handleRubricFailed(message);
+    }
   }
 
   async onModuleDestroy() {

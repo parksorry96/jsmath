@@ -20,12 +20,39 @@ from app.celery_app import celery
 from app.config import settings
 from app.services.openai_client import get_openai_client
 from app.database import worker_session
-from app.models.problem import Problem, ProblemChoice
-from app.schemas.problem import CURRICULUM_TREE, SOLUTION_STRATEGY_TAGS, SUBJECTS
+from app.models.problem import Problem
+from app.schemas.problem import (
+    CURRICULUM_TREE_2015,
+    CURRICULUM_TREE_2022,
+    SOLUTION_STRATEGY_TAGS,
+    SUBJECTS_2015,
+    SUBJECTS_2022,
+)
 
 logger = logging.getLogger(__name__)
 
 COMMON_SUBJECTS = {"수학I", "수학II"}
+
+
+def _render_prompt(template: str, **values: str) -> str:
+    rendered = template
+    for key, value in values.items():
+        rendered = rendered.replace(f"{{{key}}}", str(value))
+    return rendered
+
+SUBJECT_DETAILS_2015 = """- 수학I: 지수함수와 로그함수, 삼각함수, 수열. 고2 과정. 수능 공통과목.
+- 수학II: 함수의 극한과 연속, 미분(다항함수), 적분(다항함수). 고2 과정. 수능 공통과목.
+- 확률과 통계: 경우의 수(순열/조합), 확률, 통계(확률분포/정규분포/통계적 추정). 고2-3 선택과목.
+- 미적분: 수열의 극한, 급수, 여러 가지 함수의 미분법(지수/로그/삼각), 여러 가지 적분법, 정적분의 활용. 고3 선택과목.
+- 기하: 이차곡선(포물선/타원/쌍곡선), 평면벡터(벡터연산/내적), 공간도형과 공간벡터. 고3 선택과목."""
+
+SUBJECT_DETAILS_2022 = """- 공통수학1: 다항식, 방정식과 부등식, 경우의 수. 고1 공통과목.
+- 공통수학2: 도형의 방정식, 집합과 명제, 함수. 고1 공통과목.
+- 대수: 지수와 로그, 지수함수와 로그함수, 수열. 고2 선택과목.
+- 미적분I: 함수의 극한과 연속, 미분, 적분. 고2 선택과목.
+- 확률과 통계: 경우의 수, 확률, 통계. 고2 선택과목.
+- 미적분II: 수열의 극한, 미분법, 적분법. 고3 선택과목.
+- 기하: 이차곡선, 벡터, 공간도형. 고3 선택과목."""
 
 
 def _book_source_value(book_source: dict, *keys: str) -> str:
@@ -35,26 +62,59 @@ def _book_source_value(book_source: dict, *keys: str) -> str:
             return str(value)
     return ""
 
+
+def _normalize_curriculum_classification(
+    classification: CurriculumClassificationResult,
+    *,
+    curriculum_year: int,
+    allowed_subjects: list[str],
+) -> dict:
+    subject = classification.subject if classification.subject in allowed_subjects else None
+    if subject is None:
+        return {
+            "curriculumYear": curriculum_year,
+            "subject": None,
+            "unitMajor": None,
+            "unitMinor": None,
+            "unitSub": None,
+            "curriculumNodeId": None,
+            "confidence": round(classification.confidence, 3),
+        }
+
+    return {
+        "curriculumYear": curriculum_year,
+        "subject": subject,
+        "unitMajor": classification.unit_major,
+        "unitMinor": classification.unit_minor,
+        "unitSub": classification.unit_sub,
+        "curriculumNodeId": None,
+        "confidence": round(classification.confidence, 3),
+    }
+
 # ─── Textbook-specific prompts ───
 
-TEXTBOOK_SYSTEM_PROMPT = """You are a Korean math textbook (교재) analysis expert for 2015 개정교육과정.
+TEXTBOOK_SYSTEM_PROMPT = """You are a Korean math textbook (교재) analysis expert.
 
 ## Goal
 Classify the problem first, then solve and analyze it independently, and return one JSON object matching the requested schema.
 
+## Dual Curriculum Mapping
+You must classify every problem twice and keep the two mappings separate:
+1. classification_2015: best-fit mapping within the 2015 revised curriculum.
+2. classification_2022: best-fit mapping within the 2022 revised curriculum.
+If one curriculum does not meaningfully cover the concept, set that curriculum's subject/unit fields to null and keep confidence low.
+
 ## Subjects (2015 개정교육과정)
-- 수학I: 지수함수와 로그함수, 삼각함수, 수열. 고2 과정. 수능 공통과목.
-- 수학II: 함수의 극한과 연속, 미분(다항함수), 적분(다항함수). 고2 과정. 수능 공통과목.
-- 확률과 통계: 경우의 수(순열/조합), 확률, 통계(확률분포/정규분포/통계적 추정). 고2-3 선택과목.
-- 미적분: 수열의 극한, 급수, 여러 가지 함수의 미분법(지수/로그/삼각), 여러 가지 적분법, 정적분의 활용. 고3 선택과목.
-- 기하: 이차곡선(포물선/타원/쌍곡선), 평면벡터(벡터연산/내적), 공간도형과 공간벡터. 고3 선택과목.
+{subject_details_2015}
+
+## Subjects (2022 개정교육과정)
+{subject_details_2022}
 
 ## COMMON MISCLASSIFICATION WARNINGS
-- 수열의 극한/급수 → 미적분 (NOT 수학I 수열)
-- 함수의 극한 → check carefully: 다항함수 극한 = 수학II, 지수/로그/삼각함수 극한 = 미적분
-- 지수/로그 미분 → 미적분 (NOT 수학I)
-- 삼각함수 미분 → 미적분 (NOT 수학I)
-- 벡터 내적/연산 → 기하 (NOT 수학II)
+- 수열의 극한/급수 → 2015에서는 미적분, 2022에서는 미적분II
+- 함수의 극한 → 다항함수 극한은 2015 수학II / 2022 미적분I, 지수·로그·삼각함수 극한은 2015 미적분 / 2022 미적분II
+- 지수/로그/삼각함수 미분 → 2015 미적분, 2022 미적분II
+- 벡터 내적/연산 → 2015 기하, 2022 기하
 
 ## Difficulty Scale (교재 기준 → 수능 환산)
 - 1.0: 개념 확인 문제. 공식 직접 대입. 수능 정답률 90%+.
@@ -64,8 +124,11 @@ Classify the problem first, then solve and analyze it independently, and return 
 - 5.0: 고난도 문제. 복합 개념, 준킬러급. 수능 정답률 15~35%.
 - 6.0: 최고난도. 킬러 문항. 수능 정답률 15% 미만.
 
-## Curriculum Hierarchy
-{curriculum_json}
+## 2015 Curriculum Hierarchy
+{curriculum_2015_json}
+
+## 2022 Curriculum Hierarchy
+{curriculum_2022_json}
 
 ## Evidence Priority
 1. 문제 본문과 선택지
@@ -75,15 +138,14 @@ Classify the problem first, then solve and analyze it independently, and return 
 ## Textbook Context Usage
 교재 단원 정보는 STRONG PRIOR입니다. 문제 내용이 명백히 다른 단원이 아닌 한 교재 단원을 따르세요.
 단, 교재 단원명과 교육과정 단원명이 다를 수 있으니 문제 내용으로 최종 판단하세요.
-예: "미분법" → 다항함수만이면 수학II, 지수/로그/삼각함수면 미적분
 
 ## Answer Key Usage
 해설지 정답이 주어져도 독립적으로 다시 풀이하세요.
 해설지 답과 다르면 모델이 다시 푼 답을 answer에 넣고, classification_reasoning에 불일치 이유를 짧게 적으세요.
 
 ## Uncertainty Handling
-- curriculum_json에 없는 단원명을 invent하지 마세요.
-- 근거가 약하면 가장 가까운 유효 단원을 선택하고 classification_confidence를 낮추세요.
+- 각 교육과정 hierarchy에 없는 단원명을 invent하지 마세요.
+- 근거가 약하면 가장 가까운 유효 단원을 선택하거나 null로 두고 confidence를 낮추세요.
 - exam_source는 강한 근거가 없으면 null로 두세요.
 - classification_reasoning은 2-4문장 분량의 근거 요약으로 쓰고, 숨겨진 chain-of-thought를 그대로 쓰지 마세요.
 
@@ -107,8 +169,9 @@ Select 1-4 tags from this list that best describe the solution approach:
 - Never leave raw math like x^2, a_n, \\frac{1}{2}, lim_{n\\to\\infty} outside math delimiters.
 
 ## Self-Check
-- subject/unit fields must align with curriculum_json.
-- is_common must be consistent with subject.
+- classification_2015 subject/unit fields must align with the 2015 curriculum hierarchy or be null.
+- classification_2022 subject/unit fields must align with the 2022 curriculum hierarchy or be null.
+- is_common must be consistent with classification_2015.subject.
 - answer must agree with solution_strategy and solution_steps.
 - common_mistakes must fit this exact problem type.
 - solution_tags must be chosen from the provided list only."""
@@ -138,6 +201,7 @@ Problem number: {problem_number}
 
 ## Task
 - 교재 단원 정보를 strong prior로 사용해 먼저 분류하세요.
+- 2015 교육과정과 2022 교육과정에 대해 각각 별도로 분류하세요.
 - 그 다음 문제를 독립적으로 풀고 해설을 작성하세요.
 - 최종 답은 반드시 answer 필드에 넣으세요.
 - 해설지 정답과 다르면 independently verified answer를 유지하세요."""
@@ -191,16 +255,21 @@ class ExamSource(BaseModel):
     number: int
 
 
+class CurriculumClassificationResult(BaseModel):
+    subject: Optional[str] = None
+    unit_major: Optional[str] = None
+    unit_minor: Optional[str] = None
+    unit_sub: Optional[str] = None
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class UnifiedAnalysisResult(BaseModel):
     # Classification
     classification_reasoning: str
-    subject: str
-    unit_major: str
-    unit_minor: Optional[str] = None
-    unit_sub: Optional[str] = None
+    classification_2015: CurriculumClassificationResult
+    classification_2022: CurriculumClassificationResult
     difficulty_refined: float = Field(ge=1.0, le=6.0)
     is_common: bool
-    classification_confidence: float = Field(ge=0.0, le=1.0)
 
     # Solution analysis
     solution_tags: list[str] = Field(default_factory=list)
@@ -226,22 +295,26 @@ class BatchAnalysisResponse(BaseModel):
 
 # ─── Prompts ───
 
-SYSTEM_PROMPT = """You are a Korean CSAT (수능) math expert specializing in the 2015 개정교육과정.
+SYSTEM_PROMPT = """You are a Korean CSAT (수능) math expert.
 Your task is to classify the problem first, solve it independently, and return one JSON object matching the requested schema.
 
+## Dual Curriculum Mapping
+You must classify every problem twice and keep the two mappings separate:
+1. classification_2015: best-fit mapping within the 2015 revised curriculum.
+2. classification_2022: best-fit mapping within the 2022 revised curriculum.
+If one curriculum does not meaningfully cover the concept, set that curriculum's subject/unit fields to null and keep confidence low.
+
 ## Subjects (2015 개정교육과정)
-- 수학I: 지수함수와 로그함수, 삼각함수, 수열. 고2 과정. 수능 공통과목.
-- 수학II: 함수의 극한과 연속, 미분(다항함수), 적분(다항함수). 고2 과정. 수능 공통과목.
-- 확률과 통계: 경우의 수(순열/조합), 확률, 통계(확률분포/정규분포/통계적 추정). 고2-3 선택과목.
-- 미적분: 수열의 극한, 급수, 여러 가지 함수의 미분법(지수/로그/삼각), 여러 가지 적분법, 정적분의 활용. 고3 선택과목.
-- 기하: 이차곡선(포물선/타원/쌍곡선), 평면벡터(벡터연산/내적), 공간도형과 공간벡터. 고3 선택과목.
+{subject_details_2015}
+
+## Subjects (2022 개정교육과정)
+{subject_details_2022}
 
 ## COMMON MISCLASSIFICATION WARNINGS
-- 수열의 극한/급수 → 미적분 (NOT 수학I 수열)
-- 함수의 극한 → check carefully: 다항함수 극한 = 수학II, 지수/로그/삼각함수 극한 = 미적분
-- 지수/로그 미분 → 미적분 (NOT 수학I)
-- 삼각함수 미분 → 미적분 (NOT 수학I)
-- 벡터 내적/연산 → 기하 (NOT 수학II)
+- 수열의 극한/급수 → 2015에서는 미적분, 2022에서는 미적분II
+- 함수의 극한 → 다항함수 극한은 2015 수학II / 2022 미적분I, 지수·로그·삼각함수 극한은 2015 미적분 / 2022 미적분II
+- 지수/로그/삼각함수 미분 → 2015 미적분, 2022 미적분II
+- 벡터 내적/연산 → 2015 기하, 2022 기하
 
 ## Difficulty Scale (수능 기준, 정답률 anchors)
 - 1.0 (기초): 개념 직접 적용. 수능 정답률 90%+.
@@ -257,17 +330,20 @@ Your task is to classify the problem first, solve it independently, and return o
 - 조건 종합형 (다수 조건 결합): +0.3
 - 그래프 해석 필요: +0.2
 
-## Curriculum Hierarchy
-{curriculum_json}
+## 2015 Curriculum Hierarchy
+{curriculum_2015_json}
+
+## 2022 Curriculum Hierarchy
+{curriculum_2022_json}
 
 ## Evidence Priority
 1. 문제 본문과 선택지
-2. curriculum_json의 유효 단원 체계
+2. 두 curriculum hierarchy의 유효 단원 체계
 3. 현재 분류 값은 weak hint only
 
 ## Uncertainty Handling
-- curriculum_json에 없는 단원명을 invent하지 마세요.
-- 근거가 약하면 가장 가까운 유효 단원을 선택하고 classification_confidence를 낮추세요.
+- 각 교육과정 hierarchy에 없는 단원명을 invent하지 마세요.
+- 근거가 약하면 가장 가까운 유효 단원을 선택하거나 null로 두고 confidence를 낮추세요.
 - exam_source는 강한 근거가 없으면 null로 두세요.
 - classification_reasoning은 2-4문장 분량의 근거 요약으로 쓰고, 숨겨진 chain-of-thought를 그대로 쓰지 마세요.
 
@@ -292,8 +368,9 @@ Select 1-4 tags from this list that best describe the solution approach:
 - Do not add markdown, code fences, or extra keys.
 
 ## Self-Check
-- subject/unit fields must align with curriculum_json.
-- is_common must be consistent with subject.
+- classification_2015 subject/unit fields must align with the 2015 curriculum hierarchy or be null.
+- classification_2022 subject/unit fields must align with the 2022 curriculum hierarchy or be null.
+- is_common must be consistent with classification_2015.subject.
 - answer must agree with solution_strategy and solution_steps.
 - common_mistakes must fit this exact problem type.
 - solution_tags must be chosen from the provided list only.
@@ -321,6 +398,7 @@ Problem number: {problem_number}
 
 ## Task
 - 현재 분류 값은 참고만 하고, 문제 본문 기준으로 다시 분류하세요.
+- 2015 교육과정과 2022 교육과정에 대해 각각 별도로 분류하세요.
 - 그 다음 문제를 독립적으로 풀고 해설을 작성하세요.
 - 특정 시험 원문이라는 강한 근거가 있을 때만 exam_source를 채우세요.
 - 최종 답은 반드시 answer 필드에 넣으세요 (예: "③", "$24$", "$\\frac{1}{2}$")."""
@@ -388,16 +466,22 @@ async def _unified_analyze(problem_id: str) -> dict:
 
         is_textbook = bool(problem.book_source)
 
-        curriculum_json = json.dumps(CURRICULUM_TREE, ensure_ascii=False, indent=2)
+        curriculum_2015_json = json.dumps(CURRICULUM_TREE_2015, ensure_ascii=False, indent=2)
+        curriculum_2022_json = json.dumps(CURRICULUM_TREE_2022, ensure_ascii=False, indent=2)
         solution_tags_json = json.dumps(SOLUTION_STRATEGY_TAGS, ensure_ascii=False)
 
         if is_textbook:
             book_source = problem.book_source or {}
-            system_prompt = TEXTBOOK_SYSTEM_PROMPT.format(
-                curriculum_json=curriculum_json,
+            system_prompt = _render_prompt(
+                TEXTBOOK_SYSTEM_PROMPT,
+                curriculum_2015_json=curriculum_2015_json,
+                curriculum_2022_json=curriculum_2022_json,
+                subject_details_2015=SUBJECT_DETAILS_2015,
+                subject_details_2022=SUBJECT_DETAILS_2022,
                 solution_tags_json=solution_tags_json,
             )
-            user_prompt = TEXTBOOK_USER_PROMPT.format(
+            user_prompt = _render_prompt(
+                TEXTBOOK_USER_PROMPT,
                 stem_latex=problem.stem_latex,
                 stem_text=problem.stem_text,
                 choices_text=choices_text,
@@ -412,11 +496,16 @@ async def _unified_analyze(problem_id: str) -> dict:
                 answer_match_status=problem.answer_match_status or "no_answer_key",
             )
         else:
-            system_prompt = SYSTEM_PROMPT.format(
-                curriculum_json=curriculum_json,
+            system_prompt = _render_prompt(
+                SYSTEM_PROMPT,
+                curriculum_2015_json=curriculum_2015_json,
+                curriculum_2022_json=curriculum_2022_json,
+                subject_details_2015=SUBJECT_DETAILS_2015,
+                subject_details_2022=SUBJECT_DETAILS_2022,
                 solution_tags_json=solution_tags_json,
             )
-            user_prompt = USER_PROMPT_TEMPLATE.format(
+            user_prompt = _render_prompt(
+                USER_PROMPT_TEMPLATE,
                 stem_latex=problem.stem_latex,
                 stem_text=problem.stem_text,
                 choices_text=choices_text,
@@ -456,13 +545,19 @@ async def _unified_analyze(problem_id: str) -> dict:
 
     parsed = UnifiedAnalysisResult.model_validate_json(content)
 
-    # Post-validation: enforce subject membership
-    subject = parsed.subject
-    if subject not in SUBJECTS:
-        subject = SUBJECTS[0]
+    classification_2015 = _normalize_curriculum_classification(
+        parsed.classification_2015,
+        curriculum_year=2015,
+        allowed_subjects=SUBJECTS_2015,
+    )
+    classification_2022 = _normalize_curriculum_classification(
+        parsed.classification_2022,
+        curriculum_year=2022,
+        allowed_subjects=SUBJECTS_2022,
+    )
 
-    # Enforce is_common based on subject
-    is_common = subject in COMMON_SUBJECTS
+    subject = classification_2015["subject"]
+    is_common = subject in COMMON_SUBJECTS if subject else None
 
     # Clamp difficulty
     difficulty = max(1.0, min(6.0, parsed.difficulty_refined))
@@ -474,13 +569,15 @@ async def _unified_analyze(problem_id: str) -> dict:
         "problem_id": problem_id,
         # Classification
         "classification_reasoning": parsed.classification_reasoning,
+        "classification_2015": classification_2015,
+        "classification_2022": classification_2022,
         "subject": subject,
-        "unit_major": parsed.unit_major,
-        "unit_minor": parsed.unit_minor,
-        "unit_sub": parsed.unit_sub,
+        "unit_major": classification_2015["unitMajor"],
+        "unit_minor": classification_2015["unitMinor"],
+        "unit_sub": classification_2015["unitSub"],
         "difficulty_refined": round(difficulty, 1),
         "is_common": is_common,
-        "classification_confidence": parsed.classification_confidence,
+        "classification_confidence": classification_2015["confidence"],
         # Solution
         "solution_tags": valid_tags,
         "solution_strategy": parsed.solution_strategy,
@@ -500,12 +597,14 @@ def _heuristic_fallback(problem_id: str) -> dict:
     return {
         "problem_id": problem_id,
         "classification_reasoning": None,
+        "classification_2015": None,
+        "classification_2022": None,
         "subject": None,
         "unit_major": None,
         "unit_minor": None,
         "unit_sub": None,
         "difficulty_refined": 3.0,
-        "is_common": True,
+        "is_common": None,
         "classification_confidence": 0.3,
         "solution_tags": [],
         "solution_strategy": None,
@@ -566,8 +665,18 @@ def _format_problem_section(problem: Problem, choices_text: str) -> str:
 
 def _postprocess_batch_item(item: BatchItemResult) -> dict:
     """Post-process a single batch result item into a plain dict."""
-    subject = item.subject if item.subject in SUBJECTS else SUBJECTS[0]
-    is_common = subject in COMMON_SUBJECTS
+    classification_2015 = _normalize_curriculum_classification(
+        item.classification_2015,
+        curriculum_year=2015,
+        allowed_subjects=SUBJECTS_2015,
+    )
+    classification_2022 = _normalize_curriculum_classification(
+        item.classification_2022,
+        curriculum_year=2022,
+        allowed_subjects=SUBJECTS_2022,
+    )
+    subject = classification_2015["subject"]
+    is_common = subject in COMMON_SUBJECTS if subject else None
     difficulty = max(1.0, min(6.0, item.difficulty_refined))
 
     valid_tags = [t for t in item.solution_tags if t in SOLUTION_STRATEGY_TAGS]
@@ -575,13 +684,15 @@ def _postprocess_batch_item(item: BatchItemResult) -> dict:
     return {
         "problem_id": item.problem_id,
         "classification_reasoning": item.classification_reasoning,
+        "classification_2015": classification_2015,
+        "classification_2022": classification_2022,
         "subject": subject,
-        "unit_major": item.unit_major,
-        "unit_minor": item.unit_minor,
-        "unit_sub": item.unit_sub,
+        "unit_major": classification_2015["unitMajor"],
+        "unit_minor": classification_2015["unitMinor"],
+        "unit_sub": classification_2015["unitSub"],
         "difficulty_refined": round(difficulty, 1),
         "is_common": is_common,
-        "classification_confidence": item.classification_confidence,
+        "classification_confidence": classification_2015["confidence"],
         "solution_tags": valid_tags,
         "solution_strategy": item.solution_strategy,
         "required_concepts": item.required_concepts,
@@ -650,16 +761,25 @@ async def _batch_analyze(problem_ids: list[str]) -> list[dict]:
     first = problems[problem_ids[0]]
     is_textbook = bool(first.book_source)
 
-    curriculum_json = json.dumps(CURRICULUM_TREE, ensure_ascii=False, indent=2)
+    curriculum_2015_json = json.dumps(CURRICULUM_TREE_2015, ensure_ascii=False, indent=2)
+    curriculum_2022_json = json.dumps(CURRICULUM_TREE_2022, ensure_ascii=False, indent=2)
     solution_tags_json = json.dumps(SOLUTION_STRATEGY_TAGS, ensure_ascii=False)
     if is_textbook:
-        system_prompt = TEXTBOOK_SYSTEM_PROMPT.format(
-            curriculum_json=curriculum_json,
+        system_prompt = _render_prompt(
+            TEXTBOOK_SYSTEM_PROMPT,
+            curriculum_2015_json=curriculum_2015_json,
+            curriculum_2022_json=curriculum_2022_json,
+            subject_details_2015=SUBJECT_DETAILS_2015,
+            subject_details_2022=SUBJECT_DETAILS_2022,
             solution_tags_json=solution_tags_json,
         )
     else:
-        system_prompt = SYSTEM_PROMPT.format(
-            curriculum_json=curriculum_json,
+        system_prompt = _render_prompt(
+            SYSTEM_PROMPT,
+            curriculum_2015_json=curriculum_2015_json,
+            curriculum_2022_json=curriculum_2022_json,
+            subject_details_2015=SUBJECT_DETAILS_2015,
+            subject_details_2022=SUBJECT_DETAILS_2022,
             solution_tags_json=solution_tags_json,
         )
 

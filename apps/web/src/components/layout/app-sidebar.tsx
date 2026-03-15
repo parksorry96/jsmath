@@ -53,7 +53,6 @@ const teacherNav = [
   { title: "등급 예측", href: "/grade-prediction", icon: Award },
   { title: "실시간 모니터", href: "/class-monitor", icon: Radio },
   { title: "학원 운영", href: "/operations", icon: Building2 },
-  { title: "학부모 리포트", href: "/parent-reports", icon: Users },
 ];
 
 const studentNav = [
@@ -73,6 +72,7 @@ const parentNav = [
   { title: "대시보드", href: "/dashboard", icon: LayoutDashboard },
   { title: "캘린더", href: "/calendar", icon: Calendar },
   { title: "과제", href: "/assignments", icon: GraduationCap },
+  { title: "학부모 리포트", href: "/parent-reports", icon: Users },
 ];
 
 const ocrNav = [

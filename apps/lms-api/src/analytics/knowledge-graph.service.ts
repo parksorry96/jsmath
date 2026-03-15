@@ -69,10 +69,13 @@ export class KnowledgeGraphService {
 
     // 2. Fetch student mastery per (subject, unitMajor) from SubmissionAnswer + Problem
     const masteryMap = await this.computeMasteryMap(studentId);
+    for (const key of masteryMap.keys()) {
+      allNodeKeys.add(key);
+    }
 
     // 3. Build node list
     const nodes: GraphNode[] = [];
-    for (const key of allNodeKeys) {
+    for (const key of [...allNodeKeys].sort()) {
       const [subject, unit] = key.split("::");
       const stats = masteryMap.get(key);
       nodes.push({

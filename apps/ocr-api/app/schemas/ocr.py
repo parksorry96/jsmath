@@ -54,6 +54,36 @@ class OcrPageSummary(BaseModel):
     ocr_confidence: float | None = None
 
 
+class CheckpointResponse(BaseModel):
+    """A single pipeline checkpoint."""
+
+    id: str
+    ocr_job_id: str
+    stage_name: str
+    status: str
+    error_message: str | None = None
+    started_at: datetime
+    completed_at: datetime | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ResumeRequest(BaseModel):
+    """Request to resume a failed pipeline."""
+
+    document_type: str = "exam"
+    answer_s3_key: str | None = None
+
+
+class ResumeResponse(BaseModel):
+    """Response after resuming a pipeline."""
+
+    ocr_job_id: str
+    resumed_from: str
+    task_id: str
+
+
 class PipelineHealthResponse(BaseModel):
     """Pipeline health and queue depth info."""
 

@@ -13,8 +13,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
-import * as SecureStore from "expo-secure-store";
 import { api } from "@/lib/api";
+import { getItemAsync } from "@/lib/storage";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:3001/v1";
 
@@ -242,7 +242,7 @@ export default function AssignmentDetailScreen() {
     setUploadProgress(0);
 
     try {
-      const token = await SecureStore.getItemAsync("auth_token");
+      const token = await getItemAsync("auth_token");
       const formData = new FormData();
       formData.append("file", {
         uri: asset.uri,
@@ -307,7 +307,7 @@ export default function AssignmentDetailScreen() {
     setUploadProgress(0);
 
     try {
-      const token = await SecureStore.getItemAsync("auth_token");
+      const token = await getItemAsync("auth_token");
       const formData = new FormData();
       formData.append("file", {
         uri: asset.uri,

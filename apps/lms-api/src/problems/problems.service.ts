@@ -13,6 +13,12 @@ import { Redis } from "ioredis";
 import { normalizeFilename } from "../common/filename";
 import { TwinProblemService } from "./twin-problem.service";
 import { EmbeddingService } from "./embedding.service";
+import { ProblemRevisionService } from "./problem-revision.service";
+import {
+  getAccessibleOcrJobWhere,
+  getAccessibleProblemWhere,
+  isAdminRole,
+} from "../common/access-control";
 
 export interface ProblemsQuery {
   requesterId: string;
@@ -46,6 +52,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     private config: ConfigService,
     private twinProblemService: TwinProblemService,
     private embeddingService: EmbeddingService,
+    private problemRevisionService: ProblemRevisionService,
   ) {}
 
   onModuleInit() {
@@ -58,29 +65,11 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getProblemScopeWhere(requesterId: string, requesterRole: string) {
-    if (requesterRole === "admin") {
-      return {};
-    }
-
-    return {
-      ocrJob: {
-        sourceFile: {
-          uploaderId: requesterId,
-        },
-      },
-    };
+    return getAccessibleProblemWhere(requesterId, requesterRole);
   }
 
   private getOcrJobScopeWhere(requesterId: string, requesterRole: string) {
-    if (requesterRole === "admin") {
-      return {};
-    }
-
-    return {
-      sourceFile: {
-        uploaderId: requesterId,
-      },
-    };
+    return getAccessibleOcrJobWhere(requesterId, requesterRole);
   }
 
   async getFilterOptions(requesterId: string, requesterRole: string) {
@@ -164,6 +153,15 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     const limit = Math.min(query.limit ?? 20, 100);
     const skip = (page - 1) * limit;
 
+    // Route text searches through hybrid search (tsvector + pgvector RRF)
+    if (query.q) {
+      try {
+        return await this.hybridSearch(query);
+      } catch (err) {
+        this.logger.warn("Hybrid search failed, falling back to ILIKE", err);
+      }
+    }
+
     const where: Record<string, unknown> = {
       ...this.getProblemScopeWhere(query.requesterId, query.requesterRole),
     };
@@ -222,7 +220,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       where.curriculumNodeId = { in: nodeIds };
     }
 
-    // Basic ILIKE search on stemText — tsvector upgrade in Phase 3
+    // ILIKE fallback when hybrid search is unavailable
     if (query.q) {
       where.stemText = { contains: query.q, mode: "insensitive" };
     }
@@ -306,42 +304,87 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  async findByIds(ids: string[]) {
+    if (!ids || ids.length === 0) return [];
+    const problems = await this.prisma.problem.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        stemLatex: true,
+        stemText: true,
+        problemNumber: true,
+        displayNumber: true,
+        problemType: true,
+        difficulty: true,
+        subject: true,
+        unitMajor: true,
+        choices: {
+          select: {
+            label: true,
+            contentLatex: true,
+            contentText: true,
+            position: true,
+          },
+          orderBy: { position: "asc" },
+        },
+      },
+    });
+    // Preserve the order of input ids
+    const map = new Map(problems.map((p) => [p.id, p]));
+    return ids.map((id) => map.get(id)).filter(Boolean);
+  }
+
   async semanticSearch(query: string, filters: ProblemsQuery, limit = 20) {
     const embedding = await this.embeddingService.embed(query);
     const vectorStr = `[${embedding.join(",")}]`;
+    const safeLimit = Math.max(1, Math.min(limit, 100));
 
     const conditions = [
-      `embedding IS NOT NULL`,
-      `review_status IN ('approved', 'auto_approved')`,
+      `p.embedding IS NOT NULL`,
+      `p.review_status IN ('approved', 'auto_approved')`,
     ];
+    const joins: string[] = [];
     const params: unknown[] = [];
     let paramIndex = 1;
 
+    if (filters.requesterRole !== "admin") {
+      joins.push(`JOIN ocr.ocr_jobs oj ON oj.id = p.ocr_job_id`);
+      joins.push(`JOIN ocr.source_files sf ON sf.id = oj.source_file_id`);
+      conditions.push(`sf.uploader_id = $${paramIndex++}`);
+      params.push(filters.requesterId);
+    }
+
     if (filters.subject) {
-      conditions.push(`subject = $${paramIndex++}`);
+      conditions.push(`p.subject = $${paramIndex++}`);
       params.push(filters.subject);
     }
     if (filters.gradeLevel) {
-      conditions.push(`grade_level = $${paramIndex++}`);
+      conditions.push(`p.grade_level = $${paramIndex++}`);
       params.push(filters.gradeLevel);
     }
     if (filters.difficulty) {
-      conditions.push(`difficulty = $${paramIndex++}`);
+      conditions.push(`p.difficulty = $${paramIndex++}`);
       params.push(parseInt(filters.difficulty, 10));
     }
 
     const whereClause = conditions.join(" AND ");
+    params.push(vectorStr);
+    const vectorParamIdx = paramIndex++;
+    params.push(safeLimit);
+    const limitParamIdx = paramIndex++;
+
     const sql = `
-      SELECT id, stem_text AS "stemText", stem_latex AS "stemLatex",
-             subject, unit_major AS "unitMajor", difficulty,
-             problem_type AS "problemType", grade_level AS "gradeLevel",
-             display_number AS "displayNumber", problem_number AS "problemNumber",
-             review_status AS "reviewStatus",
-             1 - (embedding <=> '${vectorStr}'::vector) AS similarity
-      FROM ocr.problems
+      SELECT p.id, p.stem_text AS "stemText", p.stem_latex AS "stemLatex",
+             p.subject, p.unit_major AS "unitMajor", p.difficulty,
+             p.problem_type AS "problemType", p.grade_level AS "gradeLevel",
+             p.display_number AS "displayNumber", p.problem_number AS "problemNumber",
+             p.review_status AS "reviewStatus",
+             1 - (p.embedding <=> $${vectorParamIdx}::vector) AS similarity
+      FROM ocr.problems p
+      ${joins.join("\n")}
       WHERE ${whereClause}
-      ORDER BY embedding <=> '${vectorStr}'::vector
-      LIMIT ${limit}
+      ORDER BY p.embedding <=> $${vectorParamIdx}::vector
+      LIMIT $${limitParamIdx}
     `;
 
     const rows = await this.prisma.$queryRawUnsafe(sql, ...params);
@@ -349,8 +392,205 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       data: rows,
       total: (rows as unknown[]).length,
       page: 1,
-      limit,
+      limit: safeLimit,
       totalPages: 1,
+    };
+  }
+
+  private async hybridSearch(query: ProblemsQuery) {
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 100);
+    const offset = (page - 1) * limit;
+    const textQuery = query.q!;
+
+    // Attempt embedding — null if service unavailable (keyword-only mode)
+    let vectorStr: string | null = null;
+    try {
+      const embedding = await this.embeddingService.embed(textQuery);
+      vectorStr = `[${embedding.join(",")}]`;
+    } catch (err) {
+      this.logger.warn(
+        "Embedding unavailable for hybrid search, keyword-only mode",
+        err,
+      );
+    }
+
+    const isAdmin = isAdminRole(query.requesterRole);
+    const requesterId = query.requesterId;
+
+    // Filter values (null = no filter applied)
+    const ocrJobId = query.ocrJobId ?? null;
+    const reviewStatus = (query.reviewStatus as string) ?? null;
+    const gradeLevel = query.gradeLevel ?? null;
+    const subject = query.subject ?? null;
+    const unitMajor = query.unitMajor ?? null;
+    const problemType = query.problemType ?? null;
+    const analysisStatus = query.analysisStatus ?? null;
+    const bookTitle = query.bookTitle ?? null;
+    const solutionTagJson = query.solutionTag
+      ? JSON.stringify([query.solutionTag])
+      : null;
+    const examType = query.examType ?? null;
+    const curriculumNodeId = query.curriculumNodeId ?? null;
+
+    const difficulty =
+      query.difficulty !== undefined ? parseInt(query.difficulty, 10) : null;
+    const safeDifficulty =
+      difficulty !== null && !isNaN(difficulty) ? difficulty : null;
+    const examYear = query.examYear ? parseInt(query.examYear, 10) : null;
+    const safeExamYear =
+      examYear !== null && !isNaN(examYear) ? examYear : null;
+    const examMonth = query.examMonth ? parseInt(query.examMonth, 10) : null;
+    const safeExamMonth =
+      examMonth !== null && !isNaN(examMonth) ? examMonth : null;
+
+    const rows = await this.prisma.$queryRaw<
+      { id: string; total: bigint }[]
+    >`
+      WITH RECURSIVE
+        curriculum_tree AS (
+          SELECT id FROM ocr.curriculum_nodes WHERE id = ${curriculumNodeId}::uuid
+          UNION ALL
+          SELECT cn.id FROM ocr.curriculum_nodes cn
+          JOIN curriculum_tree t ON cn.parent_id = t.id
+        ),
+        base AS (
+          SELECT p.id, p.stem_tsv, p.embedding
+          FROM ocr.problems p
+          JOIN ocr.ocr_jobs oj ON oj.id = p.ocr_job_id
+          JOIN ocr.source_files sf ON sf.id = oj.source_file_id
+          WHERE (${isAdmin}::boolean OR sf.uploader_id = ${requesterId})
+            AND (${ocrJobId}::uuid IS NULL OR p.ocr_job_id = ${ocrJobId}::uuid)
+            AND (${reviewStatus}::text IS NULL OR p.review_status::text = ${reviewStatus})
+            AND (${gradeLevel}::text IS NULL OR p.grade_level = ${gradeLevel})
+            AND (${subject}::text IS NULL OR p.subject = ${subject})
+            AND (${unitMajor}::text IS NULL OR p.unit_major = ${unitMajor})
+            AND (${problemType}::text IS NULL OR p.problem_type::text = ${problemType})
+            AND (${analysisStatus}::text IS NULL OR p.analysis_status = ${analysisStatus})
+            AND (${safeDifficulty}::int IS NULL OR p.difficulty = ${safeDifficulty})
+            AND (${bookTitle}::text IS NULL OR p.book_source->>'title' LIKE '%' || ${bookTitle} || '%')
+            AND (${solutionTagJson}::jsonb IS NULL OR p.solution_tags @> ${solutionTagJson}::jsonb)
+            AND (${safeExamYear}::int IS NULL OR (p.exam_source->>'year')::int = ${safeExamYear})
+            AND (${safeExamMonth}::int IS NULL OR (p.exam_source->>'month')::int = ${safeExamMonth})
+            AND (${examType}::text IS NULL OR p.exam_source->>'type' LIKE '%' || ${examType} || '%')
+            AND (${curriculumNodeId}::uuid IS NULL OR p.curriculum_node_id IN (SELECT id FROM curriculum_tree))
+        ),
+        keyword_results AS (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   ORDER BY ts_rank(stem_tsv, plainto_tsquery('simple', ${textQuery})) DESC
+                 ) AS rank
+          FROM base
+          WHERE stem_tsv IS NOT NULL
+            AND stem_tsv @@ plainto_tsquery('simple', ${textQuery})
+        ),
+        semantic_results AS (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   ORDER BY embedding <=> ${vectorStr}::vector
+                 ) AS rank
+          FROM base
+          WHERE embedding IS NOT NULL
+            AND ${vectorStr}::text IS NOT NULL
+        ),
+        ranked AS (
+          SELECT COALESCE(k.id, s.id) AS id,
+                 COALESCE(1.0 / (60 + k.rank), 0) + COALESCE(1.0 / (60 + s.rank), 0) AS rrf_score
+          FROM keyword_results k
+          FULL OUTER JOIN semantic_results s ON k.id = s.id
+        )
+      SELECT id, COUNT(*) OVER() AS total
+      FROM ranked
+      ORDER BY rrf_score DESC
+      LIMIT ${limit}
+      OFFSET ${offset}
+    `;
+
+    if (rows.length === 0) {
+      return { data: [], total: 0, page, limit, totalPages: 0 };
+    }
+
+    const total = Number(rows[0].total);
+    const ids = rows.map((r) => r.id);
+
+    // Fetch full problem data for the ranked IDs
+    const problems = await this.prisma.problem.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        stemLatex: true,
+        stemText: true,
+        problemNumber: true,
+        displayNumber: true,
+        problemType: true,
+        reviewStatus: true,
+        gradeLevel: true,
+        subject: true,
+        unitMajor: true,
+        unitMinor: true,
+        classification2015: true,
+        classification2022: true,
+        difficulty: true,
+        classificationConfidence: true,
+        solutionConfidence: true,
+        reviewConfidence: true,
+        solutionTags: true,
+        analysisStatus: true,
+        ocrJobId: true,
+        startPage: true,
+        endPage: true,
+        bookSource: true,
+        examSource: true,
+        answerMatchStatus: true,
+        solutionLatex: true,
+        createdAt: true,
+        choices: {
+          select: {
+            label: true,
+            contentLatex: true,
+            contentText: true,
+            position: true,
+          },
+          orderBy: { position: "asc" },
+        },
+        assets: {
+          select: {
+            id: true,
+            kind: true,
+            subKind: true,
+            s3Key: true,
+            format: true,
+            widthPx: true,
+            heightPx: true,
+          },
+        },
+        ocrJob: {
+          select: {
+            sourceFile: {
+              select: { filename: true },
+            },
+          },
+        },
+      },
+    });
+
+    // Preserve RRF order
+    const orderMap = new Map(ids.map((id, i) => [id, i]));
+    problems.sort(
+      (a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0),
+    );
+
+    return {
+      data: problems.map((item) => ({
+        ...item,
+        sourceFile:
+          normalizeFilename(item.ocrJob?.sourceFile?.filename) ?? null,
+        ocrJob: undefined,
+      })),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
     };
   }
 
@@ -420,21 +660,12 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     if (dto.unitMinor !== undefined) updateData.unitMinor = dto.unitMinor;
     if (dto.difficulty !== undefined) updateData.difficulty = dto.difficulty;
 
-    return this.prisma.problem.update({
-      where: { id },
-      data: updateData,
-      select: {
-        id: true,
-        stemLatex: true,
-        stemText: true,
-        problemType: true,
-        gradeLevel: true,
-        subject: true,
-        unitMajor: true,
-        unitMinor: true,
-        difficulty: true,
-      },
-    });
+    return this.problemRevisionService.saveRevisionAndUpdate(
+      id,
+      updateData,
+      requesterId,
+      requesterRole,
+    );
   }
 
   async triggerAnalysis(
@@ -651,17 +882,11 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     });
     if (!problem) throw new NotFoundException("Problem not found");
 
-    return this.prisma.problem.update({
-      where: { id },
-      data: {
-        reviewStatus: action as ReviewStatus,
-        reviewedBy: reviewerId,
-      },
-      select: {
-        id: true,
-        reviewStatus: true,
-        reviewedBy: true,
-      },
-    });
+    return this.problemRevisionService.saveRevisionAndUpdate(
+      id,
+      { reviewStatus: action as ReviewStatus, reviewedBy: reviewerId },
+      reviewerId,
+      requesterRole,
+    );
   }
 }

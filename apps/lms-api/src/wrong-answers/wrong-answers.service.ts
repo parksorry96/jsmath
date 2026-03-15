@@ -6,6 +6,30 @@ import {
 import { ErrorType } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { ListWrongAnswersDto } from "./dto/list-wrong-answers.dto";
+import { canAccessStudentData, isPrivilegedRole } from "../common/access-control";
+
+type ProblemSummary = {
+  id: string;
+  stemLatex: string;
+  stemText: string;
+  problemType: string;
+  difficulty: number | null;
+  subject: string | null;
+  unitMajor: string | null;
+  unitMinor: string | null;
+  displayNumber: string | null;
+  answerText: string | null;
+  answerLatex: string | null;
+  solutionText: string | null;
+  solutionSteps: unknown;
+  alternativeSolutions: unknown;
+  choices: Array<{
+    label: string;
+    contentLatex: string;
+    contentText: string;
+    position: number;
+  }>;
+};
 
 @Injectable()
 export class WrongAnswersService {
@@ -16,16 +40,52 @@ export class WrongAnswersService {
       where: { id: submissionId },
       include: { answers: true },
     });
-    if (!submission) throw new NotFoundException("Submission not found");
+    if (!submission) {
+      return [];
+    }
 
     const incorrectAnswers = submission.answers.filter(
-      (a) => a.isCorrect === false,
+      (answer) => answer.isCorrect === false,
     );
-    if (incorrectAnswers.length === 0) return [];
+    const incorrectProblemIds = new Set(
+      incorrectAnswers.map((answer) => answer.problemId),
+    );
+
+    await this.prisma.wrongAnswer.updateMany({
+      where: {
+        submissionId,
+        problemId: { notIn: [...incorrectProblemIds] },
+        resolvedAt: null,
+      },
+      data: {
+        resolvedAt: new Date(),
+        lastRetryCorrect: true,
+      },
+    });
+
+    if (incorrectAnswers.length === 0) {
+      return [];
+    }
+
+    const problems = await this.prisma.problem.findMany({
+      where: { id: { in: [...incorrectProblemIds] } },
+      select: {
+        id: true,
+        problemType: true,
+        difficulty: true,
+        commonMistakes: true,
+      },
+    });
+    const problemMap = new Map(problems.map((problem) => [problem.id, problem]));
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
 
     const results = await Promise.all(
-      incorrectAnswers.map((answer) =>
-        this.prisma.wrongAnswer.upsert({
+      incorrectAnswers.map(async (answer) => {
+        const errorType = this.inferErrorType(problemMap.get(answer.problemId));
+
+        const wrongAnswer = await this.prisma.wrongAnswer.upsert({
           where: {
             studentId_problemId_submissionId: {
               studentId: submission.studentId,
@@ -37,43 +97,194 @@ export class WrongAnswersService {
             studentId: submission.studentId,
             problemId: answer.problemId,
             submissionId,
-            errorType: "careless_mistake",
+            errorType,
           },
-          update: {},
-        }),
-      ),
-    );
+          update: {
+            errorType,
+            resolvedAt: null,
+            lastRetryCorrect: null,
+          },
+        });
 
-    // Idempotently create a ReviewSchedule for each wrong answer.
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    await Promise.all(
-      results.map((wa) =>
-        this.prisma.reviewSchedule.upsert({
-          where: { wrongAnswerId: wa.id },
+        await this.prisma.reviewSchedule.upsert({
+          where: { wrongAnswerId: wrongAnswer.id },
           create: {
-            studentId: wa.studentId,
-            wrongAnswerId: wa.id,
-            problemId: wa.problemId,
+            studentId: wrongAnswer.studentId,
+            wrongAnswerId: wrongAnswer.id,
+            problemId: wrongAnswer.problemId,
             nextReviewAt: tomorrow,
             interval: 1,
             easeFactor: 2.5,
             repetitions: 0,
           },
-          update: {},
-        }),
-      ),
+          update: {
+            nextReviewAt: tomorrow,
+            interval: 1,
+            easeFactor: 2.5,
+            repetitions: 0,
+            lastReviewedAt: null,
+          },
+        });
+
+        return wrongAnswer;
+      }),
     );
 
     return results;
   }
 
-  async classifyError(wrongAnswerId: string, errorType: ErrorType) {
+  private inferErrorType(problem: {
+    problemType: string;
+    difficulty: number | null;
+    commonMistakes: unknown;
+  } | undefined): ErrorType {
+    if (!problem) {
+      return "pattern_gap";
+    }
+
+    if (problem.difficulty !== null && problem.difficulty <= 2) {
+      return "careless_mistake";
+    }
+
+    if (
+      problem.problemType === "written_solution" ||
+      problem.problemType === "essay"
+    ) {
+      return "concept_gap";
+    }
+
+    if (problem.problemType === "short_answer") {
+      return "calculation_error";
+    }
+
+    return "pattern_gap";
+  }
+
+  private async buildProblemMap(problemIds: string[]) {
+    if (problemIds.length === 0) {
+      return new Map<string, ProblemSummary>();
+    }
+
+    const problems = await this.prisma.problem.findMany({
+      where: { id: { in: problemIds } },
+      select: {
+        id: true,
+        stemLatex: true,
+        stemText: true,
+        problemType: true,
+        difficulty: true,
+        subject: true,
+        unitMajor: true,
+        unitMinor: true,
+        displayNumber: true,
+        answerText: true,
+        answerLatex: true,
+        solutionText: true,
+        solutionSteps: true,
+        alternativeSolutions: true,
+        choices: {
+          select: {
+            label: true,
+            contentLatex: true,
+            contentText: true,
+            position: true,
+          },
+          orderBy: { position: "asc" },
+        },
+      },
+    });
+
+    return new Map(problems.map((problem) => [problem.id, problem]));
+  }
+
+  private async enrichWrongAnswers(
+    items: Array<{
+      id: string;
+      studentId: string;
+      problemId: string;
+      submissionId: string;
+      errorType: ErrorType;
+      note: string | null;
+      retryCount: number;
+      lastRetryCorrect: boolean | null;
+      resolvedAt: Date | null;
+      createdAt: Date;
+      updatedAt: Date;
+    }>,
+  ) {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const problemIds = [...new Set(items.map((item) => item.problemId))];
+    const submissionIds = [...new Set(items.map((item) => item.submissionId))];
+
+    const [problemMap, answers] = await Promise.all([
+      this.buildProblemMap(problemIds),
+      this.prisma.submissionAnswer.findMany({
+        where: {
+          submissionId: { in: submissionIds },
+          problemId: { in: problemIds },
+        },
+        select: {
+          submissionId: true,
+          problemId: true,
+          studentAnswer: true,
+        },
+      }),
+    ]);
+
+    const answerMap = new Map(
+      answers.map((answer) => [
+        `${answer.submissionId}:${answer.problemId}`,
+        answer.studentAnswer,
+      ]),
+    );
+
+    return items.map((item) => {
+      const problem = problemMap.get(item.problemId) ?? null;
+      const studentAnswer =
+        answerMap.get(`${item.submissionId}:${item.problemId}`) ?? null;
+
+      return {
+        ...item,
+        resolved: item.resolvedAt !== null,
+        studentAnswer,
+        problemContent: problem?.stemText || problem?.stemLatex || "",
+        solution:
+          problem?.solutionText ||
+          problem?.answerText ||
+          problem?.answerLatex ||
+          "",
+        problem,
+      };
+    });
+  }
+
+  async classifyError(
+    wrongAnswerId: string,
+    errorType: ErrorType,
+    requesterId: string,
+    requesterRole: string,
+  ) {
+    if (!isPrivilegedRole(requesterRole)) {
+      throw new ForbiddenException("Not authorized");
+    }
+
     const record = await this.prisma.wrongAnswer.findUnique({
       where: { id: wrongAnswerId },
     });
     if (!record) throw new NotFoundException("Wrong answer not found");
+
+    const allowed = await canAccessStudentData(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      record.studentId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized");
+    }
 
     return this.prisma.wrongAnswer.update({
       where: { id: wrongAnswerId },
@@ -83,7 +294,8 @@ export class WrongAnswersService {
 
   async getByStudent(studentId: string, filters: ListWrongAnswersDto) {
     const { errorType, resolved, page = 1, limit = 20 } = filters;
-    const skip = (page - 1) * limit;
+    const normalizedLimit = Math.min(limit, 100);
+    const skip = (page - 1) * normalizedLimit;
 
     const where = {
       studentId,
@@ -97,12 +309,22 @@ export class WrongAnswersService {
         where,
         orderBy: { createdAt: "desc" },
         skip,
-        take: limit,
+        take: normalizedLimit,
       }),
       this.prisma.wrongAnswer.count({ where }),
     ]);
 
-    return { items, total, page, limit };
+    const enriched = await this.enrichWrongAnswers(items);
+    const totalPages = Math.max(1, Math.ceil(total / normalizedLimit));
+
+    return {
+      items: enriched,
+      data: enriched,
+      total,
+      page,
+      limit: normalizedLimit,
+      totalPages,
+    };
   }
 
   async getStats(studentId: string) {
@@ -146,6 +368,10 @@ export class WrongAnswersService {
       resolved,
       unresolved,
       recentCount,
+      conceptGap: byErrorType.concept_gap,
+      patternGap: byErrorType.pattern_gap,
+      calculationError: byErrorType.calculation_error,
+      carelessMistake: byErrorType.careless_mistake,
     };
   }
 
@@ -178,7 +404,7 @@ export class WrongAnswersService {
       data: {
         retryCount: { increment: 1 },
         lastRetryCorrect: isCorrect,
-        ...(isCorrect ? { resolvedAt: new Date() } : {}),
+        resolvedAt: isCorrect ? new Date() : null,
       },
     });
   }

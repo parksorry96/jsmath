@@ -1,27 +1,64 @@
 import {
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
+  NotImplementedException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
+import { createHash } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { RegisterPlatformDto } from "./dto/register-platform.dto";
+import {
+  createRemoteJWKSet,
+  decodeJwt,
+  decodeProtectedHeader,
+  jwtVerify,
+  type JWTPayload,
+  type JWTVerifyResult,
+} from "jose";
+
+const LTI_VERSION_CLAIM = "https://purl.imsglobal.org/spec/lti/claim/version";
+const LTI_MESSAGE_TYPE_CLAIM =
+  "https://purl.imsglobal.org/spec/lti/claim/message_type";
+const LTI_DEPLOYMENT_ID_CLAIM =
+  "https://purl.imsglobal.org/spec/lti/claim/deployment_id";
+const LTI_CONTEXT_CLAIM = "https://purl.imsglobal.org/spec/lti/claim/context";
+const LTI_RESOURCE_LINK_CLAIM =
+  "https://purl.imsglobal.org/spec/lti/claim/resource_link";
+const LTI_ROLES_CLAIM = "https://purl.imsglobal.org/spec/lti/claim/roles";
+const SUPPORTED_LTI_MESSAGE_TYPES = new Set([
+  "LtiResourceLinkRequest",
+  "LtiDeepLinkingRequest",
+]);
+const SUPPORTED_LTI_ALGORITHMS: string[] = [
+  "RS256",
+  "RS384",
+  "RS512",
+  "ES256",
+  "ES384",
+  "ES512",
+];
+
+type LtiPayload = JWTPayload & Record<string, unknown>;
 
 /**
  * LTI 1.3 Provider Service
  *
- * Security hardening TODOs for production:
- * - TODO: Validate id_token signature against platform JWKS (fetch + cache keys)
- * - TODO: Enforce nonce uniqueness / replay-safe state param (Redis set with TTL)
- * - TODO: Validate iss, aud, exp, iat claims per IMS LTI 1.3 spec §4.1
  * - TODO: Implement PKCE / state param for OIDC login initiation flow
- * - TODO: Rotate our own RSA key pair and serve JWKS from database/secrets manager
+ * - TODO: Rotate our own RSA key pair and serve a real JWKS from database/secrets manager
  */
 @Injectable()
 export class LtiService {
   private readonly logger = new Logger(LtiService.name);
+  private readonly remoteJwkSets = new Map<
+    string,
+    ReturnType<typeof createRemoteJWKSet>
+  >();
+  private readonly seenNonces = new Map<string, number>();
 
   constructor(
     private prisma: PrismaService,
@@ -81,11 +118,8 @@ export class LtiService {
   /**
    * Handle the LTI 1.3 OIDC launch id_token.
    *
-   * In production this MUST:
-   *  1. Fetch the platform JWKS from platform.jwksUri
-   *  2. Validate the JWT signature
-   *  3. Verify nonce against replay store
-   * For now it performs structural decoding only and issues a session token.
+   * Verifies the launch token against the registered platform JWKS and then
+   * provisions or reuses a local JSMath user.
    */
   async handleLaunch(idToken: string): Promise<{
     sessionToken: string;
@@ -93,18 +127,26 @@ export class LtiService {
     contextId: string | null;
     resourceLinkId: string | null;
   }> {
-    // TODO (production): replace with full JWKS-backed verification via jose
-    let payload: Record<string, unknown>;
+    if (!idToken?.trim()) {
+      throw new UnauthorizedException("Missing LTI id_token");
+    }
+
+    let unverifiedPayload: LtiPayload;
     try {
-      // Decode without verification so we can read iss to look up platform
-      const parts = idToken.split(".");
-      if (parts.length !== 3) throw new Error("Malformed JWT");
-      payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as Record<string, unknown>;
+      const protectedHeader = decodeProtectedHeader(idToken);
+      if (
+        typeof protectedHeader.alg !== "string" ||
+        !SUPPORTED_LTI_ALGORITHMS.includes(protectedHeader.alg)
+      ) {
+        throw new UnauthorizedException("Unsupported LTI signing algorithm");
+      }
+      unverifiedPayload = decodeJwt(idToken) as LtiPayload;
     } catch {
       throw new UnauthorizedException("Invalid LTI id_token format");
     }
 
-    const issuer = payload["iss"] as string | undefined;
+    const issuer =
+      typeof unverifiedPayload.iss === "string" ? unverifiedPayload.iss : undefined;
     if (!issuer) throw new UnauthorizedException("Missing iss claim");
 
     const platform = await this.prisma.ltiPlatform.findUnique({
@@ -114,33 +156,118 @@ export class LtiService {
       throw new UnauthorizedException("Unknown or inactive LTI platform");
     }
 
-    // TODO (production): verify JWT signature against platform.jwksUri here
+    let verifiedToken: JWTVerifyResult<LtiPayload>;
+    try {
+      verifiedToken = await jwtVerify(
+        idToken,
+        this.getRemoteJwkSet(platform.jwksUri),
+        {
+          issuer: platform.issuer,
+          audience: platform.clientId,
+          algorithms: SUPPORTED_LTI_ALGORITHMS,
+          maxTokenAge: "5m",
+          clockTolerance: 30,
+        },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to verify LTI launch for issuer=${platform.issuer}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw new UnauthorizedException("Failed to verify LTI id_token");
+    }
 
-    const sub = payload["sub"] as string | undefined;
-    const email = (payload["email"] as string | undefined) ?? `lti-${sub}@${issuer}`;
-    const name = (payload["name"] as string | undefined) ?? email;
+    const payload = verifiedToken.payload;
+    this.assertRequiredClaims(payload, platform.deploymentId ?? null);
 
-    const contextClaim = payload["https://purl.imsglobal.org/spec/lti/claim/context"] as
+    const sub = payload.sub;
+    if (!sub) {
+      throw new UnauthorizedException("Missing sub claim");
+    }
+
+    this.assertFreshNonce(platform.id, payload.nonce);
+
+    const claimedEmail =
+      typeof payload.email === "string" && payload.email.length > 0
+        ? payload.email
+        : null;
+    const email =
+      claimedEmail ?? this.buildSyntheticEmail(platform.id, sub);
+    const name =
+      typeof payload.name === "string" && payload.name.length > 0
+        ? payload.name
+        : email;
+    const role = this.resolveUserRole(payload[LTI_ROLES_CLAIM]);
+
+    const contextClaim = payload[LTI_CONTEXT_CLAIM] as
       | Record<string, string>
       | undefined;
     const contextId = contextClaim?.["id"] ?? null;
 
-    const resourceLinkClaim = payload[
-      "https://purl.imsglobal.org/spec/lti/claim/resource_link"
-    ] as Record<string, string> | undefined;
+    const resourceLinkClaim = payload[LTI_RESOURCE_LINK_CLAIM] as
+      | Record<string, string>
+      | undefined;
     const resourceLinkId = resourceLinkClaim?.["id"] ?? null;
 
-    // Find or provision user
-    let user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user) {
+    const identity = await this.prisma.ltiIdentity.findUnique({
+      where: {
+        platformId_subject: {
+          platformId: platform.id,
+          subject: sub,
+        },
+      },
+      include: { user: true },
+    });
+
+    let user = identity?.user ?? null;
+    if (user) {
+      if (user.role !== "admin" && user.role !== role) {
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: { role, name },
+        });
+      } else if (user.name !== name) {
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: { name },
+        });
+      }
+
+      if (identity && identity.email !== claimedEmail) {
+        await this.prisma.ltiIdentity.update({
+          where: { id: identity.id },
+          data: { email: claimedEmail },
+        });
+      }
+    } else {
+      const existingUser = claimedEmail
+        ? await this.prisma.user.findUnique({ where: { email: claimedEmail } })
+        : null;
+      if (existingUser) {
+        throw new ConflictException(
+          "Local account linking is required before this LTI user can sign in",
+        );
+      }
+
       user = await this.prisma.user.create({
         data: {
           email,
           name,
-          passwordHash: "", // LTI users authenticate via platform, no local password
-          role: "student",
+          passwordHash: "!lti-no-local-auth", // invalid bcrypt hash — LTI users cannot log in locally
+          role,
         },
       });
+
+      await this.prisma.ltiIdentity.create({
+        data: {
+          platformId: platform.id,
+          userId: user.id,
+          subject: sub,
+          email: claimedEmail,
+        },
+      });
+
       this.logger.log(`Provisioned LTI user ${user.id} for platform ${platform.id}`);
     }
 
@@ -173,38 +300,103 @@ export class LtiService {
       `[AGS] Grade passback to ${platform.name}: user=${opts.userId} score=${opts.score}/${opts.maxScore} lineItem=${opts.lineItemUrl}`,
     );
 
-    // TODO (production): implement OAuth2 client_credentials flow to get access token,
-    // then POST to opts.lineItemUrl + "/scores" with application/vnd.ims.lis.v1.score+json
-    //
-    // Example payload:
-    // {
-    //   "scoreGiven": opts.score,
-    //   "scoreMaximum": opts.maxScore,
-    //   "activityProgress": "Completed",
-    //   "gradingProgress": "FullyGraded",
-    //   "userId": opts.userId,
-    //   "timestamp": new Date().toISOString(),
-    // }
+    throw new NotImplementedException(
+      "LTI grade passback is not implemented yet",
+    );
   }
 
   /**
    * Return our public JWKS so platforms can verify tokens we sign.
    *
-   * TODO (production): store an RSA key pair, return the real public key here.
+   * TODO (production): store an RSA key pair and return the real public key here.
    */
   getJwks(): Record<string, unknown> {
-    // TODO: generate and persist an RSA-2048 or ES256 key pair, return the public key as JWK
-    return {
-      keys: [
-        {
-          kty: "RSA",
-          use: "sig",
-          alg: "RS256",
-          kid: "jsmath-lti-key-1",
-          n: "TODO_replace_with_real_modulus",
-          e: "AQAB",
-        },
-      ],
-    };
+    throw new ServiceUnavailableException("LTI JWKS is not configured");
+  }
+
+  private getRemoteJwkSet(jwksUri: string) {
+    let jwks = this.remoteJwkSets.get(jwksUri);
+    if (!jwks) {
+      jwks = createRemoteJWKSet(new URL(jwksUri));
+      this.remoteJwkSets.set(jwksUri, jwks);
+    }
+    return jwks;
+  }
+
+  private assertRequiredClaims(
+    payload: LtiPayload,
+    expectedDeploymentId: string | null,
+  ) {
+    if (payload[LTI_VERSION_CLAIM] !== "1.3.0") {
+      throw new UnauthorizedException("Unsupported LTI version");
+    }
+
+    const messageType = payload[LTI_MESSAGE_TYPE_CLAIM];
+    if (
+      typeof messageType !== "string" ||
+      !SUPPORTED_LTI_MESSAGE_TYPES.has(messageType)
+    ) {
+      throw new UnauthorizedException("Unsupported LTI message type");
+    }
+
+    if (typeof payload.nonce !== "string" || payload.nonce.length === 0) {
+      throw new UnauthorizedException("Missing nonce claim");
+    }
+
+    if (expectedDeploymentId) {
+      const deploymentId = payload[LTI_DEPLOYMENT_ID_CLAIM];
+      if (deploymentId !== expectedDeploymentId) {
+        throw new UnauthorizedException("Unexpected LTI deployment_id");
+      }
+    }
+  }
+
+  private assertFreshNonce(platformId: string, nonce: unknown) {
+    if (typeof nonce !== "string" || nonce.length === 0) {
+      throw new UnauthorizedException("Missing nonce claim");
+    }
+
+    const now = Date.now();
+    for (const [key, expiresAt] of this.seenNonces.entries()) {
+      if (expiresAt <= now) {
+        this.seenNonces.delete(key);
+      }
+    }
+
+    const cacheKey = `${platformId}:${nonce}`;
+    const existing = this.seenNonces.get(cacheKey);
+    if (existing && existing > now) {
+      throw new UnauthorizedException("Replay detected for LTI nonce");
+    }
+
+    this.seenNonces.set(cacheKey, now + 5 * 60 * 1000);
+  }
+
+  private buildSyntheticEmail(platformId: string, subject: string) {
+    const digest = createHash("sha256")
+      .update(`${platformId}:${subject}`)
+      .digest("hex")
+      .slice(0, 24);
+    return `lti-${digest}@lti.local`;
+  }
+
+  private resolveUserRole(rawRoles: unknown): "teacher" | "student" {
+    if (!Array.isArray(rawRoles)) {
+      return "student";
+    }
+
+    const roles = rawRoles
+      .filter((role): role is string => typeof role === "string")
+      .map((role) => role.toLowerCase());
+
+    if (
+      roles.some((role) =>
+        role.includes("instructor") || role.includes("administrator"),
+      )
+    ) {
+      return "teacher";
+    }
+
+    return "student";
   }
 }

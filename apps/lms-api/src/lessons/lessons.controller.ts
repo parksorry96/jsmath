@@ -30,8 +30,8 @@ export class LessonsController {
 
   @Post()
   @Roles("admin", "teacher")
-  create(@Body() dto: CreateLessonDto) {
-    return this.lessons.create(dto);
+  create(@Body() dto: CreateLessonDto, @Request() req: AuthRequest) {
+    return this.lessons.create(dto, req.user.id, req.user.role);
   }
 
   @Get("calendar")
@@ -52,26 +52,37 @@ export class LessonsController {
 
   @Patch(":id")
   @Roles("admin", "teacher")
-  update(@Param("id") id: string, @Body() dto: UpdateLessonDto) {
-    return this.lessons.update(id, dto);
+  update(
+    @Param("id") id: string,
+    @Body() dto: UpdateLessonDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.lessons.update(id, dto, req.user.id, req.user.role);
   }
 
   @Patch(":id/cancel")
   @Roles("admin", "teacher")
-  cancel(@Param("id") id: string) {
-    return this.lessons.cancel(id);
+  cancel(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.lessons.cancel(id, req.user.id, req.user.role);
   }
 
   @Patch(":id/complete")
   @Roles("admin", "teacher")
-  complete(@Param("id") id: string) {
-    return this.lessons.complete(id);
+  complete(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.lessons.complete(id, req.user.id, req.user.role);
   }
 
   @Delete("series/:recurrenceParentId")
   @Roles("admin", "teacher")
   @HttpCode(HttpStatus.NO_CONTENT)
-  deleteSeries(@Param("recurrenceParentId") recurrenceParentId: string) {
-    return this.lessons.deleteSeries(recurrenceParentId);
+  deleteSeries(
+    @Param("recurrenceParentId") recurrenceParentId: string,
+    @Request() req: AuthRequest,
+  ) {
+    return this.lessons.deleteSeries(
+      recurrenceParentId,
+      req.user.id,
+      req.user.role,
+    );
   }
 }

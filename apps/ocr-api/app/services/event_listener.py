@@ -1,7 +1,14 @@
-"""Redis Pub/Sub listener for incoming events from NestJS.
+"""Redis event listeners for incoming events from NestJS.
 
-Listens on `ocr:submit` and `analysis:request` channels.
-Runs as an asyncio background task inside the FastAPI process.
+Two listeners run in parallel:
+  1. Pub/Sub listener (legacy) — kept during migration
+  2. Stream listener (durable) — uses XREADGROUP with consumer groups
+
+Streams that OCR-API consumes:
+  - stream:ocr:submit
+  - stream:analysis:request
+  - stream:photo:analyze
+  - stream:photo:rubric
 """
 
 from __future__ import annotations
@@ -9,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 
 import redis.asyncio as aioredis
 from sqlalchemy import select
@@ -20,9 +28,29 @@ from app.models.job import JobStatus, OcrJobTracking
 logger = logging.getLogger(__name__)
 RECONNECT_DELAY_SEC = 5
 
+# Consumer group for the OCR-API service
+_CONSUMER_GROUP = "ocr-api"
+_CONSUMER_NAME = f"ocr-api-{socket.gethostname()}"
+
+# Streams this service consumes (NestJS → FastAPI direction)
+_INBOUND_STREAMS = [
+    "stream:ocr:submit",
+    "stream:analysis:request",
+    "stream:photo:analyze",
+    "stream:photo:rubric",
+]
+
+# Stream name → handler channel key (reuse existing handlers)
+_STREAM_TO_CHANNEL: dict[str, str] = {
+    "stream:ocr:submit": "ocr:submit",
+    "stream:analysis:request": "analysis:request",
+    "stream:photo:analyze": "photo:analyze",
+    "stream:photo:rubric": "photo:rubric",
+}
+
 
 async def listen_for_events() -> None:
-    """Subscribe to Redis and process incoming OCR events."""
+    """Subscribe to Redis Pub/Sub and process incoming OCR events (legacy)."""
     while True:
         r = aioredis.from_url(settings.redis_url, decode_responses=True)
         pubsub = r.pubsub()
@@ -61,6 +89,74 @@ async def listen_for_events() -> None:
             await r.aclose()
 
 
+async def listen_for_events_stream() -> None:
+    """Consume events from Redis Streams using XREADGROUP (durable)."""
+    while True:
+        r = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            # Ensure consumer groups exist (MKSTREAM creates the stream if absent)
+            for stream in _INBOUND_STREAMS:
+                try:
+                    await r.xgroup_create(stream, _CONSUMER_GROUP, id="0", mkstream=True)
+                    logger.info("Created consumer group %s on %s", _CONSUMER_GROUP, stream)
+                except aioredis.ResponseError as e:
+                    if "BUSYGROUP" not in str(e):
+                        raise
+
+            logger.info(
+                "Stream listener started (group=%s, consumer=%s, streams=%s)",
+                _CONSUMER_GROUP, _CONSUMER_NAME, _INBOUND_STREAMS,
+            )
+
+            # Read loop
+            streams_arg = {s: ">" for s in _INBOUND_STREAMS}
+            while True:
+                entries = await r.xreadgroup(
+                    groupname=_CONSUMER_GROUP,
+                    consumername=_CONSUMER_NAME,
+                    streams=streams_arg,
+                    count=10,
+                    block=5000,
+                )
+                if not entries:
+                    continue
+
+                for stream_name, messages in entries:
+                    channel = _STREAM_TO_CHANNEL.get(stream_name, stream_name)
+                    for msg_id, fields in messages:
+                        raw_data = fields.get("data", "{}")
+                        try:
+                            await _dispatch_stream_event(channel, raw_data)
+                            await r.xack(stream_name, _CONSUMER_GROUP, msg_id)
+                        except Exception:
+                            logger.exception(
+                                "Error processing stream %s msg %s", stream_name, msg_id,
+                            )
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Stream listener crashed; reconnecting in %s seconds",
+                RECONNECT_DELAY_SEC,
+            )
+            await asyncio.sleep(RECONNECT_DELAY_SEC)
+        finally:
+            await r.aclose()
+
+
+async def _dispatch_stream_event(channel: str, raw_data: str) -> None:
+    """Route a stream event to the appropriate handler."""
+    if channel == "ocr:submit":
+        await _handle_submit(raw_data)
+    elif channel == "analysis:request":
+        await _handle_analysis_request(json.loads(raw_data))
+    elif channel == "photo:analyze":
+        await _handle_photo_analyze(json.loads(raw_data))
+    elif channel == "photo:rubric":
+        await _handle_photo_rubric(json.loads(raw_data))
+
+
 async def _handle_submit(raw: str) -> None:
     """Handle an ocr:submit event from NestJS.
 
@@ -78,7 +174,7 @@ async def _handle_submit(raw: str) -> None:
     publisher = payload.get("publisher")
 
     if not ocr_job_id or not source_file_id or not s3_key:
-        logger.warning("Ignoring malformed ocr:submit payload: %s", payload)
+        logger.warning("Ignoring malformed ocr:submit payload (keys=%s)", list(payload.keys()))
         return
 
     logger.info("Received ocr:submit for job %s (file=%s, type=%s)", ocr_job_id, source_file_id, document_type)
@@ -102,7 +198,12 @@ async def _handle_submit(raw: str) -> None:
             publisher=publisher,
         )
         session.add(tracking)
-        await session.commit()
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            logger.info("Ignoring duplicate ocr:submit for job %s (race)", ocr_job_id)
+            return
 
     # Start the Celery pipeline — offload to thread to avoid blocking event loop
     from app.workers.pipeline import start_ocr_pipeline

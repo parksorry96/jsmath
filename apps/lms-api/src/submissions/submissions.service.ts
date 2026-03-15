@@ -8,6 +8,8 @@ import { Prisma, SubmissionStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateSubmissionDto } from "./dto/create-submission.dto";
 import { GradeSubmissionDto } from "./dto/grade-submission.dto";
+import { ClassMonitorGateway } from "../class-monitor/class-monitor.gateway";
+import { ClassMonitorService } from "../class-monitor/class-monitor.service";
 import {
   canAccessAssignment,
   canAccessStudentData,
@@ -29,7 +31,26 @@ export class SubmissionsService {
     private masteryService: MasteryService,
     private gamification: GamificationService,
     private smartScore: SmartScoreService,
+    private classMonitorGateway: ClassMonitorGateway,
+    private classMonitorService: ClassMonitorService,
   ) {}
+
+  private async emitClassMonitorUpdate(assignmentId: string) {
+    try {
+      const assignment = await this.prisma.assignment.findUnique({
+        where: { id: assignmentId },
+        select: { classId: true },
+      });
+      if (!assignment) return;
+      const status = await this.classMonitorService.getStatus(
+        assignment.classId,
+        assignmentId,
+      );
+      this.classMonitorGateway.emitSubmission(assignmentId, status);
+    } catch {
+      // Non-critical: don't break submission flow
+    }
+  }
 
   private normalizeStatus(status?: string): SubmissionStatus | undefined {
     if (
@@ -207,9 +228,12 @@ export class SubmissionsService {
     }
 
     if (dto.type === "online" && submission.answers.length > 0) {
-      return this.autoGrade(submission.id);
+      const graded = await this.autoGrade(submission.id);
+      this.emitClassMonitorUpdate(dto.assignmentId).catch(() => {});
+      return graded;
     }
 
+    this.emitClassMonitorUpdate(dto.assignmentId).catch(() => {});
     return submission;
   }
 
@@ -595,6 +619,8 @@ export class SubmissionsService {
         ).catch(() => {});
       }
     }
+
+    this.emitClassMonitorUpdate(submission.assignmentId).catch(() => {});
 
     return graded;
   }

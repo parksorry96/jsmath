@@ -10,8 +10,10 @@ Supports:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import re
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -19,6 +21,9 @@ from sqlalchemy.orm import selectinload
 from app.celery_app import celery
 from app.database import worker_session
 from app.models.ocr import OcrLine, OcrPage
+from app.services import mathpix, s3
+from app.workers.detect_sections import _find_quick_answer_page
+from app.workers.ocr_poll import MAX_POLL_ATTEMPTS_TEXTBOOK, _get_poll_delay
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +92,20 @@ _SOL_STANDALONE_NUM = re.compile(r"^\$?(\d{1,2})\s*$")
 _SOL_ANSWER_LINE = re.compile(r"^(?:답|뎝|달|뎔)\s+(.+)$")
 
 
+@dataclass
+class ParsedAnswerLine:
+    line_number: int
+    text: str
+    line_type: str | None = None
+    latex: str | None = None
+
+
+@dataclass
+class ParsedAnswerPage:
+    page_number: int
+    lines: list[ParsedAnswerLine]
+
+
 def _clean_latex_table(text: str) -> str:
     """Strip LaTeX table markup to extract plain-text cell content."""
     # Remove \begin{tabular}..., \end{tabular}, \hline, column specs
@@ -104,6 +123,63 @@ def _clean_latex_table(text: str) -> str:
     # Collapse whitespace
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+def _pages_from_lines_json(lines_data: dict[str, Any]) -> list[ParsedAnswerPage]:
+    raw_pages = lines_data.get("pages", [])
+    if not raw_pages and isinstance(lines_data, list):
+        raw_pages = lines_data
+
+    pages: list[ParsedAnswerPage] = []
+    for page_data in raw_pages:
+        page_number = int(page_data.get("page", 0) or 0)
+        if page_number <= 0:
+            continue
+
+        lines: list[ParsedAnswerLine] = []
+        for line_idx, line_obj in enumerate(page_data.get("lines", [])):
+            text = (line_obj.get("text") or "").strip()
+            if not text:
+                continue
+
+            lines.append(
+                ParsedAnswerLine(
+                    line_number=line_obj.get("line_number", line_idx),
+                    text=text,
+                    line_type=line_obj.get("type"),
+                    latex=line_obj.get("latex") or line_obj.get("value"),
+                )
+            )
+
+        pages.append(ParsedAnswerPage(page_number=page_number, lines=lines))
+
+    return pages
+
+
+def _has_quick_answer_section(pages: list[ParsedAnswerPage]) -> bool:
+    for page in pages[:3]:
+        for line in sorted(page.lines, key=lambda item: item.line_number)[:10]:
+            if _QUICK_ANSWER_HEADER.search(line.text) or "한눈에 보는 정답" in line.text:
+                return True
+    return False
+
+
+async def _load_external_answer_pages(answer_s3_key: str) -> list[ParsedAnswerPage]:
+    presigned_url = s3.generate_presigned_url(answer_s3_key, expires_in=3600)
+    pdf_id = await mathpix.submit_pdf(presigned_url)
+
+    for attempt in range(MAX_POLL_ATTEMPTS_TEXTBOOK + 1):
+        status_data = await mathpix.get_status(pdf_id)
+        status = status_data.get("status", "unknown")
+        if status == "completed":
+            lines_data = await mathpix.get_lines_json(pdf_id)
+            return _pages_from_lines_json(lines_data)
+        if status == "error":
+            raise RuntimeError(f"Answer PDF OCR failed: {status_data.get('error', status_data)}")
+
+        await asyncio.sleep(_get_poll_delay(attempt))
+
+    raise RuntimeError("Answer PDF OCR timed out")
 
 
 def _parse_answer_cells(
@@ -546,6 +622,7 @@ def match_answers(
     prev_result: dict | None = None,
     *,
     ocr_job_id: str | None = None,
+    answer_s3_key: str | None = None,
 ) -> dict:
     """Match answers from answer section to problem segments."""
     if prev_result:
@@ -558,7 +635,14 @@ def match_answers(
     has_quick_answers = prev_result.get("has_quick_answers", False) if prev_result else False
 
     return asyncio.run(
-        _match(ocr_job_id, segments, answer_pages, has_quick_answers, prev_result)
+        _match(
+            ocr_job_id,
+            segments,
+            answer_pages,
+            has_quick_answers,
+            prev_result,
+            answer_s3_key=answer_s3_key,
+        )
     )
 
 
@@ -568,27 +652,50 @@ async def _match(
     answer_pages: list[int] | None,
     has_quick_answers: bool,
     prev_result: dict | None = None,
+    *,
+    answer_s3_key: str | None = None,
 ) -> dict:
+    pages: list = []
+    quick_answer_pages_range = None
+
+    if answer_s3_key:
+        from app.services.redis_events import notify_progress
+
+        notify_progress(ocr_job_id, "answer_matching", message="별도 답지 OCR 처리 중")
+        pages = await _load_external_answer_pages(answer_s3_key)
+        has_quick_answers = has_quick_answers or _has_quick_answer_section(pages)
+        quick_answer_page = _find_quick_answer_page(pages)
+        if quick_answer_page:
+            quick_answer_pages_range = [quick_answer_page, quick_answer_page]
+    else:
+        quick_answer_pages_range = prev_result.get("quick_answer_pages") if prev_result else None
+
     # Load EBS quick answer table if available
-    quick_answer_pages_range = prev_result.get("quick_answer_pages") if prev_result else None
     ebs_answers: dict[tuple[str, str, str], str] = {}
     if quick_answer_pages_range:
-        async with worker_session() as session:
-            qa_pages_result = await session.execute(
-                select(OcrPage)
-                .where(
-                    OcrPage.ocr_job_id == ocr_job_id,
-                    OcrPage.page_number >= quick_answer_pages_range[0],
-                    OcrPage.page_number <= quick_answer_pages_range[1],
+        if answer_s3_key:
+            qa_pages = [
+                page
+                for page in pages
+                if quick_answer_pages_range[0] <= page.page_number <= quick_answer_pages_range[1]
+            ]
+        else:
+            async with worker_session() as session:
+                qa_pages_result = await session.execute(
+                    select(OcrPage)
+                    .where(
+                        OcrPage.ocr_job_id == ocr_job_id,
+                        OcrPage.page_number >= quick_answer_pages_range[0],
+                        OcrPage.page_number <= quick_answer_pages_range[1],
+                    )
+                    .options(selectinload(OcrPage.lines))
+                    .order_by(OcrPage.page_number)
                 )
-                .options(selectinload(OcrPage.lines))
-                .order_by(OcrPage.page_number)
-            )
-            qa_pages = qa_pages_result.scalars().all()
+                qa_pages = qa_pages_result.scalars().all()
         ebs_answers = _parse_ebs_quick_answer_table(qa_pages)
 
     # No answer section and no EBS answers — mark all as no_answer_key
-    if not answer_pages and not ebs_answers:
+    if not answer_s3_key and not answer_pages and not ebs_answers:
         for seg in segments:
             # Check inline answers even when no answer section exists
             if seg.get("inline_answer"):
@@ -621,8 +728,7 @@ async def _match(
         }
 
     # Load answer section pages
-    pages: list = []
-    if answer_pages:
+    if not pages and answer_pages:
         async with worker_session() as session:
             pages_result = await session.execute(
                 select(OcrPage)

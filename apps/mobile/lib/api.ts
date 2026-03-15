@@ -1,4 +1,4 @@
-import * as SecureStore from "expo-secure-store";
+import { getItemAsync } from "./storage";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:3001/v1";
 
@@ -20,7 +20,7 @@ async function request<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const token = await SecureStore.getItemAsync("auth_token");
+  const token = await getItemAsync("auth_token");
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",

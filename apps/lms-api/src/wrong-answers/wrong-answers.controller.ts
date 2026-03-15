@@ -43,8 +43,14 @@ export class WrongAnswersController {
   classify(
     @Param("id") id: string,
     @Body() dto: ClassifyErrorDto,
+    @Request() req: AuthRequest,
   ) {
-    return this.wrongAnswers.classifyError(id, dto.errorType);
+    return this.wrongAnswers.classifyError(
+      id,
+      dto.errorType,
+      req.user.id,
+      req.user.role,
+    );
   }
 
   @Patch(":id/resolve")

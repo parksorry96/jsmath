@@ -41,7 +41,7 @@ def finalize_textbook(
 
 
 async def _finalize(ocr_job_id: str, segments: list[dict]) -> dict:
-    # Update job status and read textbook metadata
+    # Idempotency: skip if job already completed
     book_title: str | None = None
     publisher: str | None = None
 
@@ -50,6 +50,9 @@ async def _finalize(ocr_job_id: str, segments: list[dict]) -> dict:
             select(OcrJobTracking).where(OcrJobTracking.id == ocr_job_id)
         )
         job = job_result.scalar_one()
+        if job.status == JobStatus.completed:
+            logger.info("Skipping finalize_textbook for job %s — already completed", ocr_job_id)
+            return {"ocr_job_id": ocr_job_id, "problem_count": job.problem_count or 0, "skipped": True}
         job.status = JobStatus.completed
         job.problem_count = len(segments)
         job.completed_at = datetime.now(timezone.utc)
@@ -71,30 +74,40 @@ async def _finalize(ocr_job_id: str, segments: list[dict]) -> dict:
     # Build problem payloads with textbook-specific fields
     merged_problems = []
     for segment in segments:
+        start_page = segment.get("start_page", 0)
+        end_page = segment.get("end_page", 0)
+        problem_number = segment.get("problem_number")
+        display_number = segment.get("display_number")
+        problem_label = segment.get("problem_label")
+
         problem = {
-            "problemNumber": segment.get("problem_number"),
-            "displayNumber": segment.get("display_number"),
+            "problemNumber": problem_number,
+            "displayNumber": display_number,
             "problemType": segment.get("problem_type", "short_answer"),
-            "startPage": segment.get("start_page", 0),
-            "endPage": segment.get("end_page", 0),
+            "startPage": start_page,
+            "endPage": end_page,
             "stemLatex": segment.get("stem_latex", ""),
             "stemText": segment.get("stem_text", ""),
-            "pageImageS3Key": page_image_map.get(segment.get("start_page", 0)),
+            "pageImageS3Key": page_image_map.get(start_page),
             "problemImageS3Key": segment.get("problem_image_s3_key"),
             # Textbook-specific fields
             "documentType": "textbook",
             "bookSource": {
                 "title": book_title,
                 "publisher": publisher,
+                "problemLabel": problem_label,
+                "pageStart": start_page,
+                "pageEnd": end_page,
                 "chapter": segment.get("chapter"),
                 "section": segment.get("section_label") or segment.get("section"),
                 "sectionType": segment.get("section_type"),
                 "problemCategory": segment.get("problem_category"),
                 "itemCode": segment.get("item_code"),
-                "localNumber": segment.get("local_number"),
                 "difficultyLabel": segment.get("problem_category"),
                 "inlineHint": segment.get("inline_hint"),
+                "examHeader": segment.get("exam_source"),
             },
+            "examSource": segment.get("exam_source"),
             "answerText": segment.get("answer_text"),
             "solutionLatex": segment.get("solution_latex"),
             "solutionText": segment.get("solution_text"),

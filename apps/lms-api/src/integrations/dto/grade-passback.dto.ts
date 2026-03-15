@@ -1,7 +1,9 @@
-import { IsString, IsNumber, Min, Max } from "class-validator";
+import { IsNumber, IsString, IsUrl, Min } from "class-validator";
+
+const HTTPS_URL = { protocols: ["https"], require_protocol: true };
 
 export class GradePassbackDto {
-  @IsString()
+  @IsUrl(HTTPS_URL)
   lineItemUrl: string;
 
   @IsString()

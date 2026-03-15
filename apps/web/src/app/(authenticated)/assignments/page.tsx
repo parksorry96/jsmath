@@ -14,6 +14,8 @@ import {
   ChevronRight,
   X,
   Check,
+  UserRound,
+  FileText,
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
@@ -25,6 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { buildProblemPreview } from "@/lib/problem-preview";
 import {
   Dialog,
   DialogContent,
@@ -55,11 +58,13 @@ interface Assignment {
   classId: string;
   title: string;
   description: string | null;
-  type: string; // "problem_set" | "text_task"
+  type: string; // "problem_set" | "text_task" | "remediation"
   dueAt: string | null;
   maxScore: number;
   status: string;
   createdAt: string;
+  targetStudentId?: string | null;
+  targetStudent?: { id: string; name: string } | null;
   _count?: {
     submissions: number;
   };
@@ -98,6 +103,10 @@ const TYPE_LABELS: Record<string, { label: string; className: string }> = {
   text_task: {
     label: "일반과제",
     className: "bg-purple-900/30 text-purple-400 border-purple-400/30",
+  },
+  remediation: {
+    label: "보충과제",
+    className: "bg-orange-900/30 text-orange-400 border-orange-400/30",
   },
 };
 
@@ -141,17 +150,6 @@ function isDueSoon(dueDate: string): boolean {
 
 function isOverdue(dueDate: string): boolean {
   return new Date(dueDate).getTime() < Date.now();
-}
-
-function stripLatexForPreview(text: string): string {
-  return text
-    .replace(/\$\$[\s\S]*?\$\$/g, "[수식]")
-    .replace(/\$[^$]+?\$/g, "[수식]")
-    .replace(/\\[a-zA-Z]+\{[^}]*\}/g, "")
-    .replace(/\\[a-zA-Z]+/g, "")
-    .replace(/[{}]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 // --- Problem Search Modal ---
@@ -268,11 +266,7 @@ function ProblemSearchModal({
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm">
-                        {stripLatexForPreview(
-                          (problem.stemText || problem.stemLatex || "")
-                            .split("\n")[0]
-                            .slice(0, 100)
-                        )}
+                        {buildProblemPreview(problem, 100)}
                       </p>
                       <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                         {problem.subject && <span>{problem.subject}</span>}
@@ -339,6 +333,10 @@ function CreateAssignmentDialog({
   const [maxScore, setMaxScore] = useState("100");
   const [selectedProblems, setSelectedProblems] = useState<Problem[]>([]);
   const [problemSearchOpen, setProblemSearchOpen] = useState(false);
+  const [showExamPicker, setShowExamPicker] = useState(false);
+  const [examDocumentId, setExamDocumentId] = useState<string | undefined>();
+  const [attachPdf, setAttachPdf] = useState(false);
+  const [examTitle, setExamTitle] = useState<string | null>(null);
 
   // Sync default class when it changes
   const effectiveClassId = classId || defaultClassId;
@@ -378,6 +376,9 @@ function CreateAssignmentDialog({
     setDueDate("");
     setMaxScore("100");
     setSelectedProblems([]);
+    setExamDocumentId(undefined);
+    setAttachPdf(false);
+    setExamTitle(null);
   }
 
   function toggleProblem(problem: Problem) {
@@ -400,6 +401,7 @@ function CreateAssignmentDialog({
       type,
       dueAt: dueDate || undefined,
       maxScore: Number(maxScore) || 100,
+      ...(examDocumentId ? { examDocumentId, attachPdf } : {}),
     });
   }
 
@@ -502,16 +504,46 @@ function CreateAssignmentDialog({
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>문제 선택</Label>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setProblemSearchOpen(true)}
-                  >
-                    <Search className="mr-1.5 h-3.5 w-3.5" />
-                    문제 추가
-                  </Button>
+                  <div className="flex gap-1.5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowExamPicker(true)}
+                    >
+                      <FileText className="mr-1.5 h-3.5 w-3.5" />
+                      시험지에서
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setProblemSearchOpen(true)}
+                    >
+                      <Search className="mr-1.5 h-3.5 w-3.5" />
+                      문제 추가
+                    </Button>
+                  </div>
                 </div>
+                {examTitle && (
+                  <div className="flex items-center gap-2 rounded-md border border-brand-beige/30 bg-brand-dark/30 px-3 py-2 text-xs">
+                    <FileText className="h-3.5 w-3.5 text-brand-beige" />
+                    <span className="flex-1 truncate">{examTitle}에서 가져옴</span>
+                    {attachPdf && <Badge variant="secondary" className="text-[10px]">PDF 첨부</Badge>}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExamDocumentId(undefined);
+                        setAttachPdf(false);
+                        setExamTitle(null);
+                        setSelectedProblems([]);
+                      }}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                )}
                 {selectedProblems.length > 0 ? (
                   <div className="space-y-1.5 rounded-lg border border-border p-3">
                     {selectedProblems.map((p, i) => (
@@ -523,11 +555,7 @@ function CreateAssignmentDialog({
                           {i + 1}
                         </span>
                         <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                          {stripLatexForPreview(
-                            (p.stemText || p.stemLatex || "")
-                              .split("\n")[0]
-                              .slice(0, 80)
-                          )}
+                          {buildProblemPreview(p, 80)}
                         </span>
                         <button
                           type="button"
@@ -575,7 +603,142 @@ function CreateAssignmentDialog({
         selectedProblems={selectedProblems}
         onToggleProblem={toggleProblem}
       />
+
+      {showExamPicker && (
+        <ExamDocumentPickerDialog
+          onSelect={(doc) => {
+            setExamDocumentId(doc.id);
+            setAttachPdf(doc.attachPdf);
+            setExamTitle(doc.title);
+            if (!title) setTitle(doc.title);
+            // Fetch problem data to populate selectedProblems display
+            api
+              .get<{
+                problems: Array<{
+                  problemId: string;
+                  problem?: Problem;
+                }>;
+              }>(`/exam-documents/${doc.id}`)
+              .then((detail) => {
+                const probs = detail.problems
+                  .map((p) => p.problem)
+                  .filter((p): p is Problem => !!p);
+                if (probs.length > 0) {
+                  setSelectedProblems(probs);
+                } else {
+                  // Just store IDs — create will auto-populate from examDocumentId
+                  setSelectedProblems(
+                    doc.problemIds.map((id) => ({
+                      id,
+                      displayNumber: null,
+                      problemNumber: null,
+                      stemText: "",
+                      stemLatex: "",
+                      problemType: "multiple_choice",
+                      reviewStatus: "approved",
+                      difficulty: null,
+                      unitMajor: null,
+                      subject: null,
+                    })),
+                  );
+                }
+              });
+          }}
+          onClose={() => setShowExamPicker(false)}
+        />
+      )}
     </>
+  );
+}
+
+// --- Exam Document Picker ---
+
+interface ExamDocForPicker {
+  id: string;
+  title: string;
+  type: "exam" | "workbook";
+  status: string;
+  _count?: { problems: number };
+  creator?: { id: string; name: string };
+}
+
+function ExamDocumentPickerDialog({
+  onSelect,
+  onClose,
+}: {
+  onSelect: (doc: {
+    id: string;
+    title: string;
+    problemIds: string[];
+    attachPdf: boolean;
+  }) => void;
+  onClose: () => void;
+}) {
+  const [attachPdf, setAttachPdf] = useState(false);
+
+  const { data: documents, isLoading } = useQuery({
+    queryKey: ["exam-documents", "all"],
+    queryFn: () =>
+      api.get<ExamDocForPicker[]>("/exam-documents?scope=all"),
+  });
+
+  const completedDocs =
+    documents?.filter((d) => d.status === "completed") ?? [];
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-lg max-h-[70vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>시험지/교재에서 가져오기</DialogTitle>
+        </DialogHeader>
+        <label className="flex items-center gap-2 mb-3">
+          <input
+            type="checkbox"
+            checked={attachPdf}
+            onChange={(e) => setAttachPdf(e.target.checked)}
+          />
+          <span className="text-sm">학생에게 PDF 첨부</span>
+        </label>
+        {isLoading && <Skeleton className="h-20" />}
+        {completedDocs.length === 0 && !isLoading && (
+          <p className="text-sm text-muted-foreground py-8 text-center">
+            사용할 수 있는 시험지/교재가 없습니다
+          </p>
+        )}
+        <div className="space-y-2">
+          {completedDocs.map((doc) => (
+            <Card
+              key={doc.id}
+              className="cursor-pointer hover:border-brand-beige transition-colors"
+              onClick={async () => {
+                const detail = await api.get<{
+                  problems: Array<{ problemId: string }>;
+                }>(`/exam-documents/${doc.id}`);
+                onSelect({
+                  id: doc.id,
+                  title: doc.title,
+                  problemIds: detail.problems.map((p) => p.problemId),
+                  attachPdf,
+                });
+                onClose();
+              }}
+            >
+              <CardContent className="flex items-center gap-3 p-3">
+                <FileText className="h-5 w-5 text-brand-beige shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-sm">{doc.title}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {doc.type === "exam" ? "시험지" : "교재"} &middot;{" "}
+                    {doc._count?.problems ?? 0}문제
+                    {doc.creator && ` · ${doc.creator.name}`}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -776,6 +939,12 @@ export default function AssignmentsPage() {
                         {asgn.averageScore != null && (
                           <span>
                             평균 {Math.round(asgn.averageScore)}점
+                          </span>
+                        )}
+                        {asgn.targetStudent && (
+                          <span className="flex items-center gap-1 text-orange-400">
+                            <UserRound className="h-3 w-3" />
+                            {asgn.targetStudent.name}
                           </span>
                         )}
                       </div>

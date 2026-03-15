@@ -77,6 +77,13 @@ export default function StudentLayout() {
           title: "오늘의 복습",
         }}
       />
+      <Tabs.Screen
+        name="achievements"
+        options={{
+          href: null,
+          title: "업적",
+        }}
+      />
     </Tabs>
   );
 }

@@ -10,6 +10,9 @@ import {
   Request,
 } from "@nestjs/common";
 import { ProblemsService } from "./problems.service";
+import { ProblemRevisionService } from "./problem-revision.service";
+import { ProblemStatisticsService } from "./problem-statistics.service";
+import { ProblemQualityService } from "./problem-quality.service";
 import { ReviewProblemDto } from "./dto/review-problem.dto";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
 import { GenerateVariantsDto } from "./dto/generate-variants.dto";
@@ -25,7 +28,12 @@ interface AuthRequest {
 @Controller("problems")
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ProblemsController {
-  constructor(private problems: ProblemsService) {}
+  constructor(
+    private problems: ProblemsService,
+    private revisions: ProblemRevisionService,
+    private statistics: ProblemStatisticsService,
+    private quality: ProblemQualityService,
+  ) {}
 
   @Get("filter-options")
   @Roles("admin", "teacher")
@@ -98,6 +106,30 @@ export class ProblemsController {
     });
   }
 
+  @Get("flagged")
+  @Roles("admin", "teacher")
+  getFlagged(
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.quality.findFlagged(
+      page ? parseInt(page, 10) : undefined,
+      limit ? parseInt(limit, 10) : undefined,
+    );
+  }
+
+  @Post("quality/evaluate-batch")
+  @Roles("admin")
+  evaluateQualityBatch() {
+    return this.quality.evaluateBatch();
+  }
+
+  @Post("by-ids")
+  @Roles("admin", "teacher")
+  findByIds(@Body() body: { ids: string[] }) {
+    return this.problems.findByIds(body.ids);
+  }
+
   @Post("analyze")
   @Roles("admin", "teacher")
   triggerAnalysis(
@@ -140,6 +172,42 @@ export class ProblemsController {
     return this.problems.getAnalysis(id, req.user.id, req.user.role);
   }
 
+  @Get(":id/revisions")
+  @Roles("admin", "teacher")
+  getRevisions(@Param("id") id: string) {
+    return this.revisions.getRevisions(id);
+  }
+
+  @Get(":id/revisions/:revisionId")
+  @Roles("admin", "teacher")
+  getRevision(
+    @Param("id") id: string,
+    @Param("revisionId") revisionId: string,
+  ) {
+    return this.revisions.getRevision(id, revisionId);
+  }
+
+  @Post(":id/revisions/:revisionId/restore")
+  @Roles("admin", "teacher")
+  restoreRevision(
+    @Param("id") id: string,
+    @Param("revisionId") revisionId: string,
+    @Request() req: AuthRequest,
+  ) {
+    return this.revisions.restoreRevision(
+      id,
+      revisionId,
+      req.user.id,
+      req.user.role,
+    );
+  }
+
+  @Get(":id/statistics")
+  @Roles("admin", "teacher")
+  getStatistics(@Param("id") id: string) {
+    return this.statistics.getStatistics(id);
+  }
+
   @Patch(":id")
   @Roles("admin", "teacher")
   update(
@@ -158,5 +226,17 @@ export class ProblemsController {
     @Request() req: AuthRequest,
   ) {
     return this.problems.review(id, dto.action, req.user.id, req.user.role);
+  }
+
+  @Post(":id/retire")
+  @Roles("admin")
+  retire(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.quality.retireProblem(id, req.user.id);
+  }
+
+  @Post("statistics/recompute")
+  @Roles("admin")
+  recomputeStatistics() {
+    return this.statistics.recomputeBatch();
   }
 }

@@ -12,6 +12,38 @@ export function isPrivilegedRole(role: string): boolean {
   return isAdminRole(role) || isTeacherRole(role);
 }
 
+export function getAccessibleProblemWhere(
+  requesterId: string,
+  requesterRole: string,
+) {
+  if (isAdminRole(requesterRole)) {
+    return {};
+  }
+
+  return {
+    ocrJob: {
+      sourceFile: {
+        uploaderId: requesterId,
+      },
+    },
+  };
+}
+
+export function getAccessibleOcrJobWhere(
+  requesterId: string,
+  requesterRole: string,
+) {
+  if (isAdminRole(requesterRole)) {
+    return {};
+  }
+
+  return {
+    sourceFile: {
+      uploaderId: requesterId,
+    },
+  };
+}
+
 export async function getRequesterOrganizationId(
   prisma: PrismaService,
   requesterId: string,
@@ -112,11 +144,33 @@ export async function canAccessAssignment(
 
   const assignment = await prisma.assignment.findUnique({
     where: { id: assignmentId },
-    select: { classId: true },
+    select: { classId: true, targetStudentId: true },
   });
 
   if (!assignment) {
     return false;
+  }
+
+  if (requesterRole === "student") {
+    if (
+      assignment.targetStudentId !== null &&
+      assignment.targetStudentId !== requesterId
+    ) {
+      return false;
+    }
+  }
+
+  if (requesterRole === "parent") {
+    const linkedStudentIds = await getLinkedStudentIds(prisma, requesterId);
+    if (linkedStudentIds.length === 0) {
+      return false;
+    }
+    if (
+      assignment.targetStudentId !== null &&
+      !linkedStudentIds.includes(assignment.targetStudentId)
+    ) {
+      return false;
+    }
   }
 
   return canAccessClass(

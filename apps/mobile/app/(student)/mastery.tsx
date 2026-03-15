@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { api } from "@/lib/api";
 
+type MasteryState = "mastered" | "practicing" | "learning" | "not_started";
+
 interface MasteryDashboard {
   progressPercent: number;
   mastered: number;
@@ -20,26 +22,20 @@ interface MasteryDashboard {
   total: number;
 }
 
-interface Topic {
+interface MasteryNode {
   id: string;
-  name: string;
-  state: "mastered" | "practicing" | "learning" | "not_started";
-}
-
-interface Unit {
-  id: string;
-  name: string;
-  topics: Topic[];
-}
-
-interface Subject {
-  id: string;
-  name: string;
-  units: Unit[];
+  label: string;
+  children: MasteryNode[];
+  mastery: {
+    state: MasteryState;
+    consecutiveCorrect: number;
+    totalAttempts: number;
+    totalCorrect: number;
+  } | null;
 }
 
 const MASTERY_STATE: Record<
-  string,
+  MasteryState,
   { label: string; dot: string; bg: string; text: string }
 > = {
   mastered: {
@@ -68,19 +64,36 @@ const MASTERY_STATE: Record<
   },
 };
 
-function stateConfig(state: string) {
-  return MASTERY_STATE[state] ?? MASTERY_STATE.not_started;
+const YEARS = [2015, 2022] as const;
+
+function countLeafProgress(node: MasteryNode): { mastered: number; total: number } {
+  if (node.children.length === 0) {
+    return {
+      mastered: node.mastery?.state === "mastered" ? 1 : 0,
+      total: 1,
+    };
+  }
+
+  return node.children.reduce(
+    (acc, child) => {
+      const childProgress = countLeafProgress(child);
+      return {
+        mastered: acc.mastered + childProgress.mastered,
+        total: acc.total + childProgress.total,
+      };
+    },
+    { mastered: 0, total: 0 },
+  );
 }
 
-const YEARS = [2015, 2022] as const;
+function stateConfig(state: MasteryState) {
+  return MASTERY_STATE[state] ?? MASTERY_STATE.not_started;
+}
 
 export default function MasteryScreen() {
   const queryClient = useQueryClient();
   const [year, setYear] = useState<number>(2022);
-  const [expandedSubjects, setExpandedSubjects] = useState<Set<string>>(
-    new Set(),
-  );
-  const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
 
   const dashboardQuery = useQuery({
     queryKey: ["mastery", "dashboard"],
@@ -89,27 +102,27 @@ export default function MasteryScreen() {
 
   const treeQuery = useQuery({
     queryKey: ["mastery", "tree", year],
-    queryFn: () => api.get<Subject[]>(`/mastery/tree?year=${year}`),
+    queryFn: () => api.get<MasteryNode[]>(`/mastery/tree?year=${year}`),
   });
+
+  useEffect(() => {
+    if (treeQuery.data) {
+      setExpandedNodes(new Set(treeQuery.data.map((node) => node.id)));
+    }
+  }, [treeQuery.data]);
 
   const onRefresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["mastery"] });
   }, [queryClient]);
 
-  const toggleSubject = useCallback((id: string) => {
-    setExpandedSubjects((prev) => {
+  const toggleNode = useCallback((id: string) => {
+    setExpandedNodes((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const toggleUnit = useCallback((id: string) => {
-    setExpandedUnits((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }, []);
@@ -118,6 +131,75 @@ export default function MasteryScreen() {
   const isRefreshing = dashboardQuery.isRefetching || treeQuery.isRefetching;
   const dashboard = dashboardQuery.data;
   const tree = treeQuery.data ?? [];
+
+  const renderNode = useCallback(
+    (node: MasteryNode, depth: number) => {
+      const hasChildren = node.children.length > 0;
+      const isOpen = expandedNodes.has(node.id);
+      const state = node.mastery?.state ?? "not_started";
+      const config = stateConfig(state);
+      const progress = hasChildren ? countLeafProgress(node) : null;
+
+      return (
+        <View key={node.id} style={{ marginLeft: depth * 16 }}>
+          <Pressable
+            className={`rounded-xl px-4 py-3 flex-row items-center ${
+              depth === 0 ? "bg-[#2a2a2a] border border-[#333]/40" : "bg-[#252525] mt-1"
+            }`}
+            onPress={() => hasChildren && toggleNode(node.id)}
+          >
+            {hasChildren ? (
+              isOpen ? (
+                <ChevronDown color={depth === 0 ? "#d4a574" : "#999"} size={16} />
+              ) : (
+                <ChevronRight color="#666" size={16} />
+              )
+            ) : (
+              <View className={`w-2.5 h-2.5 rounded-full mr-2 ${config.dot}`} />
+            )}
+
+            <Text className="text-brand-beige font-medium ml-2 flex-1 text-sm">
+              {node.label}
+            </Text>
+
+            {hasChildren && progress ? (
+              <Text className="text-gray-500 text-xs">
+                {progress.mastered}/{progress.total}
+              </Text>
+            ) : (
+              <View className={`rounded-full px-2 py-0.5 ${config.bg}`}>
+                <Text className={`text-[10px] ${config.text}`}>
+                  {config.label}
+                </Text>
+              </View>
+            )}
+          </Pressable>
+
+          {!hasChildren && node.mastery && (
+            <View className="ml-6 mt-1 mb-1">
+              <Text className="text-gray-500 text-xs">
+                {node.mastery.consecutiveCorrect}연속 / {node.mastery.totalAttempts}회
+              </Text>
+            </View>
+          )}
+
+          {hasChildren && isOpen && (
+            <View className="mt-1">
+              {node.children.map((child) => renderNode(child, depth + 1))}
+            </View>
+          )}
+        </View>
+      );
+    },
+    [expandedNodes, toggleNode],
+  );
+
+  const totalActive = useMemo(() => {
+    if (!dashboard) {
+      return 0;
+    }
+    return dashboard.mastered + dashboard.practicing + dashboard.learning;
+  }, [dashboard]);
 
   if (isLoading) {
     return (
@@ -142,10 +224,8 @@ export default function MasteryScreen() {
         }
         contentContainerStyle={{ paddingBottom: 24 }}
       >
-        {/* Dashboard summary */}
         {dashboard && (
           <View className="px-4 pt-4">
-            {/* Progress ring */}
             <View className="bg-[#2a2a2a] rounded-2xl p-6 border border-[#333]/40 items-center mb-4">
               <Text className="text-gray-400 text-sm mb-2">전체 진도</Text>
               <View className="w-24 h-24 rounded-full border-4 border-[#3a3a3a] items-center justify-center">
@@ -154,12 +234,10 @@ export default function MasteryScreen() {
                 </Text>
               </View>
               <Text className="text-gray-500 text-xs mt-2">
-                {dashboard.mastered + dashboard.practicing + dashboard.learning}
-                /{dashboard.total} 주제
+                {totalActive}/{dashboard.total} 주제
               </Text>
             </View>
 
-            {/* State counts */}
             <View className="flex-row gap-3 mb-6">
               <View className="flex-1 bg-green-900/20 rounded-xl p-3 items-center border border-green-900/30">
                 <Text className="text-green-400 text-xl font-bold">
@@ -183,7 +261,6 @@ export default function MasteryScreen() {
           </View>
         )}
 
-        {/* Year toggle */}
         <View className="flex-row mx-4 mb-4 bg-[#2a2a2a] rounded-xl p-1 border border-[#333]/40">
           {YEARS.map((y) => (
             <Pressable
@@ -204,7 +281,6 @@ export default function MasteryScreen() {
           ))}
         </View>
 
-        {/* Curriculum tree */}
         {tree.length === 0 ? (
           <View className="items-center py-12 px-4">
             <Text className="text-gray-400 text-center">
@@ -212,73 +288,9 @@ export default function MasteryScreen() {
             </Text>
           </View>
         ) : (
-          tree.map((subject) => {
-            const subjectOpen = expandedSubjects.has(subject.id);
-            return (
-              <View key={subject.id} className="mx-4 mb-2">
-                <Pressable
-                  className="bg-[#2a2a2a] rounded-2xl px-4 py-3.5 flex-row items-center border border-[#333]/40"
-                  onPress={() => toggleSubject(subject.id)}
-                >
-                  {subjectOpen ? (
-                    <ChevronDown color="#d4a574" size={18} />
-                  ) : (
-                    <ChevronRight color="#666" size={18} />
-                  )}
-                  <Text className="text-brand-beige font-semibold ml-2 flex-1">
-                    {subject.name}
-                  </Text>
-                </Pressable>
-
-                {subjectOpen &&
-                  subject.units.map((unit) => {
-                    const unitOpen = expandedUnits.has(unit.id);
-                    return (
-                      <View key={unit.id} className="ml-4 mt-1">
-                        <Pressable
-                          className="bg-[#252525] rounded-xl px-4 py-3 flex-row items-center"
-                          onPress={() => toggleUnit(unit.id)}
-                        >
-                          {unitOpen ? (
-                            <ChevronDown color="#999" size={16} />
-                          ) : (
-                            <ChevronRight color="#555" size={16} />
-                          )}
-                          <Text className="text-brand-beige/80 font-medium ml-2 flex-1 text-sm">
-                            {unit.name}
-                          </Text>
-                        </Pressable>
-
-                        {unitOpen &&
-                          unit.topics.map((topic) => {
-                            const cfg = stateConfig(topic.state);
-                            return (
-                              <View
-                                key={topic.id}
-                                className="ml-6 mt-1 flex-row items-center bg-[#222] rounded-lg px-3 py-2.5"
-                              >
-                                <View
-                                  className={`w-2.5 h-2.5 rounded-full ${cfg.dot} mr-2.5`}
-                                />
-                                <Text className="text-brand-beige/70 text-sm flex-1">
-                                  {topic.name}
-                                </Text>
-                                <View
-                                  className={`rounded-full px-2 py-0.5 ${cfg.bg}`}
-                                >
-                                  <Text className={`text-[10px] ${cfg.text}`}>
-                                    {cfg.label}
-                                  </Text>
-                                </View>
-                              </View>
-                            );
-                          })}
-                      </View>
-                    );
-                  })}
-              </View>
-            );
-          })
+          <View className="mx-4 gap-2">
+            {tree.map((node) => renderNode(node, 0))}
+          </View>
         )}
       </ScrollView>
     </SafeAreaView>

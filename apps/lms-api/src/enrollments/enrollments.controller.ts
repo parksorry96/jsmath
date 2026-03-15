@@ -46,7 +46,7 @@ export class EnrollmentsController {
 
   @Get("students")
   @Roles("admin", "teacher")
-  findStudents(@Param("classId") classId: string) {
-    return this.enrollments.findStudents(classId);
+  findStudents(@Param("classId") classId: string, @Request() req: AuthRequest) {
+    return this.enrollments.findStudents(classId, req.user.id, req.user.role);
   }
 }

@@ -44,12 +44,15 @@ def finalize_pipeline(
 
 
 async def _finalize(ocr_job_id: str, segments: list[dict]) -> dict:
-    # Update job status to completed
+    # Idempotency: skip if job already completed
     async with worker_session() as session:
         job_result = await session.execute(
             select(OcrJobTracking).where(OcrJobTracking.id == ocr_job_id)
         )
         job = job_result.scalar_one()
+        if job.status == JobStatus.completed:
+            logger.info("Skipping finalize for job %s — already completed", ocr_job_id)
+            return {"ocr_job_id": ocr_job_id, "problem_count": job.problem_count or 0, "skipped": True}
         job.status = JobStatus.completed
         job.problem_count = len(segments)
         job.completed_at = datetime.now(timezone.utc)

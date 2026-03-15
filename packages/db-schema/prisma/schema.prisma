@@ -37,6 +37,7 @@ model User {
   achievements    StudentAchievement[] @relation("StudentAchievements")
   attendances     Attendance[]         @relation("StudentAttendances")
   billingRecords  BillingRecord[]      @relation("StudentBillings")
+  ltiIdentities   LtiIdentity[]
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
@@ -97,6 +98,9 @@ model Assignment {
   dueAt              DateTime?           @map("due_at")
   maxScore           Int                 @default(100) @map("max_score")
   sourceAssignmentId String?             @map("source_assignment_id")
+  examDocumentId     String?             @map("exam_document_id")
+  examDocument       ExamDocument?       @relation(fields: [examDocumentId], references: [id])
+  attachPdf          Boolean             @default(false) @map("attach_pdf")
   targetStudentId    String?             @map("target_student_id")
   targetStudent      User?               @relation("TargetStudentAssignments", fields: [targetStudentId], references: [id])
   assignmentProblems AssignmentProblem[]
@@ -192,6 +196,7 @@ model ExamDocument {
   type            ExamDocumentType
   creatorId       String               @map("creator_id")
   creator         User                 @relation(fields: [creatorId], references: [id])
+  visibility      ExamDocumentVisibility @default(private)
   headerConfig    Json?                @map("header_config")
   layoutConfig    Json                 @map("layout_config")
   coverConfig     Json?                @map("cover_config")
@@ -199,12 +204,16 @@ model ExamDocument {
   answerPdfS3Key  String?              @map("answer_pdf_s3_key")
   status          ExamDocumentStatus   @default(draft)
   errorMessage    String?              @map("error_message")
+  blueprintId     String?              @map("blueprint_id")
+  generationId    String?              @map("generation_id")
   problems        ExamDocumentProblem[]
+  assignments     Assignment[]
   createdAt       DateTime             @default(now()) @map("created_at")
   updatedAt       DateTime             @updatedAt @map("updated_at")
 
   @@index([creatorId])
   @@index([status])
+  @@index([visibility])
   @@map("exam_documents")
   @@schema("public")
 }
@@ -234,6 +243,13 @@ enum ExamDocumentStatus {
   generating
   completed
   failed
+
+  @@schema("public")
+}
+
+enum ExamDocumentVisibility {
+  private
+  public
 
   @@schema("public")
 }
@@ -683,10 +699,29 @@ model LtiPlatform {
   jwksUri       String   @map("jwks_uri")
   deploymentId  String?  @map("deployment_id")
   isActive      Boolean  @default(true) @map("is_active")
+  identities    LtiIdentity[]
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   @@map("lti_platforms")
+  @@schema("public")
+}
+
+model LtiIdentity {
+  id         String      @id @default(cuid())
+  platformId String      @map("platform_id")
+  platform   LtiPlatform @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  userId     String      @map("user_id")
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject    String
+  email      String?
+  createdAt  DateTime    @default(now()) @map("created_at")
+  updatedAt  DateTime    @updatedAt @map("updated_at")
+
+  @@unique([platformId, subject])
+  @@unique([platformId, userId])
+  @@index([userId])
+  @@map("lti_identities")
   @@schema("public")
 }
 
@@ -791,6 +826,9 @@ model Problem {
   // Review
   reviewStatus             ReviewStatus  @default(pending_review) @map("review_status")
   reviewedBy               String?       @map("reviewed_by")
+  flagReason               String?       @map("flag_reason")
+  retiredAt                DateTime?     @map("retired_at")
+  retiredBy                String?       @map("retired_by")
 
   // CSAT-specific
   isCommon             Boolean?      @map("is_common")
@@ -921,6 +959,206 @@ enum ReviewStatus {
   pending_review
   approved
   rejected
+  calibrated
+  flagged
+  retired
 
+  @@schema("ocr")
+}
+
+enum RevisionChangeType {
+  content_edit
+  metadata_edit
+  review_action
+  ai_correction
+
+  @@schema("ocr")
+}
+
+// ─── Phase 1.5: Quality & Stability Layer ───
+
+model ProblemRevision {
+  id             String             @id @default(cuid())
+  problemId      String             @map("problem_id")
+  revisionNumber Int                @map("revision_number")
+  snapshot       Json
+  changeType     RevisionChangeType @map("change_type")
+  changedFields  String[]           @map("changed_fields")
+  changeSummary  String?            @map("change_summary")
+  changedById    String             @map("changed_by_id")
+  changedByRole  String             @map("changed_by_role")
+  changeSource   String             @default("manual") @map("change_source")
+  createdAt      DateTime           @default(now()) @map("created_at")
+
+  @@unique([problemId, revisionNumber])
+  @@index([problemId, revisionNumber])
+  @@index([changedById])
+  @@map("problem_revisions")
+  @@schema("ocr")
+}
+
+model ProblemUsageLog {
+  id            String           @id @default(cuid())
+  problemId     String           @map("problem_id")
+  usageType     ProblemUsageType @map("usage_type")
+  referenceId   String           @map("reference_id")
+  referenceType String           @map("reference_type")
+  classId       String?          @map("class_id")
+  targetCount   Int?             @map("target_count")
+  usedAt        DateTime         @default(now()) @map("used_at")
+  usedByUserId  String           @map("used_by_user_id")
+
+  @@index([problemId, usedAt])
+  @@index([problemId, classId])
+  @@index([classId, usedAt])
+  @@map("problem_usage_logs")
+  @@schema("public")
+}
+
+enum ProblemUsageType {
+  assignment
+  exam_document
+  diagnostic
+
+  @@schema("public")
+}
+
+model ProblemStatistics {
+  id                  String   @id @default(cuid())
+  problemId           String   @unique @map("problem_id")
+  periodStart         DateTime? @map("period_start")
+  periodEnd           DateTime? @map("period_end")
+  attemptCount        Int      @default(0) @map("attempt_count")
+  correctCount        Int      @default(0) @map("correct_count")
+  pValue              Float?   @map("p_value")
+  avgScoreRatio       Float?   @map("avg_score_ratio")
+  discriminationIndex Float?   @map("discrimination_index")
+  pointBiserialR      Float?   @map("point_biserial_r")
+  avgTimeSec          Float?   @map("avg_time_sec")
+  medianTimeSec       Float?   @map("median_time_sec")
+  isSufficientN       Boolean  @default(false) @map("is_sufficient_n")
+  lastComputedAt      DateTime @map("last_computed_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@index([problemId])
+  @@index([lastComputedAt])
+  @@map("problem_statistics")
+  @@schema("ocr")
+}
+
+model ChoiceStatistics {
+  id             String   @id @default(cuid())
+  problemId      String   @map("problem_id")
+  choicePosition Int      @map("choice_position")
+  selectCount    Int      @default(0) @map("select_count")
+  selectRate     Float?   @map("select_rate")
+  lastComputedAt DateTime @map("last_computed_at")
+
+  @@unique([problemId, choicePosition])
+  @@index([problemId])
+  @@map("choice_statistics")
+  @@schema("ocr")
+}
+
+model LearningEvent {
+  id             String   @id @default(cuid())
+  eventType      String   @map("event_type")
+  studentId      String   @map("student_id")
+  sessionId      String   @map("session_id")
+  problemId      String?  @map("problem_id")
+  assignmentId   String?  @map("assignment_id")
+  organizationId String?  @map("organization_id")
+  payload        Json     @default("{}")
+  clientTs       DateTime @map("client_ts")
+  serverTs       DateTime @default(now()) @map("server_ts")
+  deviceType     String?  @map("device_type")
+  appVersion     String?  @map("app_version")
+  ipHash         String?  @map("ip_hash")
+
+  @@index([studentId, serverTs])
+  @@index([sessionId])
+  @@index([eventType, serverTs])
+  @@index([assignmentId, studentId])
+  @@index([organizationId, serverTs])
+  @@map("learning_events")
+  @@schema("public")
+}
+
+model LearningEventDailyStat {
+  id              String   @id @default(cuid())
+  studentId       String   @map("student_id")
+  statDate        DateTime @map("stat_date") @db.Date
+  problemsViewed  Int      @default(0) @map("problems_viewed")
+  problemsStarted Int      @default(0) @map("problems_started")
+  problemsSolved  Int      @default(0) @map("problems_solved")
+  problemsCorrect Int      @default(0) @map("problems_correct")
+  hintsUsed       Int      @default(0) @map("hints_used")
+  totalDurationMs BigInt   @default(0) @map("total_duration_ms")
+  sessionCount    Int      @default(0) @map("session_count")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([studentId, statDate])
+  @@index([studentId, statDate(sort: Desc)])
+  @@map("learning_event_daily_stats")
+  @@schema("public")
+}
+
+model ExamBlueprint {
+  id                     String              @id @default(cuid())
+  title                  String
+  description            String?
+  creatorId              String              @map("creator_id")
+  gradeLevel             String?             @map("grade_level")
+  totalQuestions          Int                 @map("total_questions")
+  totalPoints            Int?                @map("total_points")
+  timeLimitMin           Int?                @map("time_limit_min")
+  unitDistribution       Json                @map("unit_distribution")
+  difficultyDistribution Json                @map("difficulty_distribution")
+  typeDistribution       Json                @map("type_distribution")
+  pointDistribution      Json?               @map("point_distribution")
+  excludeRecentDays      Int?                @map("exclude_recent_days")
+  excludeProblemIds      Json?               @map("exclude_problem_ids")
+  isTemplate             Boolean             @default(false) @map("is_template")
+  generations            BlueprintGeneration[]
+  createdAt              DateTime            @default(now()) @map("created_at")
+  updatedAt              DateTime            @updatedAt @map("updated_at")
+
+  @@index([creatorId])
+  @@map("exam_blueprints")
+  @@schema("public")
+}
+
+model BlueprintGeneration {
+  id           String        @id @default(cuid())
+  blueprintId  String        @map("blueprint_id")
+  blueprint    ExamBlueprint @relation(fields: [blueprintId], references: [id], onDelete: Cascade)
+  status       String        @default("pending")
+  selectedIds  Json?         @map("selected_ids")
+  matchScore   Float?        @map("match_score")
+  relaxations  Json?
+  errorMessage String?       @map("error_message")
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  @@index([blueprintId])
+  @@map("blueprint_generations")
+  @@schema("public")
+}
+
+model PipelineCheckpoint {
+  id           String    @id @default(cuid())
+  ocrJobId     String    @map("ocr_job_id")
+  stageName    String    @map("stage_name")
+  status       String    @default("completed")
+  payload      Json?
+  errorMessage String?   @map("error_message")
+  startedAt    DateTime  @map("started_at")
+  completedAt  DateTime? @map("completed_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@unique([ocrJobId, stageName])
+  @@index([ocrJobId])
+  @@map("pipeline_checkpoints")
   @@schema("ocr")
 }

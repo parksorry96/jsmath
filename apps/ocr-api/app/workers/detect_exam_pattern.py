@@ -278,6 +278,8 @@ async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
             "solution_steps": "solution_steps",
             "estimated_time_sec": "estimated_time_sec",
             "common_mistakes": "common_mistakes",
+            "classification_2015": "classification_2015",
+            "classification_2022": "classification_2022",
             "subject": "subject",
             "unit_major": "unit_major",
             "unit_minor": "unit_minor",
@@ -299,15 +301,47 @@ async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
             if val is not None and hasattr(problem, attr):
                 setattr(problem, attr, val)
 
+        from app.models.curriculum_node import find_curriculum_node
+
+        classification_2015 = prev_result.get("classification_2015") or problem.classification_2015
+        if isinstance(classification_2015, dict):
+            classification_2015 = dict(classification_2015)
+            cls_2015_subject = classification_2015.get("subject")
+            cls_2015_major = classification_2015.get("unitMajor")
+            cls_2015_minor = classification_2015.get("unitMinor")
+            node_2015 = await find_curriculum_node(
+                session,
+                cls_2015_subject,
+                cls_2015_major,
+                cls_2015_minor,
+                curriculum_year=2015,
+            )
+            classification_2015["curriculumNodeId"] = node_2015.id if node_2015 else None
+            problem.classification_2015 = classification_2015
+
+        classification_2022 = prev_result.get("classification_2022") or problem.classification_2022
+        if isinstance(classification_2022, dict):
+            classification_2022 = dict(classification_2022)
+            cls_2022_subject = classification_2022.get("subject")
+            cls_2022_major = classification_2022.get("unitMajor")
+            cls_2022_minor = classification_2022.get("unitMinor")
+            node_2022 = await find_curriculum_node(
+                session,
+                cls_2022_subject,
+                cls_2022_major,
+                cls_2022_minor,
+                curriculum_year=2022,
+            )
+            classification_2022["curriculumNodeId"] = node_2022.id if node_2022 else None
+            problem.classification_2022 = classification_2022
+
         # Link to curriculum node based on classification labels
         _subject = prev_result.get("subject") or problem.subject
         _unit_major = prev_result.get("unit_major") or problem.unit_major
         _unit_minor = prev_result.get("unit_minor") or problem.unit_minor
         if _subject:
-            from app.models.curriculum_node import find_curriculum_node
-
             node = await find_curriculum_node(
-                session, _subject, _unit_major, _unit_minor,
+                session, _subject, _unit_major, _unit_minor, curriculum_year=2015,
             )
             problem.curriculum_node_id = node.id if node else None
 

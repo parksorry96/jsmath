@@ -1,5 +1,13 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import {
+  canAccessAssignment,
+  getAccessibleProblemWhere,
+} from "../common/access-control";
 import {
   escapeXml,
   latexToMathmlAnnotation,
@@ -11,9 +19,16 @@ import {
 export class QtiExportService {
   constructor(private prisma: PrismaService) {}
 
-  async exportProblem(problemId: string): Promise<string> {
-    const problem = await this.prisma.problem.findUnique({
-      where: { id: problemId },
+  async exportProblem(
+    problemId: string,
+    requesterId: string,
+    requesterRole: string,
+  ): Promise<string> {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id: problemId,
+        ...getAccessibleProblemWhere(requesterId, requesterRole),
+      },
       include: {
         choices: { orderBy: { position: "asc" } },
       },
@@ -23,7 +38,21 @@ export class QtiExportService {
     return this.buildItemXml(problem);
   }
 
-  async exportAssignment(assignmentId: string): Promise<string> {
+  async exportAssignment(
+    assignmentId: string,
+    requesterId: string,
+    requesterRole: string,
+  ): Promise<string> {
+    const allowed = await canAccessAssignment(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      assignmentId,
+    );
+    if (!allowed) {
+      throw new ForbiddenException("Not authorized to export this assignment");
+    }
+
     const assignment = await this.prisma.assignment.findUnique({
       where: { id: assignmentId },
       include: {

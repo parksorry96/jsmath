@@ -12,6 +12,7 @@ import { useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
+import type { StudentGamificationProfile } from "@jsmath/shared-types";
 
 interface Lesson {
   id: string;
@@ -102,6 +103,11 @@ export default function StudentHome() {
       ),
   });
 
+  const gamificationQuery = useQuery({
+    queryKey: ["gamification", "profile"],
+    queryFn: () => api.get<StudentGamificationProfile>("/gamification/profile"),
+  });
+
   const isLoading =
     lessonsQuery.isLoading ||
     assignmentsQuery.isLoading ||
@@ -116,6 +122,7 @@ export default function StudentHome() {
     queryClient.invalidateQueries({ queryKey: ["lessons", "today"] });
     queryClient.invalidateQueries({ queryKey: ["assignments", "pending"] });
     queryClient.invalidateQueries({ queryKey: ["notifications", "recent"] });
+    queryClient.invalidateQueries({ queryKey: ["gamification", "profile"] });
   }, [queryClient]);
 
   const lessons = lessonsQuery.data ?? [];
@@ -125,6 +132,7 @@ export default function StudentHome() {
     { key: "header" },
     { key: "lessons" },
     { key: "learning" },
+    { key: "gamification" },
     { key: "assignments" },
     { key: "notifications" },
   ];
@@ -237,6 +245,45 @@ export default function StudentHome() {
             </View>
           );
 
+        case "gamification": {
+          const gp = gamificationQuery.data;
+          if (!gp) return null;
+          const streak = gp.streaks.find((s) => s.streakType === "daily") ?? gp.streaks[0];
+          const xpForNext = gp.level * 100;
+          const xpProgress = Math.min(gp.xp / xpForNext, 1);
+          return (
+            <Pressable
+              className="mx-5 mt-4 bg-[#2a2a2a] rounded-2xl p-4 border border-[#333]/40 flex-row items-center"
+              onPress={() => router.push("/(student)/achievements")}
+            >
+              <View className="bg-brand-accent/20 rounded-full w-10 h-10 items-center justify-center mr-3">
+                <Text className="text-brand-accent text-sm font-bold">
+                  Lv.{gp.level}
+                </Text>
+              </View>
+              <View className="flex-1 mr-3">
+                <View className="flex-row items-center justify-between mb-1">
+                  <Text className="text-brand-beige text-sm font-medium">
+                    {gp.xp} / {xpForNext} XP
+                  </Text>
+                  {streak && streak.currentStreak > 0 && (
+                    <Text className="text-orange-400 text-xs font-medium">
+                      {streak.currentStreak}일 연속
+                    </Text>
+                  )}
+                </View>
+                <View className="bg-[#444] rounded-full h-2 overflow-hidden">
+                  <View
+                    className="bg-brand-accent rounded-full h-2"
+                    style={{ width: `${xpProgress * 100}%` }}
+                  />
+                </View>
+              </View>
+              <Text className="text-gray-500 text-lg">{'>'}</Text>
+            </Pressable>
+          );
+        }
+
         case "assignments":
           return (
             <View className="px-5 mt-6">
@@ -324,7 +371,7 @@ export default function StudentHome() {
           return null;
       }
     },
-    [isLoading, lessons, assignmentsQuery.data, notifications, user, router],
+    [isLoading, lessons, assignmentsQuery.data, notifications, gamificationQuery.data, user, router],
   );
 
   return (

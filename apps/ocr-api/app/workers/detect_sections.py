@@ -35,6 +35,19 @@ _QUICK_ANSWER_KEYWORD = re.compile(r"빠른\s*정답", re.IGNORECASE)
 # "한눈에 보는 정답" keyword (EBS 수능특강 quick answer overview page)
 _QUICK_ANSWER_PAGE_KEYWORD = re.compile(r"한눈에\s*보는\s*정답", re.IGNORECASE)
 
+_PAGE_REF_PATTERN = re.compile(r"\bp\.\s*\d{1,4}\b", re.IGNORECASE)
+_ANSWER_TABLE_PAIR_PATTERN = re.compile(r"\b\d{1,3}\s*(?:\([1-5]\)|[①②③④⑤]|\d{1,4})\b")
+_ANSWER_TABLE_HINT_PATTERN = re.compile(r"\\begin\{tabular\}|문번|답\s*란|문제편\s*p\.", re.IGNORECASE)
+_QUESTION_HINT_PATTERN = re.compile(
+    r"(?:값은[？?]|구하시오|옳은 것을|고른 것은|최댓값|최솟값|개수|나머지|합은|적당한 것은)",
+    re.IGNORECASE,
+)
+_CHOICE_HINT_PATTERN = re.compile(r"^\s*(?:[①②③④⑤⑥⑦⑧⑨⑩]|\(\s*[1-5]\s*\)|（\s*[1-5]\s*）)")
+_EXAM_HEADER_PATTERN = re.compile(
+    r"^\s*\d{1,4}\s*.*20\d{2}.*(?:학평|모평|수능|경찰|사관)",
+    re.IGNORECASE,
+)
+
 # Problem number patterns used to detect content_start_page
 _CONTENT_START_PATTERNS = [
     re.compile(r"^\s*(?:예제|유제|대표문제|확인문제|기본문제|심화문제|연습문제|문제)\s*\d{1,3}"),
@@ -99,12 +112,19 @@ async def _detect(ocr_job_id: str) -> dict:
     content_start_page = _find_content_start(pages)
 
     # 2. Scan from 40% of document for answer section keywords
-    scan_start_idx = int(total_pages * 0.4)
+    scan_start_idx = int(total_pages * 0.7)
     answer_start_page: int | None = None
     has_quick_answers = False
 
     for page in pages[scan_start_idx:]:
         sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
+        if _looks_like_answer_table_page(page):
+            candidate_page = page.page_number
+            remaining = last_page - candidate_page + 1
+            if remaining >= _MIN_SECTION_LENGTH:
+                answer_start_page = candidate_page
+                has_quick_answers = True
+                break
         for line in sorted_lines[:5]:
             text = line.text.strip()
             if not text:
@@ -180,7 +200,32 @@ def _find_quick_answer_page(pages: list[OcrPage]) -> int | None:
         for line in sorted_lines[:5]:
             if _QUICK_ANSWER_PAGE_KEYWORD.search(line.text):
                 return page.page_number
+    cutoff_index = int(len(pages) * 0.7)
+    for page in pages[cutoff_index:]:
+        if _looks_like_answer_table_page(page):
+            return page.page_number
     return None
+
+
+def _looks_like_answer_table_page(page: OcrPage) -> bool:
+    texts = [line.text.strip() for line in page.lines if line.text and line.text.strip()]
+    if not texts:
+        return False
+
+    page_ref_hits = sum(len(_PAGE_REF_PATTERN.findall(text)) for text in texts)
+    answer_pair_hits = sum(len(_ANSWER_TABLE_PAIR_PATTERN.findall(text)) for text in texts)
+    table_hint_hits = sum(1 for text in texts if _ANSWER_TABLE_HINT_PATTERN.search(text))
+    short_line_hits = sum(1 for text in texts if len(text) <= 24)
+    long_line_hits = sum(1 for text in texts if len(text) >= 40)
+
+    if answer_pair_hits >= 25 and long_line_hits <= 2:
+        return True
+    if table_hint_hits >= 1 and answer_pair_hits >= 6:
+        return True
+    if page_ref_hits >= 4 and short_line_hits >= 6 and long_line_hits <= 3:
+        return True
+
+    return False
 
 
 def _find_content_start(pages: list[OcrPage]) -> int:
@@ -192,6 +237,12 @@ def _find_content_start(pages: list[OcrPage]) -> int:
         return 0
 
     for page in pages:
+        if (
+            _looks_like_answer_table_page(page)
+            or _is_table_of_contents_page(page)
+            or not _looks_like_problem_page(page)
+        ):
+            continue
         sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
         for line in sorted_lines:
             text = line.text.strip()
@@ -203,3 +254,46 @@ def _find_content_start(pages: list[OcrPage]) -> int:
 
     # Fallback: first page
     return pages[0].page_number
+
+
+def _looks_like_problem_page(page: OcrPage) -> bool:
+    texts = [line.text.strip() for line in page.lines if line.text and line.text.strip()]
+    if not texts:
+        return False
+
+    question_hits = sum(1 for text in texts if _QUESTION_HINT_PATTERN.search(text))
+    choice_hits = sum(1 for text in texts if _CHOICE_HINT_PATTERN.match(text))
+    header_hits = sum(1 for text in texts if _EXAM_HEADER_PATTERN.match(text))
+
+    if question_hits >= 1:
+        return True
+    if choice_hits >= 4 and header_hits >= 1:
+        return True
+    if header_hits >= 2:
+        return True
+    if header_hits >= 1 and len(texts) >= 2:
+        return True
+
+    return False
+
+
+def _is_table_of_contents_page(page: OcrPage) -> bool:
+    texts = [line.text.strip() for line in page.lines if line.text and line.text.strip()]
+    if not texts:
+        return False
+
+    page_ref_hits = sum(len(_PAGE_REF_PATTERN.findall(text)) for text in texts)
+    short_line_hits = sum(1 for text in texts if len(text) <= 24)
+    box_hits = sum(text.count("□") for text in texts)
+    image_hits = sum(1 for text in texts if "cdn.mathpix.com/cropped" in text)
+
+    if page_ref_hits >= 6:
+        return True
+    if page_ref_hits >= 3 and short_line_hits >= 8:
+        return True
+    if box_hits >= 4:
+        return True
+    if image_hits >= 2 and page_ref_hits >= 2:
+        return True
+
+    return False

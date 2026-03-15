@@ -124,6 +124,8 @@ class Problem(Base, TimestampMixin):
     curriculum_node_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False), ForeignKey("curriculum_nodes.id"), nullable=True
     )
+    classification_2015: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    classification_2022: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     difficulty: Mapped[int | None] = mapped_column(SmallInteger)  # 1~5
     classification_confidence: Mapped[float | None] = mapped_column(Float)
     solution_confidence: Mapped[float | None] = mapped_column(Float)

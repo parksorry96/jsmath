@@ -15,9 +15,11 @@ import asyncio
 import logging
 
 from celery import chord, group
+import redis
 from sqlalchemy import select
 
 from app.celery_app import celery
+from app.config import settings
 from app.database import worker_session
 from app.models.problem import AnalysisStatus, Problem
 from app.services.redis_events import notify_analysis_completed, notify_analysis_failed, notify_progress
@@ -27,9 +29,31 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 50
 TEXTBOOK_BATCH_SIZE = 50
 
-# Max concurrent GPT calls per Celery task
-# High value to maximize parallelism — OpenAI handles rate limiting server-side
-MAX_CONCURRENT_GPT = 100
+# Max concurrent GPT calls per Celery task.
+# Keep this bounded to avoid exhausting DB/OpenAI connections under worker concurrency.
+MAX_CONCURRENT_GPT = 20
+
+
+def _analysis_progress_key(ocr_job_id: str) -> str:
+    return f"analysis:progress:{ocr_job_id}"
+
+
+def _reset_analysis_progress(ocr_job_id: str) -> None:
+    client = redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        client.delete(_analysis_progress_key(ocr_job_id))
+    finally:
+        client.close()
+
+
+def _increment_analysis_progress(ocr_job_id: str) -> int:
+    client = redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        current = client.incr(_analysis_progress_key(ocr_job_id))
+        client.expire(_analysis_progress_key(ocr_job_id), 3600)
+        return int(current)
+    finally:
+        client.close()
 
 # ─── Pipeline entry point ───
 
@@ -42,13 +66,22 @@ def start_analysis_pipeline(
     Each batch fires concurrent per-problem pipelines with no stage gating.
     """
     batch_size = TEXTBOOK_BATCH_SIZE if is_textbook else BATCH_SIZE
+    _reset_analysis_progress(ocr_job_id)
+    notify_progress(
+        ocr_job_id,
+        "analyzing",
+        current=0,
+        total=len(problem_ids),
+        message=f"AI 분석 시작 (0/{len(problem_ids)})",
+    )
     batches = [
         problem_ids[i : i + batch_size]
         for i in range(0, len(problem_ids), batch_size)
     ]
 
     batch_tasks = [
-        batch_analyze.s(problem_ids=batch) for batch in batches
+        batch_analyze.s(problem_ids=batch, ocr_job_id=ocr_job_id, total=len(problem_ids))
+        for batch in batches
     ]
 
     pipeline = chord(
@@ -70,15 +103,18 @@ def start_analysis_pipeline(
     bind=True,
     name="task.analysis.batch",
     acks_late=True,
+    max_retries=1,
+    default_retry_delay=30,
+    reject_on_worker_lost=True,
     soft_time_limit=600,
     time_limit=660,
 )
-def batch_analyze(self, *, problem_ids: list[str]) -> list[dict]:
+def batch_analyze(self, *, problem_ids: list[str], ocr_job_id: str, total: int) -> list[dict]:
     """Process a batch: per-problem streaming pipeline with no stage gating."""
-    return asyncio.run(_process_batch(problem_ids))
+    return asyncio.run(_process_batch(problem_ids, ocr_job_id, total))
 
 
-async def _process_batch(problem_ids: list[str]) -> list[dict]:
+async def _process_batch(problem_ids: list[str], ocr_job_id: str, total: int) -> list[dict]:
     """Stream each problem through the full pipeline independently.
 
     No stage gating: as soon as a problem's GPT call completes,
@@ -88,21 +124,22 @@ async def _process_batch(problem_ids: list[str]) -> list[dict]:
     logger.info("Batch start: %d problems", len(problem_ids))
 
     sem = asyncio.Semaphore(MAX_CONCURRENT_GPT)
-    results = await asyncio.gather(
-        *[_process_single(pid, sem) for pid in problem_ids],
-        return_exceptions=True,
-    )
-
     final: list[dict] = []
-    for pid, result in zip(problem_ids, results):
-        if isinstance(result, Exception):
-            logger.error("Pipeline failed for %s: %s", pid, result)
-            await _mark_problem_failed(pid, str(result))
-            final.append({"problem_id": pid, "decision": "failed", "error": str(result)})
-        elif isinstance(result, dict):
-            final.append(result)
-        else:
-            final.append({"problem_id": pid, "decision": "failed", "error": "Unknown error"})
+    tasks = [
+        asyncio.create_task(_process_single_safe(pid, sem))
+        for pid in problem_ids
+    ]
+    for completed_task in asyncio.as_completed(tasks):
+        result = await completed_task
+        final.append(result)
+        current = _increment_analysis_progress(ocr_job_id)
+        notify_progress(
+            ocr_job_id,
+            "analyzing",
+            current=current,
+            total=total,
+            message=f"AI 분석 진행 중 ({current}/{total})",
+        )
 
     ok = sum(1 for r in final if r.get("decision") != "failed")
     logger.info("Batch done: %d/%d succeeded", ok, len(problem_ids))
@@ -151,7 +188,38 @@ async def _process_single(problem_id: str, sem: asyncio.Semaphore) -> dict:
         return {"problem_id": problem_id, "decision": "failed", "error": str(exc)}
 
 
+SINGLE_PROBLEM_TIMEOUT = 120  # seconds
+
+async def _process_single_safe(problem_id: str, sem: asyncio.Semaphore) -> dict:
+    try:
+        result = await asyncio.wait_for(
+            _process_single(problem_id, sem),
+            timeout=SINGLE_PROBLEM_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        error_msg = f"Timed out after {SINGLE_PROBLEM_TIMEOUT}s"
+        logger.error("Pipeline timed out for %s", problem_id)
+        await _mark_problem_failed(problem_id, error_msg)
+        return {"problem_id": problem_id, "decision": "failed", "error": error_msg}
+    except Exception as exc:
+        safe_err = _sanitize_error(exc)
+        logger.error("Pipeline failed for %s: %s", problem_id, safe_err)
+        await _mark_problem_failed(problem_id, safe_err)
+        return {"problem_id": problem_id, "decision": "failed", "error": safe_err}
+
+    if isinstance(result, dict):
+        return result
+
+    await _mark_problem_failed(problem_id, "Unknown error")
+    return {"problem_id": problem_id, "decision": "failed", "error": "Unknown error"}
+
+
 # ─── Helper: mark problem as failed ───
+
+
+def _sanitize_error(exc: BaseException) -> str:
+    """Return a safe error string without credentials or paths."""
+    return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
 async def _mark_problem_failed(problem_id: str, error_msg: str) -> None:
@@ -162,11 +230,14 @@ async def _mark_problem_failed(problem_id: str, error_msg: str) -> None:
         problem = result.scalar_one_or_none()
         if problem:
             problem.analysis_status = AnalysisStatus.failed
-            error_entry = {"_error": error_msg}
-            if isinstance(problem.common_mistakes, list):
-                problem.common_mistakes = [error_entry] + problem.common_mistakes
+            # Store error in solution_tags (not common_mistakes, which is user-facing content)
+            error_entry = {"_analysis_error": error_msg}
+            if isinstance(problem.solution_tags, list):
+                # Replace any prior error entries, keep real tags
+                clean = [t for t in problem.solution_tags if not isinstance(t, dict) or "_analysis_error" not in t]
+                problem.solution_tags = [error_entry] + clean
             else:
-                problem.common_mistakes = [error_entry]
+                problem.solution_tags = [error_entry]
             await session.commit()
             logger.info("Marked problem %s as failed: %s", problem_id, error_msg)
 
@@ -178,9 +249,22 @@ async def _mark_problem_failed(problem_id: str, error_msg: str) -> None:
     bind=True,
     name="task.analysis.finalize",
     acks_late=True,
+    max_retries=1,
+    default_retry_delay=10,
+    reject_on_worker_lost=True,
 )
 def finalize_analysis(self, batch_results: list, *, ocr_job_id: str, total: int) -> dict:
     """Finalize analysis — flatten batch results, count, and notify NestJS."""
+    # Idempotency: check Redis key to avoid double-finalize
+    r = redis.from_url(settings.redis_url, decode_responses=True)
+    finalize_key = f"analysis:finalized:{ocr_job_id}"
+    try:
+        if not r.set(finalize_key, "1", nx=True, ex=3600):
+            logger.info("Skipping finalize_analysis for job %s — already finalized", ocr_job_id)
+            return {"ocr_job_id": ocr_job_id, "skipped": True}
+    finally:
+        r.close()
+
     results: list[dict] = []
     for batch in batch_results:
         if isinstance(batch, list):
@@ -264,6 +348,7 @@ async def _merge(problem_id: str, results: list[dict]) -> dict:
         field_map = [
             "solution_tags", "solution_strategy", "required_concepts",
             "solution_steps", "estimated_time_sec", "common_mistakes",
+            "classification_2015", "classification_2022",
             "subject", "unit_major", "unit_minor", "unit_sub",
             "difficulty_refined", "is_common", "classification_confidence",
             "exam_source", "position_type", "point_value", "question_format",
@@ -273,15 +358,41 @@ async def _merge(problem_id: str, results: list[dict]) -> dict:
             if val is not None and hasattr(problem, key):
                 setattr(problem, key, val)
 
+        from app.models.curriculum_node import find_curriculum_node
+
+        classification_2015 = merged.get("classification_2015") or problem.classification_2015
+        if isinstance(classification_2015, dict):
+            classification_2015 = dict(classification_2015)
+            node_2015 = await find_curriculum_node(
+                session,
+                classification_2015.get("subject"),
+                classification_2015.get("unitMajor"),
+                classification_2015.get("unitMinor"),
+                curriculum_year=2015,
+            )
+            classification_2015["curriculumNodeId"] = node_2015.id if node_2015 else None
+            problem.classification_2015 = classification_2015
+
+        classification_2022 = merged.get("classification_2022") or problem.classification_2022
+        if isinstance(classification_2022, dict):
+            classification_2022 = dict(classification_2022)
+            node_2022 = await find_curriculum_node(
+                session,
+                classification_2022.get("subject"),
+                classification_2022.get("unitMajor"),
+                classification_2022.get("unitMinor"),
+                curriculum_year=2022,
+            )
+            classification_2022["curriculumNodeId"] = node_2022.id if node_2022 else None
+            problem.classification_2022 = classification_2022
+
         # Link to curriculum node based on classification labels
         _subject = merged.get("subject") or problem.subject
         _unit_major = merged.get("unit_major") or problem.unit_major
         _unit_minor = merged.get("unit_minor") or problem.unit_minor
         if _subject:
-            from app.models.curriculum_node import find_curriculum_node
-
             node = await find_curriculum_node(
-                session, _subject, _unit_major, _unit_minor,
+                session, _subject, _unit_major, _unit_minor, curriculum_year=2015,
             )
             problem.curriculum_node_id = node.id if node else None
 

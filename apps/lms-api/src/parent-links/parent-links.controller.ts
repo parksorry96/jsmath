@@ -26,8 +26,17 @@ export class ParentLinksController {
 
   @Post("invite")
   @Roles("admin", "teacher")
-  generateInvite(@Body("studentId") studentId: string) {
-    return this.parentLinks.generateInviteCode(studentId);
+  generateInvite(
+    @Body("studentId") studentId: string,
+    @Body("classId") classId: string | undefined,
+    @Request() req: AuthRequest,
+  ) {
+    return this.parentLinks.generateInviteCode(
+      studentId,
+      req.user.id,
+      req.user.role,
+      classId,
+    );
   }
 
   @Post("link")

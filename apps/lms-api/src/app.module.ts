@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { BullModule } from "@nestjs/bullmq";
 import { AppController } from "./app.controller";
 import { PrismaModule } from "./prisma/prisma.module";
+import { SharedAuthModule } from "./auth/shared-auth.module";
 import { AuthModule } from "./auth/auth.module";
 import { UsersModule } from "./users/users.module";
 import { OrganizationsModule } from "./organizations/organizations.module";
@@ -31,6 +32,10 @@ import { GamificationModule } from "./gamification/gamification.module";
 import { ClassMonitorModule } from "./class-monitor/class-monitor.module";
 import { OperationsModule } from "./operations/operations.module";
 import { IntegrationsModule } from "./integrations/integrations.module";
+import { LearningEventsModule } from "./learning-events/learning-events.module";
+import { ExamBlueprintsModule } from "./exam-blueprints/exam-blueprints.module";
+import { CommonModule } from "./common/common.module";
+import { IngestionModule } from "./ingestion/ingestion.module";
 
 @Module({
   imports: [
@@ -48,6 +53,8 @@ import { IntegrationsModule } from "./integrations/integrations.module";
       }),
     }),
     PrismaModule,
+    SharedAuthModule,
+    CommonModule,
     AuthModule,
     UsersModule,
     OrganizationsModule,
@@ -76,6 +83,9 @@ import { IntegrationsModule } from "./integrations/integrations.module";
     ClassMonitorModule,
     OperationsModule,
     IntegrationsModule,
+    LearningEventsModule,
+    ExamBlueprintsModule,
+    IngestionModule,
   ],
   controllers: [AppController],
 })

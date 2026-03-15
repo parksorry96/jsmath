@@ -13,6 +13,14 @@ logger = logging.getLogger(__name__)
 
 _client = None
 
+MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+
+
+def _validate_s3_key(s3_key: str) -> str:
+    if ".." in s3_key or s3_key.startswith("/"):
+        raise ValueError(f"Invalid S3 key: {s3_key}")
+    return s3_key
+
 
 def _get_client():  # type: ignore[no-untyped-def]
     global _client
@@ -30,6 +38,7 @@ def _get_client():  # type: ignore[no-untyped-def]
 
 def generate_presigned_url(s3_key: str, expires_in: int = 900) -> str:
     """Generate a presigned GET URL for an S3 object. Default 15 min expiry."""
+    _validate_s3_key(s3_key)
     return _get_client().generate_presigned_url(
         "get_object",
         Params={"Bucket": settings.s3_bucket, "Key": s3_key},
@@ -39,6 +48,7 @@ def generate_presigned_url(s3_key: str, expires_in: int = 900) -> str:
 
 def upload_bytes(s3_key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
     """Upload raw bytes to S3."""
+    _validate_s3_key(s3_key)
     _get_client().put_object(
         Bucket=settings.s3_bucket,
         Key=s3_key,
@@ -48,7 +58,11 @@ def upload_bytes(s3_key: str, data: bytes, content_type: str = "application/octe
     logger.info("Uploaded to s3://%s/%s", settings.s3_bucket, s3_key)
 
 
-def download_bytes(s3_key: str) -> bytes:
-    """Download raw bytes from S3."""
+def download_bytes(s3_key: str, max_size: int = MAX_DOWNLOAD_SIZE) -> bytes:
+    """Download raw bytes from S3 with size limit."""
+    _validate_s3_key(s3_key)
     response = _get_client().get_object(Bucket=settings.s3_bucket, Key=s3_key)
+    content_length = response.get("ContentLength", 0)
+    if content_length > max_size:
+        raise ValueError(f"S3 object too large: {content_length} bytes (limit: {max_size})")
     return response["Body"].read()

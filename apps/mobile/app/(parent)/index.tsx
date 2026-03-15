@@ -72,9 +72,10 @@ export default function ParentHome() {
           placeholder="초대 코드 입력"
           placeholderTextColor="#666"
           value={inviteCode}
-          onChangeText={setInviteCode}
-          keyboardType="number-pad"
-          maxLength={6}
+          onChangeText={(value) => setInviteCode(value.toUpperCase())}
+          autoCapitalize="characters"
+          autoCorrect={false}
+          maxLength={8}
           autoFocus
         />
         <TouchableOpacity
@@ -132,6 +133,16 @@ export default function ParentHome() {
             </Text>
           </View>
         </View>
+
+        <TouchableOpacity
+          className="bg-brand-accent/15 rounded-xl py-2.5 mt-4 border border-brand-accent/20 items-center"
+          onPress={() => router.push(`/(parent)/children/${item.id}?tab=report`)}
+          activeOpacity={0.7}
+        >
+          <Text className="text-brand-accent text-sm font-bold">
+            주간 리포트
+          </Text>
+        </TouchableOpacity>
       </TouchableOpacity>
     );
   }

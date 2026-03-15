@@ -18,6 +18,8 @@ import { UpdateAssignmentDto } from "./dto/update-assignment.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Roles } from "../auth/roles.decorator";
+import { RemediationService } from "../remediation/remediation.service";
+import { GenerateAssignmentRemediationDto } from "./dto/generate-assignment-remediation.dto";
 
 interface AuthRequest {
   user: { id: string; email: string; role: string };
@@ -26,7 +28,10 @@ interface AuthRequest {
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class AssignmentsController {
-  constructor(private assignments: AssignmentsService) {}
+  constructor(
+    private assignments: AssignmentsService,
+    private remediation: RemediationService,
+  ) {}
 
   @Post("classes/:classId/assignments")
   @Roles("admin", "teacher")
@@ -71,9 +76,32 @@ export class AssignmentsController {
     return this.assignments.findMine(req.user.id);
   }
 
+  @Get("assignments/:id/exam-pdf")
+  getExamPdf(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.assignments.getExamPdf(id, req.user.id, req.user.role);
+  }
+
   @Get("assignments/:id")
   findOne(@Param("id") id: string, @Request() req: AuthRequest) {
     return this.assignments.findById(id, req.user.id, req.user.role);
+  }
+
+  @Post("assignments/:id/generate-remediation")
+  @Roles("admin", "teacher")
+  generateRemediation(
+    @Param("id") id: string,
+    @Query() query: GenerateAssignmentRemediationDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.remediation.generateForAssignment(
+      id,
+      req.user.id,
+      req.user.role,
+      {
+        studentId: query.studentId,
+        maxProblems: query.maxProblems,
+      },
+    );
   }
 
   @Patch("assignments/:id")

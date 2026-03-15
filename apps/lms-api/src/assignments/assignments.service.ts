@@ -3,6 +3,9 @@ import {
   NotFoundException,
   ForbiddenException,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateAssignmentDto } from "./dto/create-assignment.dto";
 import { UpdateAssignmentDto } from "./dto/update-assignment.dto";
@@ -10,12 +13,18 @@ import {
   canAccessAssignment,
   canAccessClass,
   getAccessibleClassIds,
+  getLinkedStudentIds,
   isPrivilegedRole,
 } from "../common/access-control";
+import { ProblemUsageLogService } from "../problems/problem-usage-log.service";
 
 @Injectable()
 export class AssignmentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private config: ConfigService,
+    private usageLogService: ProblemUsageLogService,
+  ) {}
 
   private serializeAssignmentListItem(assignment: {
     id: string;
@@ -133,8 +142,12 @@ export class AssignmentsService {
           ? new Date(this.normalizeDueAt(dto)!)
           : undefined,
         maxScore: dto.maxScore,
+        examDocumentId: dto.examDocumentId ?? undefined,
+        attachPdf: dto.attachPdf ?? false,
       },
     });
+
+    let usedProblemIds: string[] = [];
 
     if (dto.type === "problem_set" && dto.problemIds?.length) {
       await this.prisma.assignmentProblem.createMany({
@@ -144,6 +157,35 @@ export class AssignmentsService {
           orderIndex: index,
         })),
       });
+      usedProblemIds = dto.problemIds;
+    } else if (dto.examDocumentId && (!dto.problemIds || dto.problemIds.length === 0)) {
+      const examDoc = await this.prisma.examDocument.findUnique({
+        where: { id: dto.examDocumentId },
+        include: { problems: { orderBy: { orderIndex: "asc" } } },
+      });
+      if (examDoc) {
+        await this.prisma.assignmentProblem.createMany({
+          data: examDoc.problems.map((p, i) => ({
+            assignmentId: assignment.id,
+            problemId: p.problemId,
+            orderIndex: i,
+          })),
+        });
+        usedProblemIds = examDoc.problems.map((p) => p.problemId);
+      }
+    }
+
+    if (usedProblemIds.length > 0) {
+      await this.usageLogService.logUsage(
+        usedProblemIds.map((problemId) => ({
+          problemId,
+          usageType: "assignment" as const,
+          referenceId: assignment.id,
+          referenceType: "Assignment",
+          classId,
+          usedByUserId: requesterId,
+        })),
+      );
     }
 
     return this.findByIdInternal(assignment.id);
@@ -161,10 +203,34 @@ export class AssignmentsService {
     }
 
     await this.assertClassExists(classId);
+    const visibilityWhere =
+      requesterRole === "student"
+        ? {
+            OR: [
+              { targetStudentId: null },
+              { targetStudentId: requesterId },
+            ],
+          }
+        : requesterRole === "parent"
+          ? {
+              OR: [
+                { targetStudentId: null },
+                {
+                  targetStudentId: {
+                    in: await getLinkedStudentIds(this.prisma, requesterId),
+                  },
+                },
+              ],
+            }
+          : undefined;
     const assignments = await this.prisma.assignment.findMany({
-      where: { classId },
+      where: {
+        classId,
+        ...(visibilityWhere ?? {}),
+      },
       include: {
         class: { select: { id: true, title: true } },
+        targetStudent: { select: { id: true, name: true } },
         _count: { select: { assignmentProblems: true, submissions: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -200,6 +266,7 @@ export class AssignmentsService {
             _count: { select: { enrollments: true } },
           },
         },
+        targetStudent: { select: { id: true, name: true } },
         assignmentProblems: {
           orderBy: { orderIndex: "asc" },
         },
@@ -269,9 +336,16 @@ export class AssignmentsService {
     }
 
     const assignments = await this.prisma.assignment.findMany({
-      where: { classId: { in: classIds } },
+      where: {
+        classId: { in: classIds },
+        OR: [
+          { targetStudentId: null },
+          { targetStudentId: studentId },
+        ],
+      },
       include: {
         class: { select: { id: true, title: true } },
+        targetStudent: { select: { id: true, name: true } },
         submissions: {
           where: { studentId },
           orderBy: { submittedAt: "desc" },
@@ -308,6 +382,7 @@ export class AssignmentsService {
         : (accessibleClassIds !== null ? { classId: { in: accessibleClassIds } } : undefined),
       include: {
         class: { select: { id: true, title: true } },
+        targetStudent: { select: { id: true, name: true } },
         submissions: {
           where: { status: "submitted" },
           select: { id: true, status: true, score: true },
@@ -491,5 +566,37 @@ export class AssignmentsService {
     });
     if (!assignment) throw new NotFoundException("Assignment not found");
     return assignment;
+  }
+
+  async getExamPdf(assignmentId: string, userId: string, userRole: string) {
+    const assignment = await this.prisma.assignment.findUnique({
+      where: { id: assignmentId },
+      include: {
+        examDocument: true,
+        class: { include: { enrollments: { select: { userId: true } } } },
+      },
+    });
+    if (!assignment) throw new NotFoundException("Assignment not found");
+
+    const isTeacher = isPrivilegedRole(userRole);
+    const isEnrolled = assignment.class.enrollments.some((e) => e.userId === userId);
+    if (!isTeacher && !isEnrolled) throw new ForbiddenException("Not authorized");
+
+    if (!assignment.attachPdf || !assignment.examDocument?.pdfS3Key) {
+      throw new NotFoundException("PDF not available for this assignment");
+    }
+
+    const s3 = new S3Client({
+      region: this.config.get("AWS_REGION", "ap-northeast-2"),
+      ...(this.config.get("AWS_ENDPOINT")
+        ? { endpoint: this.config.get("AWS_ENDPOINT"), forcePathStyle: true }
+        : {}),
+    });
+    const command = new GetObjectCommand({
+      Bucket: this.config.getOrThrow("S3_BUCKET"),
+      Key: assignment.examDocument.pdfS3Key,
+    });
+    const url = await getSignedUrl(s3, command, { expiresIn: 3600 });
+    return { url };
   }
 }

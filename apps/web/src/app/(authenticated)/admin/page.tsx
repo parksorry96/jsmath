@@ -94,7 +94,7 @@ export default function AdminPage() {
                 <Input
                   id="confidence"
                   type="number"
-                  defaultValue="0.90"
+                  defaultValue="0.85"
                   step="0.01"
                   min="0"
                   max="1"

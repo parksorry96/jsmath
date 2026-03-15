@@ -12,8 +12,10 @@ Extended version of segment_problems.py with textbook-specific patterns:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import re
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -23,8 +25,15 @@ from app.database import worker_session
 from app.models.job import JobStatus, OcrJobTracking
 from app.models.ocr import OcrLine, OcrPage
 from app.schemas.problem import BBox
+from app.workers.choice_parser import resolve_stem_and_choices
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class NormalizedStemLine:
+    text: str
+    latex: str
 
 # Line types to skip
 _SKIP_LINE_TYPES = {"page_info", "page_header", "page_footer"}
@@ -94,6 +103,12 @@ _LABEL_CATEGORY = {
 
 # Choice marker for multiple choice detection
 _CHOICE_PATTERN = re.compile(r"^\s*[①②③④⑤]\s*")
+_CHOICE_PATTERN_ASCII = re.compile(r"^\s*[\(（][1-5][\)）]\s*")
+_QUESTION_PROMPT_PATTERN = re.compile(
+    r"(?:값은[？?]|구하시오|옳은 것은|고른 것은|개수는|최댓값은|최솟값은|나머지는|합은|적당한 것은)"
+)
+_POINT_SUFFIX_PATTERN = re.compile(r"[（(]\d+\s*점[)）]")
+_TEXTBOOK_COLUMN_BOUNDARY_X = 1000
 
 # Written solution keywords
 _WRITTEN_KEYWORDS = re.compile(r"풀이\s*과정|서술하|서술형|설명하")
@@ -119,6 +134,42 @@ _SECTION_TRANSITIONS = [
 
 _EXAMPLE_PATTERN = re.compile(r"^\s*예제\s*(\d{1,2})\s*(.*)")
 _PAST_EXAM_YEAR_PATTERN = re.compile(r"(\d{4}학년도\s*(?:수능|6월모의평가|9월모의평가|교육청모의고사))")
+_PROBLEM_LABEL_PATTERN = re.compile(
+    r"^\s*(예제|유제|대표문제|확인문제|기본문제|심화문제|연습문제|문제|Exercise|Problem|Q)\b"
+)
+
+_EXAM_HEADER_PATTERN = re.compile(
+    r"^\s*(?P<num>\d{1,4})"
+    r"(?P<prefix>\s*(?:[★☆*✭✦✧⋆•·※]|\S{1,6}){0,4}\s*)"
+    r"(?P<year>20\d{2})\s*(?:학년도|년)\s*"
+    r"(?P<tail>.*)$"
+)
+
+_EXAM_HEADER_ITEM_PATTERNS = [
+    re.compile(
+        r"^(?P<body>.*?)(?P<exam_num>\d{1,2})\s*(?:번|문항)"
+        r"(?:\((?P<audience>[^)]{1,12})\))?"
+        r"(?:\s*(?P<form>[가나다라마바사]|[AB]형))?"
+        r"(?P<rest>\s*.*)$"
+    ),
+    re.compile(
+        r"^(?P<body>.*?)(?P<form>[AB]형)\s*(?P<exam_num>\d{1,2})\s*(?:번|문항)"
+        r"(?:\((?P<audience>[^)]{1,12})\))?"
+        r"(?P<rest>\s*.*)$"
+    ),
+    re.compile(
+        r"^(?P<body>.*?)(?P<exam_num>\d{1,2})\s*(?P<form>[가나다라마바사])"
+        r"(?P<rest>\s*.*)$"
+    ),
+]
+
+_EXAM_SOURCE_PATTERNS = [
+    (re.compile(r"경찰\s*대?"), "경찰대"),
+    (re.compile(r"사관\s*학교"), "사관학교"),
+    (re.compile(r"수능"), "수능"),
+    (re.compile(r"학평"), "학평"),
+    (re.compile(r"모평|모의평가|교육청"), "모평"),
+]
 
 _INLINE_BLOCK_PATTERNS = [
     re.compile(r"^\s*잠깐이?\s*$", re.IGNORECASE),
@@ -154,7 +205,8 @@ def _match_example_start(text: str) -> tuple[str, str] | None:
     """Check if text starts an example (예제 N). Returns (number, display) or None."""
     m = _EXAMPLE_PATTERN.match(text.strip())
     if m:
-        return (m.group(1), text.strip())
+        num = m.group(1)
+        return (num, f"예제 {num}")
     return None
 
 
@@ -228,14 +280,32 @@ async def _segment(
     if problem_pages:
         pages = [p for p in pages if problem_pages[0] <= p.page_number <= problem_pages[1]]
 
-    segments = _rule_based_segment(pages)
-
     from app.services.redis_events import notify_progress
+
+    total_pages = len(pages)
+    report_interval = max(1, total_pages // 20) if total_pages > 0 else 1
+    last_reported = 0
+
+    def report_progress(processed_pages: int) -> None:
+        nonlocal last_reported
+        if processed_pages < total_pages and processed_pages - last_reported < report_interval:
+            return
+
+        last_reported = processed_pages
+        notify_progress(
+            ocr_job_id,
+            "segmentation",
+            current=processed_pages,
+            total=total_pages,
+            message=f"교재 문제 분할 중 ({processed_pages}/{total_pages} 페이지)",
+        )
+
+    segments = _rule_based_segment(pages, progress_callback=report_progress)
 
     notify_progress(
         ocr_job_id, "segmentation",
-        current=len(segments), total=len(segments),
-        message="교재 문제 분할 완료",
+        current=total_pages, total=total_pages,
+        message=f"교재 문제 분할 완료 ({len(segments)}문제)",
     )
 
     logger.info(
@@ -256,9 +326,15 @@ async def _segment(
 
 def _is_noise_line(line: OcrLine) -> bool:
     """Check if a line is noise."""
-    if line.line_type in _SKIP_LINE_TYPES:
-        return True
     text = line.text.strip()
+    if line.line_type in _SKIP_LINE_TYPES:
+        if (
+            _extract_exam_header_metadata(text) is None
+            and _is_section_header(text) is False
+            and _match_chapter(text) is None
+            and _match_problem_start(text) is None
+        ):
+            return True
     if not text:
         return True
     if re.match(r"^\d{1,3}$", text):
@@ -302,6 +378,13 @@ def _match_problem_start(text: str) -> tuple[str, str, str | None] | None:
 
     Returns (problem_number, display_number, problem_category) or None.
     """
+    exam_header = _extract_exam_header_metadata(text)
+    if exam_header is not None:
+        raw_num = re.match(r"^\s*(\d{1,4})", text)
+        if raw_num:
+            normalized_num = str(int(raw_num.group(1)))
+            return normalized_num, raw_num.group(1), None
+
     for i, pattern in enumerate(_PROBLEM_PATTERNS):
         m = pattern.match(text)
         if not m:
@@ -322,22 +405,164 @@ def _match_problem_start(text: str) -> tuple[str, str, str | None] | None:
         elif i == 2:  # N.
             num = int(m.group("num"))
             if 1 <= num <= _MAX_PROBLEM_NUMBER:
-                return str(num), text[:30].strip(), None
+                return str(num), f"{num}.", None
 
         elif i == 3:  # Circled numbers
             circled = m.group("num")
             mapped = _CIRCLED_MAP.get(circled, circled)
-            return mapped, text[:30].strip(), None
+            return mapped, circled, None
 
         elif i == 4:  # [N]
             num = int(m.group("num"))
             if 1 <= num <= _MAX_PROBLEM_NUMBER:
-                return str(num), text[:30].strip(), None
+                return str(num), f"[{num}]", None
 
     return None
 
 
-def _detect_problem_type(lines: list[OcrLine]) -> str:
+def _extract_problem_label(
+    display_number: str | None,
+    *,
+    fallback: str | None = None,
+) -> str | None:
+    """Extract a human-readable label such as 예제 or 유제 from the display number."""
+    if display_number:
+        match = _PROBLEM_LABEL_PATTERN.match(display_number)
+        if match:
+            return match.group(1)
+    return fallback
+
+
+def _canonicalize_exam_source(text: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    for pattern, source_type in _EXAM_SOURCE_PATTERNS:
+        if pattern.search(normalized):
+            return source_type
+    return None
+
+
+def _extract_exam_header_metadata(text: str) -> dict | None:
+    stripped = text.strip()
+    match = _EXAM_HEADER_PATTERN.match(stripped)
+    if not match:
+        return None
+
+    year = int(match.group("year"))
+    tail = match.group("tail") or ""
+    item_match = None
+    for pattern in _EXAM_HEADER_ITEM_PATTERNS:
+        item_match = pattern.match(tail)
+        if item_match:
+            break
+    if not item_match:
+        return None
+
+    prefix = re.sub(r"\s+", " ", match.group("prefix") or "").strip()
+    body = re.sub(r"\s+", " ", item_match.group("body") or "").strip()
+    item_groupdict = item_match.groupdict()
+    audience = (item_groupdict.get("audience") or "").strip() or None
+    form = (item_groupdict.get("form") or "").strip() or None
+    raw_header = " ".join(
+        part
+        for part in [
+            prefix,
+            f"{year}학년도" if "학년도" in stripped else f"{year}년",
+            body,
+            f"{item_match.group('exam_num')}번"
+            if "번" in tail or "문항" in tail
+            else item_match.group("exam_num"),
+            audience and f"({audience})",
+            (
+                form
+                if form
+                and form not in body
+                else ""
+            ),
+        ]
+        if part
+    )
+    source_type = _canonicalize_exam_source(raw_header)
+    body_form_match = re.search(r"([AB]형|[가나다라마바사])", body)
+
+    return {
+        "raw": raw_header,
+        "year": year,
+        "sourceType": source_type,
+        "sourceLabel": body or None,
+        "examNumber": int(item_match.group("exam_num")),
+        "audience": audience,
+        "form": (form or (body_form_match.group(1) if body_form_match else "")).strip() or None,
+        "rest": (item_match.group("rest") or "").strip(),
+    }
+
+
+def _strip_exam_header_prefix(text: str) -> str:
+    metadata = _extract_exam_header_metadata(text)
+    if metadata is None:
+        return text.strip()
+    return metadata["rest"]
+
+
+def _strip_problem_header(text: str, *, allow_embedded_number: bool = False) -> str:
+    """Remove only the leading problem label/number prefix from the first stem line."""
+    exam_metadata = _extract_exam_header_metadata(text)
+    if exam_metadata is not None:
+        return exam_metadata["rest"]
+
+    patterns = [
+        re.compile(
+            r"^\s*(?:예제|유제|대표문제|확인문제|기본문제|심화문제|연습문제|문제|Exercise|Problem|Q)\s*\d{1,3}\s*(?P<rest>.*)$"
+        ),
+        re.compile(r"^\s*\d{1,3}\s*$"),
+        re.compile(r"^\s*\d{3,4}\s*[.\s]+\s*(?P<rest>.*)$"),
+        re.compile(r"^\s*\d{1,3}\s*\.(?!\d)\s*(?P<rest>.*)$"),
+        re.compile(r"^\s*[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]\s*(?P<rest>.*)$"),
+        re.compile(r"^\s*\[\d{1,3}\]\s*(?P<rest>.*)$"),
+    ]
+
+    if allow_embedded_number:
+        patterns.append(
+            re.compile(
+                r"^\s*\$?\d{1,3}\s+(?!\\leq|\\geq|\\le(?![a-z])|\\ge(?![a-z])|[<>]|이상|이하)(?P<rest>.*)$"
+            )
+        )
+
+    for pattern in patterns:
+        match = pattern.match(text)
+        if match:
+            rest = match.groupdict().get("rest", "")
+            cleaned = rest.strip()
+            if cleaned:
+                return _strip_exam_header_prefix(cleaned)
+            return cleaned
+
+    return _strip_exam_header_prefix(text.strip())
+
+
+def _normalize_stem_lines(
+    lines: list[OcrLine],
+    *,
+    allow_embedded_number: bool = False,
+) -> list[NormalizedStemLine]:
+    """Normalize stem lines by removing the leading problem prefix from the first line only."""
+    normalized: list[NormalizedStemLine] = []
+    for index, line in enumerate(lines):
+        text = line.text
+        latex = line.latex or line.text
+        if index == 0:
+            text = _strip_problem_header(text, allow_embedded_number=allow_embedded_number)
+            latex = _strip_problem_header(latex, allow_embedded_number=allow_embedded_number)
+            if not text and not latex:
+                continue
+        normalized.append(NormalizedStemLine(text=text, latex=latex or text))
+
+    if normalized:
+        return normalized
+
+    return [NormalizedStemLine(text=line.text, latex=line.latex or line.text) for line in lines]
+
+
+def _detect_problem_type(lines: list[OcrLine | NormalizedStemLine]) -> str:
     """Detect problem type from content."""
     all_text = " ".join(l.text for l in lines)
     for line in lines:
@@ -348,7 +573,76 @@ def _detect_problem_type(lines: list[OcrLine]) -> str:
     return "short_answer"
 
 
-def _extract_choices(lines: list[OcrLine]) -> list[dict] | None:
+def _count_choice_lines(lines: list[OcrLine]) -> int:
+    count = 0
+    for line in lines:
+        text = line.text.strip()
+        if _CHOICE_PATTERN.match(text) or _CHOICE_PATTERN_ASCII.match(text):
+            count += 1
+    return count
+
+
+def _looks_like_question_prompt(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if _CHOICE_PATTERN.match(stripped) or _CHOICE_PATTERN_ASCII.match(stripped):
+        return False
+    return bool(_QUESTION_PROMPT_PATTERN.search(stripped) or _POINT_SUFFIX_PATTERN.search(stripped))
+
+
+def _is_cross_column_textbook(current_lines: list[OcrLine], new_line: OcrLine) -> bool:
+    if not current_lines or new_line.bbox_x is None:
+        return False
+    first_x = next((line.bbox_x for line in current_lines if line.bbox_x is not None), None)
+    if first_x is None:
+        return False
+    return (first_x < _TEXTBOOK_COLUMN_BOUNDARY_X) != (
+        new_line.bbox_x < _TEXTBOOK_COLUMN_BOUNDARY_X
+    )
+
+
+def _infer_next_display_number(problem_number: str | None, display_number: str | None) -> tuple[str | None, str | None]:
+    if not problem_number or not problem_number.isdigit():
+        return None, None
+
+    next_number = str(int(problem_number) + 1)
+    if display_number and display_number.isdigit():
+        return next_number, next_number.zfill(len(display_number))
+    if display_number and display_number.endswith("."):
+        return next_number, f"{next_number}."
+    if display_number and display_number.startswith("[") and display_number.endswith("]"):
+        return next_number, f"[{next_number}]"
+    return next_number, next_number
+
+
+def _should_force_split_into_next_problem(current_lines: list[OcrLine], new_line: OcrLine) -> bool:
+    if not current_lines:
+        return False
+    if _count_choice_lines(current_lines) < 4:
+        return False
+    if not _looks_like_question_prompt(new_line.text):
+        return False
+
+    last_y = next(
+        (line.bbox_y for line in reversed(current_lines) if line.bbox_y is not None),
+        None,
+    )
+    new_y = new_line.bbox_y
+
+    if last_y is None or new_y is None:
+        return True
+    if new_y + 250 < last_y:
+        return True
+    if new_y - last_y > 220:
+        return True
+    if _is_cross_column_textbook(current_lines, new_line):
+        return True
+
+    return False
+
+
+def _extract_choices(lines: list[OcrLine | NormalizedStemLine]) -> list[dict] | None:
     """Extract multiple choice options from lines."""
     choice_map = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5}
     choices = []
@@ -399,15 +693,19 @@ def _build_segment(
     if not content_lines:
         content_lines = lines
 
-    stem_latex = "\n".join(l.latex or l.text for l in content_lines)
-    stem_text = "\n".join(l.text for l in content_lines)
-    problem_type = _detect_problem_type(content_lines)
+    exam_metadata = _extract_exam_header_metadata(content_lines[0].text) if content_lines else None
+
+    normalized_lines = _normalize_stem_lines(content_lines)
+    raw_stem_latex = "\n".join(l.latex for l in normalized_lines)
+    raw_stem_text = "\n".join(l.text for l in normalized_lines)
+    stem_latex, stem_text, choices = resolve_stem_and_choices(raw_stem_latex, raw_stem_text)
+    problem_type = "multiple_choice" if choices else _detect_problem_type(normalized_lines)
     bbox = _compute_bbox(content_lines)
-    choices = _extract_choices(content_lines) if problem_type == "multiple_choice" else None
 
     segment: dict = {
         "problem_number": problem_number,
         "display_number": display_number,
+        "problem_label": _extract_problem_label(display_number),
         "problem_type": problem_type,
         "start_page": start_page,
         "end_page": end_page,
@@ -419,6 +717,17 @@ def _build_segment(
         "bbox": bbox,
         "choices": choices,
     }
+
+    if exam_metadata:
+        segment["exam_source"] = {
+            "year": exam_metadata["year"],
+            "type": exam_metadata["sourceType"],
+            "label": exam_metadata["sourceLabel"],
+            "number": exam_metadata["examNumber"],
+            "audience": exam_metadata["audience"],
+            "form": exam_metadata["form"],
+            "raw": exam_metadata["raw"],
+        }
 
     if sub_segments:
         segment["sub_problems"] = sub_segments
@@ -460,6 +769,50 @@ _LEADING_NUMBER = re.compile(
 )
 
 
+def _extract_ebs_local_number(text: str) -> str | None:
+    """Extract a local problem number from standalone or inline EBS problem labels."""
+    stripped = text.strip()
+    standalone = _LOCAL_NUMBER_PATTERN.match(stripped)
+    if standalone:
+        return str(int(standalone.group(1)))
+
+    leading = _LEADING_NUMBER.match(stripped)
+    if leading:
+        return str(int(leading.group(1)))
+
+    return None
+
+
+def _has_nearby_item_code(
+    lines: list[OcrLine],
+    start_index: int,
+    *,
+    lookahead: int = 2,
+) -> bool:
+    """Check whether the current line or the next few lines include an EBS item code."""
+    end_index = min(len(lines), start_index + lookahead + 1)
+    return any(_match_item_code(lines[idx].text.strip()) is not None for idx in range(start_index, end_index))
+
+
+def _is_ebs_concept_heading(
+    line: OcrLine,
+    lines: list[OcrLine],
+    line_index: int,
+) -> bool:
+    """Detect chapter concept headings like '4 등차수열의 합' that are not problems."""
+    text = line.text.strip()
+    if not text or _has_nearby_item_code(lines, line_index):
+        return False
+
+    if _LEADING_NUMBER.match(text) is None:
+        return False
+
+    if line.line_number > 5 and (line.bbox_y is None or line.bbox_y > 420):
+        return False
+
+    return True
+
+
 def _build_ebs_segment(
     stem_lines: list[OcrLine],
     start_page: int,
@@ -480,18 +833,25 @@ def _build_ebs_segment(
     if not content_lines:
         content_lines = stem_lines
 
-    stem_latex = "\n".join(l.latex or l.text for l in content_lines)
-    stem_text = "\n".join(l.text for l in content_lines)
-    problem_type = _detect_problem_type(content_lines)
-    bbox = _compute_bbox(content_lines)
-    choices = _extract_choices(content_lines) if problem_type == "multiple_choice" else None
+    exam_metadata = _extract_exam_header_metadata(content_lines[0].text) if content_lines else None
 
-    return {
+    normalized_lines = _normalize_stem_lines(
+        content_lines,
+        allow_embedded_number=section_type in ("practice", "level1", "level2", "level3"),
+    )
+    raw_stem_latex = "\n".join(l.latex for l in normalized_lines)
+    raw_stem_text = "\n".join(l.text for l in normalized_lines)
+    stem_latex, stem_text, choices = resolve_stem_and_choices(raw_stem_latex, raw_stem_text)
+    problem_type = "multiple_choice" if choices else _detect_problem_type(normalized_lines)
+    bbox = _compute_bbox(content_lines)
+
+    segment = {
         "item_code": item_code,
         "section_type": section_type,
         "section_label": section_label,
         "local_number": local_number,
         "display_number": display_number,
+        "problem_label": _extract_problem_label(display_number, fallback=section_label),
         "problem_number": local_number,
         "problem_type": problem_type,
         "start_page": start_page,
@@ -508,8 +868,24 @@ def _build_ebs_segment(
         "inline_hint": inline_hint,
     }
 
+    if exam_metadata:
+        segment["exam_source"] = {
+            "year": exam_metadata["year"],
+            "type": exam_metadata["sourceType"],
+            "label": exam_metadata["sourceLabel"],
+            "number": exam_metadata["examNumber"],
+            "audience": exam_metadata["audience"],
+            "form": exam_metadata["form"],
+            "raw": exam_metadata["raw"],
+        }
 
-def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
+    return segment
+
+
+def _ebs_segment(
+    pages: list[OcrPage],
+    progress_callback: Callable[[int], None] | None = None,
+) -> list[dict]:
     """Segment EBS 수능특강 textbook pages using section state machine."""
     segments: list[dict] = []
 
@@ -536,6 +912,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
 
     # Stop processing after quick_answer or answer_detail sections
     stop_processing = False
+    in_concept_block = False
     # Track last flushed local number per (chapter_prefix, section_type)
     # so practice numbering persists across multiple "유제" sub-sections in a chapter
     _last_flushed: dict[tuple[str, str], str] = {}
@@ -610,12 +987,12 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
         inline_hint_parts = []
         inline_solution_parts = []
 
-    for page in pages:
+    for page_index, page in enumerate(pages, start=1):
         if stop_processing:
             break
 
         sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
-        for line in sorted_lines:
+        for line_index, line in enumerate(sorted_lines):
             if stop_processing:
                 break
 
@@ -657,6 +1034,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 # Handle "Level" alone — resolve from next line context
                 if sec_type == "level_pending":
                     _flush_problem(page.page_number)
+                    in_concept_block = False
                     # Will be resolved by the next line ("기초 연습" etc.)
                     current_section_type = "level_pending"
                     current_section_label = "Level"
@@ -665,6 +1043,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 # If section changes from example to practice (유제),
                 # flush the current example first
                 _flush_problem(page.page_number)
+                in_concept_block = False
                 current_section_type = sec_type
                 current_section_label = sec_label
                 continue
@@ -696,6 +1075,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
             example_match = _match_example_start(text)
             if example_match:
                 _flush_problem(page.page_number)
+                in_concept_block = False
                 current_section_type = "example"
                 current_section_label = "예제"
                 num, display = example_match
@@ -711,6 +1091,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 year_label = _match_past_exam_year(text)
                 if year_label:
                     _flush_problem(page.page_number)
+                    in_concept_block = False
                     current_local_number = year_label
                     current_display = year_label
                     current_page_start = page.page_number
@@ -720,6 +1101,7 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
             # 3. Check for item code [XXXXX-XXXX]
             item_code = _match_item_code(text)
             if item_code:
+                in_concept_block = False
                 # Extract local number from the item code line itself
                 # e.g. "$\mathbf{6}$\n[26008-0006]$" → number "6"
                 code_line_number: str | None = None
@@ -756,9 +1138,9 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     # Or carry over retroactive lines to the new problem
                     elif next_problem_lines:
                         current_stem_lines = next_problem_lines
-                        m_next = _LEADING_NUMBER.match(next_problem_lines[0].text.strip())
-                        if m_next:
-                            current_local_number = str(int(m_next.group(1)))
+                        next_number = _extract_ebs_local_number(next_problem_lines[0].text)
+                        if next_number is not None:
+                            current_local_number = next_number
                             current_display = f"{current_section_label} {current_local_number}"
                 elif current_stem_lines and current_local_number is not None:
                     # Lines with local number accumulated before item code (text-first ordering)
@@ -769,9 +1151,9 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                     # Try to extract from accumulated lines
                     current_item_code = item_code
                     for sl in current_stem_lines:
-                        num_m = _LEADING_NUMBER.match(sl.text.strip())
-                        if num_m:
-                            current_local_number = str(int(num_m.group(1)))
+                        extracted = _extract_ebs_local_number(sl.text)
+                        if extracted is not None:
+                            current_local_number = extracted
                             current_display = f"{current_section_label} {current_local_number}"
                             break
                 else:
@@ -829,19 +1211,30 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
             ebs_ch = _EBS_CHAPTER_PATTERN.match(text)
             if ebs_ch:
                 _flush_problem(page.page_number)
+                in_concept_block = False
                 current_chapter = text.strip()
                 # Reset section state — concept text follows chapter header
                 current_section_type = None
                 current_section_label = ""
                 continue
 
+            if _is_ebs_concept_heading(line, sorted_lines, line_index):
+                _flush_problem(page.page_number)
+                in_concept_block = True
+                continue
+
+            if in_concept_block:
+                continue
+
             # 6. If we just got an item code but no local number yet, check for it
             if current_item_code is not None and current_local_number is None:
                 # Try standalone number first (very reliable)
-                m = _LOCAL_NUMBER_PATTERN.match(text)
-                if m:
-                    current_local_number = str(int(m.group(1)))
+                extracted = _extract_ebs_local_number(text)
+                if extracted is not None:
+                    current_local_number = extracted
                     current_display = f"{current_section_label} {current_local_number}"
+                    if _LEADING_NUMBER.match(text):
+                        current_stem_lines.append(line)
                     continue
                 # Try leading number embedded in text (e.g. "$1 \sqrt...")
                 # Validate against sequence to avoid OCR false positives like "$1 a>1$"
@@ -864,6 +1257,19 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 # Use strict pattern: bare number at line start (no $ prefix),
                 # and number must be sequential (within +5 of current)
                 if current_section_type in ("practice", "level1", "level2", "level3"):
+                    standalone_new = _LOCAL_NUMBER_PATTERN.match(text)
+                    if standalone_new and _has_nearby_item_code(sorted_lines, line_index):
+                        new_num = str(int(standalone_new.group(1)))
+                        cur_int = int(current_local_number) if current_local_number.isdigit() else 0
+                        new_int = int(new_num)
+                        if cur_int < new_int <= cur_int + 5:
+                            _flush_problem(page.page_number)
+                            current_local_number = new_num
+                            current_display = f"{current_section_label} {current_local_number}"
+                            current_stem_lines = [line]
+                            current_page_start = page.page_number
+                            inline_block_mode = None
+                            continue
                     m_new = re.match(
                         r"^\$?(\d{1,3})\s+(?!\\leq|\\geq|\\le(?![a-z])|\\ge(?![a-z])|[<>]|이상|이하)", text
                     )
@@ -885,6 +1291,15 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                 current_stem_lines.append(line)
                 if current_page_start == 0:
                     current_page_start = page.page_number
+                standalone = _LOCAL_NUMBER_PATTERN.match(text)
+                if standalone and _has_nearby_item_code(sorted_lines, line_index):
+                    candidate = int(standalone.group(1))
+                    prev = _last_flushed.get(_last_key())
+                    prev_int = int(prev) if prev and prev.isdigit() else 0
+                    if candidate >= prev_int:
+                        current_local_number = str(candidate)
+                        current_display = f"{current_section_label} {current_local_number}"
+                    continue
                 # Try to extract local number from this line
                 # Validate against sequence to avoid OCR false positives
                 m3 = _LEADING_NUMBER.match(text)
@@ -896,6 +1311,9 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
                         current_local_number = str(candidate)
                         current_display = f"{current_section_label} {current_local_number}"
 
+        if progress_callback:
+            progress_callback(page_index)
+
     # Flush last problem
     last_page = pages[-1].page_number if pages else 0
     _flush_problem(last_page)
@@ -903,7 +1321,10 @@ def _ebs_segment(pages: list[OcrPage]) -> list[dict]:
     return segments
 
 
-def _rule_based_segment(pages: list[OcrPage]) -> list[dict]:
+def _rule_based_segment(
+    pages: list[OcrPage],
+    progress_callback: Callable[[int], None] | None = None,
+) -> list[dict]:
     """Segment pages into problems using regex patterns.
 
     Detects EBS textbooks by checking for item codes and dispatches
@@ -911,7 +1332,7 @@ def _rule_based_segment(pages: list[OcrPage]) -> list[dict]:
     """
     # EBS detection: if item codes found, use EBS segmentation path
     if pages and _has_ebs_item_codes(pages):
-        return _ebs_segment(pages)
+        return _ebs_segment(pages, progress_callback=progress_callback)
 
     # ─── Original non-EBS segmentation logic ───
     segments: list[dict] = []
@@ -927,7 +1348,7 @@ def _rule_based_segment(pages: list[OcrPage]) -> list[dict]:
     current_category: str | None = None
     in_concept_block = False
 
-    for page in pages:
+    for page_index, page in enumerate(pages, start=1):
         sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
         for line in sorted_lines:
             if _is_noise_line(line):
@@ -987,6 +1408,39 @@ def _rule_based_segment(pages: list[OcrPage]) -> list[dict]:
             if in_concept_block:
                 continue
 
+            if (
+                current_number is not None
+                and _should_force_split_into_next_problem(current_lines, line)
+            ):
+                if current_sub_number is not None and current_sub_lines:
+                    current_sub_segments.append({
+                        "sub_number": current_sub_number,
+                        "text": "\n".join(l.text for l in current_sub_lines),
+                        "latex": "\n".join(l.latex or l.text for l in current_sub_lines),
+                    })
+                    current_sub_number = None
+                    current_sub_lines = []
+
+                if current_lines and current_number is not None:
+                    segments.append(_build_segment(
+                        current_lines, current_sub_segments,
+                        current_page_start, page.page_number,
+                        current_number, current_display or "",
+                        current_chapter, current_section,
+                        current_category,
+                    ))
+                    current_sub_segments = []
+
+                inferred_number, inferred_display = _infer_next_display_number(
+                    current_number,
+                    current_display,
+                )
+                current_number = inferred_number
+                current_display = inferred_display
+                current_lines = [line]
+                current_page_start = page.page_number
+                continue
+
             # Check for sub-problem (only if inside a parent problem)
             if current_number is not None:
                 sub_num = _match_sub_problem(text)
@@ -1010,6 +1464,9 @@ def _rule_based_segment(pages: list[OcrPage]) -> list[dict]:
             # Accumulate into current problem (or discard if no current problem)
             if current_number is not None:
                 current_lines.append(line)
+
+        if progress_callback:
+            progress_callback(page_index)
 
     # Flush last sub-problem
     if current_sub_number is not None and current_sub_lines:

@@ -12,9 +12,19 @@ from app.api.security import verify_internal_api_token
 from app.database import get_db
 from app.models.job import JobStatus, OcrJobTracking
 from app.models.ocr import OcrLine, OcrPage
-from app.schemas.ocr import OcrJobCreate, OcrJobResponse, OcrJobResultSummary, OcrPageSummary
+from app.models.checkpoint import PipelineCheckpoint
+from app.schemas.ocr import (
+    CheckpointResponse,
+    OcrJobCreate,
+    OcrJobResponse,
+    OcrJobResultSummary,
+    OcrPageSummary,
+    ResumeRequest,
+    ResumeResponse,
+)
+from app.services.checkpoint import get_checkpoints, get_last_checkpoint
 from app.services.redis_events import notify_completed
-from app.workers.pipeline import start_ocr_pipeline
+from app.workers.pipeline import resume_pipeline, start_ocr_pipeline
 
 router = APIRouter(
     prefix="/ocr",
@@ -198,3 +208,61 @@ async def resync_ocr_job(
         "ocr_job_id": job_id,
         "resynced_problems": len(merged_problems),
     }
+
+
+@router.get("/jobs/{job_id}/checkpoints")
+async def get_job_checkpoints(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> list[CheckpointResponse]:
+    """Return checkpoint history for an OCR job."""
+    # Verify job exists
+    result = await db.execute(
+        select(OcrJobTracking).where(OcrJobTracking.id == job_id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="OCR job not found")
+
+    checkpoints = await get_checkpoints(db, job_id)
+    return [CheckpointResponse.model_validate(cp) for cp in checkpoints]
+
+
+@router.post("/jobs/{job_id}/resume")
+async def resume_ocr_job(
+    job_id: str,
+    body: ResumeRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> ResumeResponse:
+    """Resume a failed pipeline from the last completed checkpoint."""
+    result = await db.execute(
+        select(OcrJobTracking).where(OcrJobTracking.id == job_id)
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="OCR job not found")
+
+    doc_type = (body.document_type if body else None) or job.document_type
+    answer_key = body.answer_s3_key if body else None
+
+    # Determine resume point for response
+    last_cp = await get_last_checkpoint(db, job_id, doc_type)
+    resumed_from = last_cp.stage_name if last_cp else "(start)"
+
+    # Reset job status for re-processing
+    job.status = JobStatus.processing
+    job.error_message = None
+    await db.commit()
+
+    loop = asyncio.get_running_loop()
+    try:
+        task_id = await loop.run_in_executor(
+            None, resume_pipeline, job_id, doc_type, answer_key
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return ResumeResponse(
+        ocr_job_id=job_id,
+        resumed_from=resumed_from,
+        task_id=task_id,
+    )

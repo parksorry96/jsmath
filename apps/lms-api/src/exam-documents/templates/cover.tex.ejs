@@ -1,35 +1,167 @@
+<%
+const style = cover.style === "band" || cover.style === "split" ? cover.style : "editorial";
+const rawElements = cover.elements && typeof cover.elements === "object" ? cover.elements : {};
+const safeArea = {
+  height: 24.35,
+  left: 2.1,
+  top: 2.38,
+  width: 16.8,
+};
+
+function resolveElement(key, fallback) {
+  const raw = rawElements[key] && typeof rawElements[key] === "object" ? rawElements[key] : {};
+  const align = raw.align === "center" || raw.align === "right" ? raw.align : fallback.align;
+  const x = Number.isFinite(Number(raw.x)) ? Number(raw.x) : fallback.x;
+  const y = Number.isFinite(Number(raw.y)) ? Number(raw.y) : fallback.y;
+  return {
+    align,
+    x: Math.min(100, Math.max(0, x)),
+    y: Math.min(100, Math.max(0, y)),
+  };
+}
+
+function anchorForAlign(align) {
+  if (align === "center") return "north";
+  if (align === "right") return "north east";
+  return "north west";
+}
+
+function textAlignFor(align) {
+  if (align === "center") return "center";
+  if (align === "right") return "right";
+  return "left";
+}
+
+function xCoord(position) {
+  return (safeArea.left + (safeArea.width * position.x) / 100).toFixed(2);
+}
+
+function yCoord(position) {
+  return (safeArea.top + (safeArea.height * position.y) / 100).toFixed(2);
+}
+
+const titleElement = resolveElement("title", { align: "left", x: 0, y: 18 });
+const subtitleElement = resolveElement("subtitle", { align: "left", x: 0, y: 34 });
+const authorElement = resolveElement("author", { align: "left", x: 0, y: 75 });
+const yearElement = resolveElement("year", { align: "left", x: 0, y: 83 });
+%>
 \documentclass[a4paper]{article}
 \usepackage{kotex}
 \usepackage{geometry}
 \usepackage{tikz}
+\usetikzlibrary{calc}
 \usepackage{xcolor}
 \usepackage{setspace}
 
 \geometry{margin=0pt}
 \pagestyle{empty}
 
+\definecolor{CoverBackground}{HTML}{<%= cover.backgroundColor %>}
+\definecolor{CoverAccent}{HTML}{<%= cover.accentColor %>}
+\definecolor{CoverText}{HTML}{<%= cover.textColor %>}
+\definecolor{CoverMuted}{HTML}{<%= cover.mutedTextColor %>}
+
 \begin{document}
 
 \begin{tikzpicture}[remember picture, overlay]
-  \fill[<%= cover.backgroundColor || 'blue!80!black' %>]
+  \fill[CoverBackground]
     (current page.south west) rectangle (current page.north east);
 
-  \node[text=white, font=\Huge\bfseries, text width=14cm, align=center]
-    at ([yshift=3cm]current page.center) {<%= cover.title || header.title || 'Untitled' %>};
+<% if (style === "editorial") { %>
+  \draw[
+    line width=0.8pt,
+    rounded corners=11pt,
+    color=CoverAccent!34
+  ]
+    ([xshift=1.45cm,yshift=-1.45cm]current page.north west)
+    rectangle
+    ([xshift=-1.45cm,yshift=1.45cm]current page.south east);
+
+  \fill[CoverAccent]
+    ([xshift=1.9cm,yshift=-2.1cm]current page.north west)
+    rectangle
+    ([xshift=7.3cm,yshift=-2.45cm]current page.north west);
+
+  \draw[line width=0.6pt, color=CoverAccent!20]
+    ([xshift=1.9cm,yshift=-3.02cm]current page.north west)
+    --
+    ([xshift=-1.9cm,yshift=-3.02cm]current page.north east);
+<% } else if (style === "band") { %>
+  \fill[CoverAccent!16]
+    ([yshift=-5.2cm]current page.north west)
+    rectangle
+    ([yshift=-11.5cm]current page.north east);
+
+  \fill[CoverAccent]
+    ([yshift=-5.2cm]current page.north west)
+    rectangle
+    ([xshift=8.3cm,yshift=-11.5cm]current page.north west);
+
+  \fill[CoverText!16]
+    ([xshift=-5.6cm,yshift=-2.2cm]current page.north east)
+    rectangle
+    ([xshift=-1.9cm,yshift=-1.86cm]current page.north east);
+<% } else { %>
+  \fill[CoverAccent]
+    (current page.south west)
+    rectangle
+    ([xshift=2.35cm]current page.north west);
+
+  \fill[CoverAccent!14]
+    ([xshift=-6.2cm,yshift=-1.65cm]current page.north east)
+    rectangle
+    ([xshift=-1.9cm,yshift=-7.0cm]current page.north east);
+
+  \draw[line width=0.6pt, color=CoverText!18]
+    ([xshift=3.2cm,yshift=2.9cm]current page.south west)
+    --
+    ([xshift=-1.9cm,yshift=2.9cm]current page.south east);
+<% } %>
+
+  \node[
+    anchor=<%= anchorForAlign(titleElement.align) %>,
+    text=CoverText,
+    font=\fontsize{30}{34}\selectfont\bfseries,
+    text width=12cm,
+    align=<%= textAlignFor(titleElement.align) %>
+  ]
+    at ($(current page.north west)+(<%= xCoord(titleElement) %>cm,-<%= yCoord(titleElement) %>cm)$)
+    {<%- helpers.renderText(cover.title || header.title || "Untitled") %>};
 
 <% if (cover.subtitle) { %>
-  \node[text=white!80, font=\Large, text width=14cm, align=center]
-    at ([yshift=1cm]current page.center) {<%= cover.subtitle %>};
+  \node[
+    anchor=<%= anchorForAlign(subtitleElement.align) %>,
+    text=CoverMuted,
+    font=\fontsize{15}{19}\selectfont,
+    text width=10.5cm,
+    align=<%= textAlignFor(subtitleElement.align) %>
+  ]
+    at ($(current page.north west)+(<%= xCoord(subtitleElement) %>cm,-<%= yCoord(subtitleElement) %>cm)$)
+    {<%- helpers.renderText(cover.subtitle) %>};
 <% } %>
 
 <% if (cover.author) { %>
-  \node[text=white!70, font=\large]
-    at ([yshift=-2cm]current page.center) {<%= cover.author %>};
+  \node[
+    anchor=<%= anchorForAlign(authorElement.align) %>,
+    text=CoverText,
+    font=\fontsize{11}{14}\selectfont\bfseries,
+    text width=7cm,
+    align=<%= textAlignFor(authorElement.align) %>
+  ]
+    at ($(current page.north west)+(<%= xCoord(authorElement) %>cm,-<%= yCoord(authorElement) %>cm)$)
+    {<%- helpers.renderText(cover.author) %>};
 <% } %>
 
 <% if (cover.year) { %>
-  \node[text=white!50, font=\normalsize]
-    at ([yshift=-4cm]current page.center) {<%= cover.year %>};
+  \node[
+    anchor=<%= anchorForAlign(yearElement.align) %>,
+    text=CoverMuted,
+    font=\fontsize{10}{12}\selectfont,
+    text width=4.6cm,
+    align=<%= textAlignFor(yearElement.align) %>
+  ]
+    at ($(current page.north west)+(<%= xCoord(yearElement) %>cm,-<%= yCoord(yearElement) %>cm)$)
+    {<%- helpers.renderText(cover.year) %>};
 <% } %>
 \end{tikzpicture}
 

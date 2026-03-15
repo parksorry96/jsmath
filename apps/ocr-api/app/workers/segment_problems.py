@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -19,6 +20,7 @@ from app.database import worker_session
 from app.models.job import JobStatus, OcrJobTracking
 from app.models.ocr import OcrLine, OcrPage
 from app.schemas.problem import BBox, PROBLEM_NUMBER_PATTERNS, SegmentedProblem
+from app.workers.choice_parser import resolve_stem_and_choices
 
 logger = logging.getLogger(__name__)
 
@@ -163,11 +165,14 @@ def segment_problems(
 
 async def _segment(task, ocr_job_id: str) -> dict:
     async with worker_session() as session:
-        # Update status
+        # Idempotency: skip if job already past segmenting stage
         job_result = await session.execute(
             select(OcrJobTracking).where(OcrJobTracking.id == ocr_job_id)
         )
         job = job_result.scalar_one()
+        if job.status in (JobStatus.completed, JobStatus.cropping, JobStatus.classifying):
+            logger.info("Skipping segmentation for job %s — already at status %s", ocr_job_id, job.status.value)
+            return {"ocr_job_id": ocr_job_id, "problem_count": job.problem_count or 0, "segments": [], "skipped": True}
         job.status = JobStatus.segmenting
         await session.commit()
 
@@ -180,12 +185,35 @@ async def _segment(task, ocr_job_id: str) -> dict:
         )
         pages = pages_result.scalars().all()
 
-    # Pass 1: Rule-based segmentation
-    segments = _rule_based_segment(pages)
-
     from app.services.redis_events import notify_progress
+    total_pages = len(pages)
+    report_interval = max(1, total_pages // 20) if total_pages > 0 else 1
+    last_reported = 0
 
-    notify_progress(ocr_job_id, "segmentation", current=len(segments), total=len(segments), message="문제 분할 완료")
+    def report_progress(processed_pages: int) -> None:
+        nonlocal last_reported
+        if processed_pages < total_pages and processed_pages - last_reported < report_interval:
+            return
+
+        last_reported = processed_pages
+        notify_progress(
+            ocr_job_id,
+            "segmentation",
+            current=processed_pages,
+            total=total_pages,
+            message=f"문제 분할 중 ({processed_pages}/{total_pages} 페이지)",
+        )
+
+    # Pass 1: Rule-based segmentation
+    segments = _rule_based_segment(pages, progress_callback=report_progress)
+
+    notify_progress(
+        ocr_job_id,
+        "segmentation",
+        current=total_pages,
+        total=total_pages,
+        message=f"문제 분할 완료 ({len(segments)}문제)",
+    )
 
     logger.info(
         "Rule-based segmentation found %d problems for job %s",
@@ -203,7 +231,10 @@ async def _segment(task, ocr_job_id: str) -> dict:
     }
 
 
-def _rule_based_segment(pages: list[OcrPage]) -> list[SegmentedProblem]:
+def _rule_based_segment(
+    pages: list[OcrPage],
+    progress_callback: Callable[[int], None] | None = None,
+) -> list[SegmentedProblem]:
     """First pass: rule-based segmentation using regex patterns on OCR lines."""
     segments: list[SegmentedProblem] = []
     current_lines: list[OcrLine] = []
@@ -211,7 +242,7 @@ def _rule_based_segment(pages: list[OcrPage]) -> list[SegmentedProblem]:
     current_problem_number: str | None = None
     current_display_number: str | None = None
 
-    for page in pages:
+    for page_index, page in enumerate(pages, start=1):
         sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
         for line in sorted_lines:
             # Skip noise lines (page_info, headers, footers, etc.)
@@ -246,6 +277,9 @@ def _rule_based_segment(pages: list[OcrPage]) -> list[SegmentedProblem]:
                 if _is_cross_column(current_lines, line):
                     continue
                 current_lines.append(line)
+
+        if progress_callback:
+            progress_callback(page_index)
 
     # Flush last problem
     if current_lines and current_problem_number is not None:
@@ -290,9 +324,10 @@ def _build_segment(
     if not content_lines:
         content_lines = lines  # fallback
 
-    stem_latex = "\n".join(line.latex or line.text for line in content_lines)
-    stem_text = "\n".join(line.text for line in content_lines)
-    problem_type = _detect_problem_type(content_lines)
+    raw_stem_latex = "\n".join(line.latex or line.text for line in content_lines)
+    raw_stem_text = "\n".join(line.text for line in content_lines)
+    stem_latex, stem_text, choices = resolve_stem_and_choices(raw_stem_latex, raw_stem_text)
+    problem_type = "multiple_choice" if choices else _detect_problem_type(content_lines)
     bbox = _compute_bbox(content_lines)
 
     return SegmentedProblem(
@@ -306,4 +341,5 @@ def _build_segment(
         stem_latex=stem_latex,
         stem_text=stem_text,
         bbox=bbox,
+        choices=choices,
     )

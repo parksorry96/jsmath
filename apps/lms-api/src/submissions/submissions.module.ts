@@ -4,10 +4,11 @@ import { SubmissionsController } from "./submissions.controller";
 import { WrongAnswersModule } from "../wrong-answers/wrong-answers.module";
 import { MasteryModule } from "../mastery/mastery.module";
 import { GamificationModule } from "../gamification/gamification.module";
+import { ClassMonitorModule } from "../class-monitor/class-monitor.module";
 import { SmartScoreService } from "./smart-score.service";
 
 @Module({
-  imports: [WrongAnswersModule, MasteryModule, GamificationModule],
+  imports: [WrongAnswersModule, MasteryModule, GamificationModule, ClassMonitorModule],
   controllers: [SubmissionsController],
   providers: [SubmissionsService, SmartScoreService],
 })
