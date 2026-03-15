@@ -24,6 +24,14 @@ interface WeakArea {
   representativeStemText: string;
 }
 
+interface RecommendationItem {
+  problemId: string;
+  reason: string;
+  reasonDetail: string;
+  priority: number;
+  difficulty: number;
+}
+
 interface AssignmentSeed {
   classId: string;
   studentId: string;
@@ -546,5 +554,204 @@ export class SmartRecommendService {
     }
 
     return ordered;
+  }
+
+  // ─── Smart Recommendation Engine ───
+
+  async generateRecommendations(studentId: string): Promise<{
+    recommendations: RecommendationItem[];
+    summary: string;
+  }> {
+    const profile = await this.prisma.studentWeaknessProfile.findUnique({
+      where: { studentId },
+      include: { units: true },
+    });
+
+    if (!profile) {
+      return { recommendations: [], summary: "" };
+    }
+
+    const items: RecommendationItem[] = [];
+
+    // Priority 1: Root-cause basics
+    const rootCauses = (profile.rootCauses ?? []) as Array<{ unit?: string }>;
+    const rootCauseUnits = rootCauses
+      .map((rc) => rc.unit)
+      .filter((u): u is string => !!u);
+
+    if (rootCauseUnits.length > 0) {
+      const basics = await this.prisma.problem.findMany({
+        where: {
+          unitMajor: { in: rootCauseUnits },
+          difficulty: { in: [1, 2] },
+          reviewStatus: { in: ["approved", "auto_approved"] },
+        },
+        select: { id: true, difficulty: true, unitMajor: true },
+        take: 10,
+      });
+
+      for (const p of basics) {
+        items.push({
+          problemId: p.id,
+          reason: "root_cause_basic",
+          reasonDetail: `기초 보강: ${p.unitMajor ?? "unknown"}`,
+          priority: 1,
+          difficulty: p.difficulty ?? 1,
+        });
+      }
+    }
+
+    // Priority 2: Common-mistake matching in weak units
+    for (const unit of profile.units) {
+      if (!unit.topErrorType) continue;
+
+      const unitProblems = await this.prisma.problem.findMany({
+        where: {
+          unitMajor: unit.unitMajor,
+          subject: unit.subject,
+          reviewStatus: { in: ["approved", "auto_approved"] },
+        },
+        select: {
+          id: true,
+          difficulty: true,
+          unitMajor: true,
+          commonMistakes: true,
+        },
+        take: 20,
+      });
+
+      const matched = this.filterCommonMistakes(unitProblems, unit.topErrorType);
+      const [minDiff, maxDiff] = this.selectDifficulty(unit.accuracy);
+      const filtered = matched.length > 0
+        ? matched
+        : unitProblems.filter(
+            (p) =>
+              p.difficulty != null &&
+              p.difficulty >= minDiff &&
+              p.difficulty <= maxDiff,
+          );
+
+      for (const p of filtered) {
+        items.push({
+          problemId: p.id,
+          reason: "common_mistake",
+          reasonDetail: `오답 유형 연습: ${unit.unitMajor}`,
+          priority: 2,
+          difficulty: p.difficulty ?? 2,
+        });
+      }
+    }
+
+    // Priority 3: SM-2 spaced repetition review
+    const now = new Date();
+    const dueReviews = await this.prisma.reviewSchedule.findMany({
+      where: {
+        studentId,
+        nextReviewAt: { lte: now },
+        wrongAnswer: { resolvedAt: null },
+      },
+      include: {
+        wrongAnswer: { select: { problemId: true } },
+      },
+      take: 10,
+    });
+
+    for (const review of dueReviews) {
+      items.push({
+        problemId: review.wrongAnswer.problemId,
+        reason: "spaced_review",
+        reasonDetail: "복습 예정 문제",
+        priority: 3,
+        difficulty: 0,
+      });
+    }
+
+    // Priority 4: Similarity expansion from weak-area representatives
+    const weakAreas = await this.getWeakAreas(studentId);
+    for (const area of weakAreas) {
+      const similar = await this.findSimilarProblems(
+        area.representativeProblemId,
+        area.curriculumNodeId,
+        items.map((i) => i.problemId),
+        3,
+      );
+
+      for (const p of similar) {
+        items.push({
+          problemId: p.id,
+          reason: "similar_expansion",
+          reasonDetail: "유사 문제 확장",
+          priority: 4,
+          difficulty: p.difficulty ?? 3,
+        });
+      }
+    }
+
+    const recommendations = this.mergeAndRank(items, 10);
+
+    await this.prisma.studentWeaknessProfile.update({
+      where: { studentId },
+      data: { lastRecommendedAt: now },
+    });
+
+    const summary = this.buildSummary(recommendations);
+
+    return { recommendations, summary };
+  }
+
+  selectDifficulty(accuracy: number): [number, number] {
+    if (accuracy < 0.4) return [1, 2];
+    if (accuracy <= 0.7) return [2, 3];
+    return [3, 4];
+  }
+
+  mergeAndRank(
+    items: RecommendationItem[],
+    maxCount: number,
+  ): RecommendationItem[] {
+    const seen = new Map<string, RecommendationItem>();
+    for (const item of items) {
+      const existing = seen.get(item.problemId);
+      if (!existing || item.priority < existing.priority) {
+        seen.set(item.problemId, item);
+      }
+    }
+    return [...seen.values()]
+      .sort((a, b) => a.priority - b.priority)
+      .slice(0, maxCount);
+  }
+
+  filterCommonMistakes<T extends { commonMistakes: unknown }>(
+    problems: T[],
+    targetErrorType: string,
+  ): T[] {
+    return problems.filter((p) => {
+      if (!Array.isArray(p.commonMistakes)) return false;
+      return p.commonMistakes.some(
+        (entry: any) => entry?.type === targetErrorType,
+      );
+    });
+  }
+
+  private buildSummary(recommendations: RecommendationItem[]): string {
+    const groups = new Map<string, number>();
+    for (const rec of recommendations) {
+      const count = groups.get(rec.reason) ?? 0;
+      groups.set(rec.reason, count + 1);
+    }
+
+    const labels: Record<string, string> = {
+      root_cause_basic: "기초 보강",
+      common_mistake: "오답 유형 연습",
+      spaced_review: "복습",
+      similar_expansion: "유사 문제",
+    };
+
+    const parts: string[] = [];
+    for (const [reason, count] of groups) {
+      parts.push(`${labels[reason] ?? reason} ${count}문제`);
+    }
+
+    return parts.join(" + ");
   }
 }
