@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ForbiddenException,
   BadRequestException,
@@ -12,6 +13,7 @@ import { CanvasUploadService } from "../canvas/canvas-upload.service";
 
 @Injectable()
 export class TutorVisionService {
+  private readonly logger = new Logger(TutorVisionService.name);
   private client: OpenAI | null = null;
 
   constructor(
@@ -193,8 +195,9 @@ When the student sends a handwritten solution image:
             ],
           });
           continue;
-        } catch {
-          // Fall through to text-only if download fails
+        } catch (err) {
+          this.logger.error(`Failed to download previous image (key=${meta.imageS3Key})`, err instanceof Error ? err.stack : err);
+          // Fall through to text-only
         }
       }
 
@@ -246,9 +249,11 @@ When the student sends a handwritten solution image:
       ],
     });
 
-    const greeting =
-      completion.choices[0]?.message?.content ??
-      "안녕하세요! 이 문제에서 어떤 부분이 어려우신가요? 함께 풀어봅시다!";
+    const greeting = completion.choices[0]?.message?.content;
+    if (!greeting) {
+      this.logger.warn(`GPT returned empty greeting for session, using fallback`);
+    }
+    const finalGreeting = greeting ?? "안녕하세요! 이 문제에서 어떤 부분이 어려우신가요? 함께 풀어봅시다!";
 
     const session = await this.prisma.tutorSession.create({
       data: {
@@ -261,7 +266,7 @@ When the student sends a handwritten solution image:
       data: {
         sessionId: session.id,
         role: "tutor",
-        content: greeting,
+        content: finalGreeting,
       },
     });
 
@@ -272,7 +277,7 @@ When the student sends a handwritten solution image:
       messages: [
         {
           role: "tutor",
-          content: greeting,
+          content: finalGreeting,
           createdAt: new Date().toISOString(),
         },
       ],
@@ -379,6 +384,9 @@ When the student sends a handwritten solution image:
     }
 
     // Store the full tutor response
+    if (!fullResponse) {
+      this.logger.warn(`GPT returned empty response for session ${sessionId}`);
+    }
     if (fullResponse) {
       await this.prisma.tutorMessage.create({
         data: {

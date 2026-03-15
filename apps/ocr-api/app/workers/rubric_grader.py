@@ -147,15 +147,9 @@ def _parse_rubric_response(text: str) -> dict:
         clean = clean.split("```")[1].split("```")[0]
     try:
         return json.loads(clean.strip())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         logger.error("Failed to parse rubric LLM response: %s", text[:200])
-        return {
-            "rubric": [],
-            "grades": [],
-            "totalScore": 0,
-            "maxScore": 10,
-            "overallFeedback": "채점 분석에 실패했습니다. 다시 시도해주세요.",
-        }
+        raise ValueError(f"LLM returned unparseable rubric JSON: {str(e)}") from e
 
 
 @celery.task(
@@ -228,6 +222,8 @@ def rubric_grade_photo(self, payload: dict) -> dict:
         )
 
         # 4. Parse response
+        if not response.choices or not response.choices[0].message.content:
+            raise ValueError("OpenAI returned empty response")
         result = _parse_rubric_response(response.choices[0].message.content)
 
         # 5. Publish completion event

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Controller,
   Get,
+  HttpException,
   Post,
   Patch,
   Body,
@@ -82,8 +83,11 @@ export class StudentAiController {
       }
       res.write("event: done\ndata: {}\n\n");
     } catch (err: unknown) {
+      if (err instanceof HttpException) {
+        throw err; // Let NestJS handle proper HTTP error response
+      }
       const message =
-        err instanceof Error ? err.message : "Internal server error";
+        err instanceof Error ? err.message : "Streaming error";
       res.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`);
     }
 

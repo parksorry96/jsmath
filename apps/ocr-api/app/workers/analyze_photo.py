@@ -170,17 +170,9 @@ def _parse_llm_response(text: str) -> dict:
         clean = clean.split("```")[1].split("```")[0]
     try:
         return json.loads(clean.strip())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         logger.error("Failed to parse Vision LLM response: %s", text[:200])
-        return {
-            "isCorrect": False,
-            "score": 0,
-            "maxScore": 10,
-            "steps": [],
-            "errorType": None,
-            "conceptHint": None,
-            "overallFeedback": "풀이 분석에 실패했습니다. 다시 시도해주세요.",
-        }
+        raise ValueError(f"LLM returned unparseable JSON: {str(e)}") from e
 
 
 def _maybe_chain_rubric_grading(payload: dict, feedback: dict) -> None:
@@ -267,6 +259,8 @@ def analyze_submission_photo(self, payload: dict) -> dict:
         )
 
         # 3. Parse response
+        if not response.choices or not response.choices[0].message.content:
+            raise ValueError("OpenAI returned empty response")
         feedback = _parse_llm_response(response.choices[0].message.content)
 
         # 4. Publish completion event — NestJS updates submission_photos

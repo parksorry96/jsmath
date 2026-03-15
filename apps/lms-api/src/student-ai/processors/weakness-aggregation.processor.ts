@@ -38,12 +38,19 @@ export class WeaknessAggregationProcessor extends WorkerHost {
     this.logger.log(`Updating weakness profiles for ${activeStudents.length} students`);
 
     let processed = 0;
+    let consecutiveFailures = 0;
     for (const { studentId } of activeStudents) {
       try {
         await this.weaknessProfile.updateProfile(studentId);
         processed++;
+        consecutiveFailures = 0;
       } catch (err) {
         this.logger.error(`Failed to update profile for ${studentId}`, err);
+        consecutiveFailures++;
+        if (consecutiveFailures >= 5) {
+          this.logger.error("5 consecutive failures — aborting batch");
+          break;
+        }
       }
     }
 
@@ -61,12 +68,19 @@ export class WeaknessAggregationProcessor extends WorkerHost {
     this.logger.log(`Generating recommendations for ${activeStudents.length} students`);
 
     let processed = 0;
+    let consecutiveFailures = 0;
     for (const { studentId } of activeStudents) {
       try {
         await this.smartRecommend.generateRecommendations(studentId);
         processed++;
+        consecutiveFailures = 0;
       } catch (err) {
         this.logger.error(`Failed to generate recommendations for ${studentId}`, err);
+        consecutiveFailures++;
+        if (consecutiveFailures >= 5) {
+          this.logger.error("5 consecutive failures — aborting batch");
+          break;
+        }
       }
     }
 

@@ -103,7 +103,7 @@ export class WeaknessProfileService {
         await this.knowledgeGraph.getStudentKnowledgeGraph(studentId);
       rootCauses = graph.weaknessRoots;
     } catch (err) {
-      this.logger.warn(`Failed to get knowledge graph for ${studentId}`, err);
+      this.logger.error(`Failed to get knowledge graph for ${studentId}`, err);
     }
 
     // 4. Aggregate
@@ -143,7 +143,7 @@ export class WeaknessProfileService {
       aiSummary = await this.generateAiSummary(profileData);
       aiSummaryModel = this.config.get("AI_MODEL") ?? "gpt-5.4";
     } catch (err) {
-      this.logger.warn(`Failed to generate AI summary for ${studentId}`, err);
+      this.logger.error(`Failed to generate AI summary for ${studentId}`, err);
     }
 
     // 6. Upsert StudentWeaknessProfile + Units in a transaction
