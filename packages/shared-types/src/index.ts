@@ -411,7 +411,7 @@ export interface WeaknessUnit {
 
 export interface Recommendation {
   problemId: string;
-  reason: "prerequisite_gap" | "error_pattern" | "sm2_review" | "similar_expansion";
+  reason: "root_cause_basic" | "common_mistake" | "spaced_review" | "similar_expansion";
   reasonDetail: string;
   priority: number;
   difficulty: number;

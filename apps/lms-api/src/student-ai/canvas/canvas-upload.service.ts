@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from "@nestjs/common";
+import { Injectable, BadRequestException, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 
@@ -60,7 +60,10 @@ export class CanvasUploadService {
     const response = await this.s3.send(
       new GetObjectCommand({ Bucket: this.bucket, Key: s3Key }),
     );
-    const bytes = await response.Body!.transformToByteArray();
+    if (!response.Body) {
+      throw new NotFoundException(`S3 object not found: ${s3Key}`);
+    }
+    const bytes = await response.Body.transformToByteArray();
     const ext = s3Key.split(".").pop() ?? "png";
     const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
     return { base64: Buffer.from(bytes).toString("base64"), mimeType };

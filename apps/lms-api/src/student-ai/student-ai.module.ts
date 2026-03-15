@@ -44,7 +44,7 @@ import {
     ReviewScheduleService,
     WeaknessAggregationProcessor,
   ],
-  exports: [CanvasUploadService, WrongAnswersService, MasteryService, SmartRecommendService],
+  exports: [WrongAnswersService, MasteryService, SmartRecommendService],
 })
 export class StudentAiModule implements OnModuleInit {
   constructor(

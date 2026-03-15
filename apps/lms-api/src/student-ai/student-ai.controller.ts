@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   Get,
   Post,
@@ -109,6 +110,9 @@ export class StudentAiController {
     @Request() req: AuthRequest,
     @UploadedFile() file: Express.Multer.File,
   ) {
+    if (!file) {
+      throw new BadRequestException("File is required");
+    }
     return this.canvas.upload(req.user.id, file.buffer, file.mimetype);
   }
 

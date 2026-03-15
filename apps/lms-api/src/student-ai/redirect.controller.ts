@@ -5,7 +5,7 @@ import { Request, Response } from "express";
 export class TutorRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(301, `/student-ai/tutor${req.path}`);
+    res.redirect(308, `/student-ai/tutor${req.path}`);
   }
 }
 
@@ -13,7 +13,7 @@ export class TutorRedirectController {
 export class WrongAnswersRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(301, `/student-ai/wrong-answers${req.path}`);
+    res.redirect(308, `/student-ai/wrong-answers${req.path}`);
   }
 }
 
@@ -21,7 +21,7 @@ export class WrongAnswersRedirectController {
 export class MasteryRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(301, `/student-ai/mastery${req.path}`);
+    res.redirect(308, `/student-ai/mastery${req.path}`);
   }
 }
 
@@ -29,7 +29,7 @@ export class MasteryRedirectController {
 export class ReviewsRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(301, `/student-ai/reviews${req.path}`);
+    res.redirect(308, `/student-ai/reviews${req.path}`);
   }
 }
 
@@ -37,6 +37,6 @@ export class ReviewsRedirectController {
 export class RemediationRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(301, `/student-ai/recommendations${req.path}`);
+    res.redirect(308, `/student-ai/recommendations${req.path}`);
   }
 }

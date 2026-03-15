@@ -120,6 +120,21 @@ export class WeaknessProfileService {
     }));
     const unitAccuracies = this.computeUnitAccuracy(answersWithProblem);
 
+    // Populate topErrorType from wrong answers
+    for (const unit of unitAccuracies) {
+      const unitWrongAnswers = wrongAnswersWithProblem.filter(
+        (wa) => wa.problem?.subject === unit.subject && wa.problem?.unitMajor === unit.unitMajor,
+      );
+      if (unitWrongAnswers.length > 0) {
+        const counts: Record<string, number> = {};
+        for (const wa of unitWrongAnswers) {
+          const et = wa.errorType;
+          counts[et] = (counts[et] || 0) + 1;
+        }
+        unit.topErrorType = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+      }
+    }
+
     // 5. Generate AI summary
     const profileData = { errorPatterns, unitAccuracies, rootCauses };
     let aiSummary: string | null = null;
