@@ -28,6 +28,9 @@ import { ReviewScheduleService } from "./recommend/review-schedule.service";
 import { CanvasUploadService } from "./canvas/canvas-upload.service";
 import { SendTutorMessageDto } from "./dto/send-tutor-message.dto";
 import { ListWrongAnswersDto } from "./dto/list-wrong-answers.dto";
+import { CreateSessionDto } from "./dto/create-session.dto";
+import { GradeReviewDto } from "./dto/grade-review.dto";
+import { RetryWrongAnswerDto } from "./dto/retry-wrong-answer.dto";
 
 interface AuthRequest {
   user: { id: string; email: string; role: string };
@@ -51,10 +54,10 @@ export class StudentAiController {
   @Post("tutor/sessions")
   @Roles("student")
   createSession(
-    @Body("problemId") problemId: string,
+    @Body() dto: CreateSessionDto,
     @Request() req: AuthRequest,
   ) {
-    return this.tutor.createSession(req.user.id, problemId);
+    return this.tutor.createSession(req.user.id, dto.problemId);
   }
 
   @Post("tutor/sessions/:id/message")
@@ -186,10 +189,10 @@ export class StudentAiController {
   @Post("wrong-answers/:id/retry")
   retryWrongAnswer(
     @Param("id") id: string,
-    @Body("isCorrect") isCorrect: boolean,
+    @Body() dto: RetryWrongAnswerDto,
     @Request() req: AuthRequest,
   ) {
-    return this.wrongAnswers.retryWrongAnswer(id, req.user.id, isCorrect);
+    return this.wrongAnswers.retryWrongAnswer(id, req.user.id, dto.isCorrect);
   }
 
   // ─── Reviews ───
@@ -207,10 +210,10 @@ export class StudentAiController {
   @Post("reviews/:id/grade")
   gradeReview(
     @Param("id") id: string,
-    @Body("quality") quality: number,
+    @Body() dto: GradeReviewDto,
     @Request() req: AuthRequest,
   ) {
-    return this.reviews.gradeReview(id, req.user.id, quality);
+    return this.reviews.gradeReview(id, req.user.id, dto.quality);
   }
 
   // ─── Mastery ───

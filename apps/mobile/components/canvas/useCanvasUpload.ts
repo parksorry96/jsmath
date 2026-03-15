@@ -1,4 +1,5 @@
 import { useState } from "react";
+import * as FileSystem from "expo-file-system";
 import { getItemAsync } from "../../lib/storage";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:3001/v1";
@@ -14,12 +15,17 @@ export function useCanvasUpload() {
     try {
       const token = await getItemAsync("auth_token");
 
+      const tmpPath = `${FileSystem.cacheDirectory}canvas-${Date.now()}.png`;
+      await FileSystem.writeAsStringAsync(tmpPath, pngBase64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
       const formData = new FormData();
       formData.append("file", {
-        uri: `data:image/png;base64,${pngBase64}`,
+        uri: tmpPath,
         type: "image/png",
         name: "canvas.png",
-      } as unknown as Blob);
+      } as any);
 
       const res = await fetch(`${API_URL}/student-ai/canvas/upload`, {
         method: "POST",

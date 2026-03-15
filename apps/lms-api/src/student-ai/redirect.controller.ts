@@ -7,7 +7,7 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 export class TutorRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(308, `/student-ai/tutor${req.path}`);
+    res.redirect(308, `/student-ai/tutor${req.url}`);
   }
 }
 
@@ -16,7 +16,7 @@ export class TutorRedirectController {
 export class WrongAnswersRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(308, `/student-ai/wrong-answers${req.path}`);
+    res.redirect(308, `/student-ai/wrong-answers${req.url}`);
   }
 }
 
@@ -25,7 +25,7 @@ export class WrongAnswersRedirectController {
 export class MasteryRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(308, `/student-ai/mastery${req.path}`);
+    res.redirect(308, `/student-ai/mastery${req.url}`);
   }
 }
 
@@ -34,7 +34,7 @@ export class MasteryRedirectController {
 export class ReviewsRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(308, `/student-ai/reviews${req.path}`);
+    res.redirect(308, `/student-ai/reviews${req.url}`);
   }
 }
 
@@ -43,6 +43,6 @@ export class ReviewsRedirectController {
 export class RemediationRedirectController {
   @All("*")
   redirect(@Req() req: Request, @Res() res: Response) {
-    res.redirect(308, `/student-ai/recommendations${req.path}`);
+    res.redirect(308, `/student-ai/recommendations${req.url}`);
   }
 }

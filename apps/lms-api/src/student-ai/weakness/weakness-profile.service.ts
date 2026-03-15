@@ -75,7 +75,7 @@ export class WeaknessProfileService {
     // 2. Query SubmissionAnswer with Problem info for accuracy
     const submissionAnswers = await this.prisma.submissionAnswer.findMany({
       where: {
-        submission: { studentId },
+        submission: { studentId, createdAt: { gte: thirtyDaysAgo } },
         isCorrect: { not: null },
       },
       select: {

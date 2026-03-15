@@ -41,7 +41,6 @@ export interface DrawingCanvasProps {
 
 const BG_COLOR = "white";
 const PEN_COLOR = "black";
-const MAX_EXPORT_SIZE = 1024;
 
 // ---------- component ----------
 
@@ -55,6 +54,7 @@ export const DrawingCanvas = React.forwardRef<
   const canvasRef = useCanvasRef();
   const [strokes, setStrokes] = useState<StrokeRecord[]>([]);
   const currentPath = useRef<SkPath | null>(null);
+  const [renderKey, setRenderKey] = useState(0);
 
   // Snapshot the latest prop values so the gesture callbacks always read
   // the value at stroke-start time, not the stale closure value.
@@ -74,6 +74,7 @@ export const DrawingCanvas = React.forwardRef<
     })
     .onUpdate((e) => {
       currentPath.current?.lineTo(e.x, e.y);
+      setRenderKey((k) => k + 1);
     })
     .onEnd(() => {
       if (currentPath.current) {
@@ -92,29 +93,32 @@ export const DrawingCanvas = React.forwardRef<
   // ---- imperative API ----
 
   const undo = useCallback(() => {
-    setStrokes((prev) => prev.slice(0, -1));
+    setStrokes((prev) => {
+      if (prev.length === 0) return prev;
+      const removed = prev[prev.length - 1];
+      removed.path.dispose?.();
+      return prev.slice(0, -1);
+    });
   }, []);
 
   const clear = useCallback(() => {
-    setStrokes([]);
+    setStrokes((prev) => {
+      prev.forEach((s) => s.path.dispose?.());
+      return [];
+    });
   }, []);
 
   const exportAsPng = useCallback((): string | null => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
 
-    // Determine snapshot rect that fits within MAX_EXPORT_SIZE.
-    const scale = Math.min(1, MAX_EXPORT_SIZE / width, MAX_EXPORT_SIZE / height);
-    const rect =
-      scale < 1
-        ? Skia.XYWHRect(0, 0, width * scale, height * scale)
-        : undefined;
-
-    const image = canvas.makeImageSnapshot(rect);
+    // Snapshot the full canvas; let the server handle resize if needed.
+    const image = canvas.makeImageSnapshot();
     const base64 = image.encodeToBase64(ImageFormat.PNG, 100);
+    image.dispose();
     onExport?.(base64);
     return base64;
-  }, [canvasRef, width, height, onExport]);
+  }, [canvasRef, onExport]);
 
   useImperativeHandle(ref, () => ({ undo, clear, exportAsPng }), [
     undo,
@@ -139,6 +143,17 @@ export const DrawingCanvas = React.forwardRef<
               strokeJoin="round"
             />
           ))}
+          {currentPath.current && (
+            <Path
+              key={`current-${renderKey}`}
+              path={currentPath.current}
+              color={isEraser ? BG_COLOR : PEN_COLOR}
+              style="stroke"
+              strokeWidth={strokeWidth}
+              strokeCap="round"
+              strokeJoin="round"
+            />
+          )}
         </Canvas>
       </GestureDetector>
     </View>

@@ -622,14 +622,12 @@ export class SmartRecommendService {
 
       const matched = this.filterCommonMistakes(unitProblems, unit.topErrorType);
       const [minDiff, maxDiff] = this.selectDifficulty(unit.accuracy);
+      const difficultyFilter = (p: { difficulty: number | null }) =>
+        p.difficulty != null && p.difficulty >= minDiff && p.difficulty <= maxDiff;
+
       const filtered = matched.length > 0
-        ? matched
-        : unitProblems.filter(
-            (p) =>
-              p.difficulty != null &&
-              p.difficulty >= minDiff &&
-              p.difficulty <= maxDiff,
-          );
+        ? matched.filter(difficultyFilter)
+        : unitProblems.filter(difficultyFilter);
 
       for (const p of filtered) {
         items.push({
