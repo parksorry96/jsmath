@@ -397,3 +397,27 @@ export interface TypeDistributionEntry {
   problemType: string;
   count: number;
 }
+
+// Student AI types
+export type ErrorType = "concept_gap" | "pattern_gap" | "calculation_error" | "careless_mistake";
+
+export interface WeaknessUnit {
+  subject: string;
+  unitMajor: string;
+  accuracy: number;
+  attemptCount: number;
+  topErrorType: ErrorType | null;
+}
+
+export interface Recommendation {
+  problemId: string;
+  reason: "prerequisite_gap" | "error_pattern" | "sm2_review" | "similar_expansion";
+  reasonDetail: string;
+  priority: number;
+  difficulty: number;
+}
+
+export interface RecommendationResult {
+  recommendations: Recommendation[];
+  summary: string;
+}
