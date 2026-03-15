@@ -105,7 +105,7 @@ export class StudentAiController {
 
   @Post("canvas/upload")
   @Roles("student")
-  @UseInterceptors(FileInterceptor("file"))
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 5 * 1024 * 1024 } }))
   uploadCanvas(
     @Request() req: AuthRequest,
     @UploadedFile() file: Express.Multer.File,
@@ -124,11 +124,6 @@ export class StudentAiController {
   }
 
   // ─── Recommendations ───
-
-  @Get("recommendations")
-  getRecommendations(@Request() req: AuthRequest) {
-    return this.recommend.generateRecommendations(req.user.id);
-  }
 
   @Post("recommendations/generate")
   @Roles("student")
@@ -154,12 +149,23 @@ export class StudentAiController {
   @Patch("wrong-answers/:id/classify")
   classifyError(
     @Param("id") id: string,
-    @Body("errorType") errorType: any,
+    @Body("errorType") errorType: string,
     @Request() req: AuthRequest,
   ) {
+    const validTypes = [
+      "concept_gap",
+      "pattern_gap",
+      "calculation_error",
+      "careless_mistake",
+    ];
+    if (!validTypes.includes(errorType)) {
+      throw new BadRequestException(
+        `Invalid error type. Must be one of: ${validTypes.join(", ")}`,
+      );
+    }
     return this.wrongAnswers.classifyError(
       id,
-      errorType,
+      errorType as any,
       req.user.id,
       req.user.role,
     );

@@ -146,52 +146,56 @@ export class WeaknessProfileService {
       this.logger.warn(`Failed to generate AI summary for ${studentId}`, err);
     }
 
-    // 6. Upsert StudentWeaknessProfile
+    // 6. Upsert StudentWeaknessProfile + Units in a transaction
     const errorPatternsJson = errorPatterns as unknown as Prisma.InputJsonValue;
     const rootCausesJson = rootCauses as unknown as Prisma.InputJsonValue;
 
-    const profile = await this.prisma.studentWeaknessProfile.upsert({
-      where: { studentId },
-      create: {
-        studentId,
-        errorPatterns: errorPatternsJson,
-        rootCauses: rootCausesJson,
-        aiSummary,
-        aiSummaryModel,
-      },
-      update: {
-        errorPatterns: errorPatternsJson,
-        rootCauses: rootCausesJson,
-        aiSummary,
-        aiSummaryModel,
-      },
-    });
-
-    // 7. Upsert StudentWeaknessUnit records
-    for (const unit of unitAccuracies) {
-      await this.prisma.studentWeaknessUnit.upsert({
-        where: {
-          profileId_subject_unitMajor: {
-            profileId: profile.id,
-            subject: unit.subject,
-            unitMajor: unit.unitMajor,
-          },
-        },
+    const profile = await this.prisma.$transaction(async (tx) => {
+      const upserted = await tx.studentWeaknessProfile.upsert({
+        where: { studentId },
         create: {
-          profileId: profile.id,
-          subject: unit.subject,
-          unitMajor: unit.unitMajor,
-          accuracy: unit.accuracy,
-          attemptCount: unit.attemptCount,
-          topErrorType: unit.topErrorType,
+          studentId,
+          errorPatterns: errorPatternsJson,
+          rootCauses: rootCausesJson,
+          aiSummary,
+          aiSummaryModel,
         },
         update: {
-          accuracy: unit.accuracy,
-          attemptCount: unit.attemptCount,
-          topErrorType: unit.topErrorType,
+          errorPatterns: errorPatternsJson,
+          rootCauses: rootCausesJson,
+          aiSummary,
+          aiSummaryModel,
         },
       });
-    }
+
+      // 7. Upsert StudentWeaknessUnit records
+      for (const unit of unitAccuracies) {
+        await tx.studentWeaknessUnit.upsert({
+          where: {
+            profileId_subject_unitMajor: {
+              profileId: upserted.id,
+              subject: unit.subject,
+              unitMajor: unit.unitMajor,
+            },
+          },
+          create: {
+            profileId: upserted.id,
+            subject: unit.subject,
+            unitMajor: unit.unitMajor,
+            accuracy: unit.accuracy,
+            attemptCount: unit.attemptCount,
+            topErrorType: unit.topErrorType,
+          },
+          update: {
+            accuracy: unit.accuracy,
+            attemptCount: unit.attemptCount,
+            topErrorType: unit.topErrorType,
+          },
+        });
+      }
+
+      return upserted;
+    });
 
     return profile;
   }

@@ -53,12 +53,12 @@ export class StudentAiModule implements OnModuleInit {
 
   async onModuleInit() {
     await this.batchQueue.add("daily-weakness-summary", {}, {
-      repeat: { pattern: "0 3 * * *" },
+      repeat: { pattern: "0 2 * * *" },
       removeOnComplete: 7,
       removeOnFail: 14,
     });
     await this.batchQueue.add("daily-recommendations", {}, {
-      repeat: { pattern: "0 2 * * *" },
+      repeat: { pattern: "0 3 * * *" },
       removeOnComplete: 7,
       removeOnFail: 14,
     });
