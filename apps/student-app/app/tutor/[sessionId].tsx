@@ -81,15 +81,22 @@ export default function TutorChatScreen() {
     </KeyboardAvoidingView>
   );
 
-  // iPad: Split View — problem on left, chat on right
+  // iPad: Top-bottom split — problem on top, chat on bottom
   if (isTablet && problem) {
     return (
-      <View style={{ flex: 1, flexDirection: "row", backgroundColor: colors.bg }}>
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <Stack.Screen options={{ title: "AI 튜터", headerShown: true }} />
 
-        {/* Left: Problem */}
-        <ScrollView style={{ flex: 2, borderRightWidth: 1, borderRightColor: colors.border }} contentContainerStyle={{ padding: 24 }}>
-          <View style={{ flexDirection: "row", gap: 6, marginBottom: 12 }}>
+        {/* Top: Problem (collapsible) */}
+        <ScrollView
+          style={{
+            maxHeight: 220, borderBottomWidth: 1, borderBottomColor: colors.border,
+          }}
+          contentContainerStyle={{
+            padding: 20, maxWidth: 800, alignSelf: "center", width: "100%",
+          }}
+        >
+          <View style={{ flexDirection: "row", gap: 6, marginBottom: 10 }}>
             {problem.subject && (
               <View style={{ backgroundColor: colors.surface, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 }}>
                 <Text style={{ fontSize: 12, color: colors.textSecondary }}>{problem.subject}</Text>
@@ -101,15 +108,15 @@ export default function TutorChatScreen() {
               </View>
             )}
           </View>
-          <View style={{ backgroundColor: colors.card, borderRadius: 14, padding: 20, borderWidth: 1, borderColor: colors.border }}>
-            <LatexText style={{ fontSize: 16, lineHeight: 28 }}>
+          <View style={{ backgroundColor: colors.card, borderRadius: 14, padding: 16, borderWidth: 1, borderColor: colors.border }}>
+            <LatexText style={{ fontSize: 15, lineHeight: 26 }}>
               {problem.stemLatex || problem.stemText}
             </LatexText>
           </View>
         </ScrollView>
 
-        {/* Right: Chat */}
-        <View style={{ flex: 3 }}>
+        {/* Bottom: Chat */}
+        <View style={{ flex: 1 }}>
           {chatArea}
         </View>
       </View>
