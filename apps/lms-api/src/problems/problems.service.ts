@@ -9,6 +9,7 @@ import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReviewStatus, OcrJobStatus } from "@prisma/client";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
+import { BrowseProblemsDto } from "./dto/browse-problems.dto";
 import { Redis } from "ioredis";
 import { normalizeFilename } from "../common/filename";
 import { TwinProblemService } from "./twin-problem.service";
@@ -882,34 +883,28 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  async browse(query: {
-    subject?: string;
-    gradeLevel?: string;
-    difficulty?: string;
-    unitMajor?: string;
-    problemType?: string;
-    q?: string;
-    page?: number;
-    limit?: number;
-  }) {
-    const page = query.page ?? 1;
-    const limit = Math.min(query.limit ?? 20, 100);
+  async browse(dto: BrowseProblemsDto) {
+    const page = dto.page ?? 1;
+    const limit = Math.min(dto.limit ?? 20, 50);
     const skip = (page - 1) * limit;
 
     const where: Record<string, unknown> = {
-      reviewStatus: { in: ["approved", "auto_approved"] },
+      reviewStatus: ReviewStatus.approved,
     };
 
-    if (query.subject) where.subject = query.subject;
-    if (query.gradeLevel) where.gradeLevel = query.gradeLevel;
-    if (query.unitMajor) where.unitMajor = query.unitMajor;
-    if (query.problemType) where.problemType = query.problemType;
-    if (query.difficulty !== undefined) {
-      const parsed = parseInt(query.difficulty, 10);
-      if (!isNaN(parsed)) where.difficulty = parsed;
+    if (dto.subject) where.subject = dto.subject;
+    if (dto.unitMajor) where.unitMajor = dto.unitMajor;
+    if (dto.difficulty !== undefined) where.difficulty = dto.difficulty;
+    if (dto.curriculumYear === 2015) {
+      where.classification2015 = { not: null };
+    } else if (dto.curriculumYear === 2022) {
+      where.classification2022 = { not: null };
     }
-    if (query.q) {
-      where.stemText = { contains: query.q, mode: "insensitive" };
+    if (dto.search) {
+      where.OR = [
+        { stemText: { contains: dto.search, mode: "insensitive" } },
+        { stemLatex: { contains: dto.search, mode: "insensitive" } },
+      ];
     }
 
     const [items, total] = await Promise.all([
@@ -922,80 +917,41 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
           id: true,
           stemLatex: true,
           stemText: true,
-          problemNumber: true,
-          displayNumber: true,
-          problemType: true,
-          gradeLevel: true,
           subject: true,
           unitMajor: true,
           unitMinor: true,
           difficulty: true,
-          choices: {
-            select: {
-              label: true,
-              contentLatex: true,
-              contentText: true,
-              position: true,
-            },
-            orderBy: { position: "asc" },
-          },
-          assets: {
-            select: {
-              id: true,
-              kind: true,
-              subKind: true,
-              s3Key: true,
-              format: true,
-              widthPx: true,
-              heightPx: true,
-            },
-          },
+          problemType: true,
         },
       }),
       this.prisma.problem.count({ where }),
     ]);
 
-    return { data: items, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return { items, total, page };
   }
 
-  async studentView(id: string) {
+  async getStudentView(id: string) {
     const problem = await this.prisma.problem.findFirst({
       where: {
         id,
-        reviewStatus: { in: ["approved", "auto_approved"] },
+        reviewStatus: ReviewStatus.approved,
       },
       select: {
         id: true,
         stemLatex: true,
         stemText: true,
-        problemNumber: true,
-        displayNumber: true,
-        problemType: true,
-        gradeLevel: true,
         subject: true,
         unitMajor: true,
         unitMinor: true,
         difficulty: true,
-        solutionTags: true,
+        problemType: true,
         choices: {
           select: {
+            id: true,
             label: true,
-            contentLatex: true,
             contentText: true,
-            position: true,
           },
           orderBy: { position: "asc" },
-        },
-        assets: {
-          select: {
-            id: true,
-            kind: true,
-            subKind: true,
-            s3Key: true,
-            format: true,
-            widthPx: true,
-            heightPx: true,
-          },
         },
       },
     });

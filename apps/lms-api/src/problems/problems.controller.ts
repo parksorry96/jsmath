@@ -16,6 +16,7 @@ import { ProblemQualityService } from "./problem-quality.service";
 import { ReviewProblemDto } from "./dto/review-problem.dto";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
 import { GenerateVariantsDto } from "./dto/generate-variants.dto";
+import { BrowseProblemsDto } from "./dto/browse-problems.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Roles } from "../auth/roles.decorator";
@@ -107,27 +108,9 @@ export class ProblemsController {
   }
 
   @Get("browse")
-  @Roles("admin", "teacher", "student")
-  browse(
-    @Query("subject") subject?: string,
-    @Query("gradeLevel") gradeLevel?: string,
-    @Query("difficulty") difficulty?: string,
-    @Query("unitMajor") unitMajor?: string,
-    @Query("problemType") problemType?: string,
-    @Query("q") q?: string,
-    @Query("page") page?: string,
-    @Query("limit") limit?: string,
-  ) {
-    return this.problems.browse({
-      subject,
-      gradeLevel,
-      difficulty,
-      unitMajor,
-      problemType,
-      q,
-      page: page ? parseInt(page, 10) : undefined,
-      limit: limit ? parseInt(limit, 10) : undefined,
-    });
+  @Roles("student", "teacher", "admin")
+  browse(@Query() dto: BrowseProblemsDto) {
+    return this.problems.browse(dto);
   }
 
   @Get("flagged")
@@ -191,9 +174,9 @@ export class ProblemsController {
   }
 
   @Get(":id/student-view")
-  @Roles("admin", "teacher", "student")
-  studentView(@Param("id") id: string) {
-    return this.problems.studentView(id);
+  @Roles("student", "teacher", "admin")
+  getStudentView(@Param("id") id: string) {
+    return this.problems.getStudentView(id);
   }
 
   @Get(":id/analysis")

@@ -1,5 +1,6 @@
 import { AuthService } from "./auth.service";
 
+jest.mock("jose", () => ({}));
 jest.mock("bcrypt", () => ({
   hash: jest.fn().mockResolvedValue("hashed-password"),
   compare: jest.fn(),
@@ -15,6 +16,9 @@ describe("AuthService", () => {
   const jwt = {
     sign: jest.fn().mockReturnValue("signed-token"),
   };
+  const config = {
+    getOrThrow: jest.fn().mockReturnValue("test-value"),
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -28,7 +32,7 @@ describe("AuthService", () => {
       role: "student",
     });
 
-    const service = new AuthService(prisma as never, jwt as never);
+    const service = new AuthService(prisma as never, jwt as never, config as never);
 
     await service.register({
       email: "student@example.com",
