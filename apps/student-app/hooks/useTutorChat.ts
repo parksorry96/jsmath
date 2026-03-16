@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { api } from "@/lib/api";
 import { getItemAsync } from "@/lib/storage";
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:3001/v1";
+const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://192.168.0.78:3001/v1";
 
 interface Message {
   id: string;
@@ -9,13 +10,52 @@ interface Message {
   content: string;
 }
 
+interface SessionData {
+  id: string;
+  problemId: string;
+  messages: Array<{ role: string; content: string; createdAt: string }>;
+  problem?: {
+    id: string;
+    stemLatex: string;
+    stemText: string;
+    subject: string | null;
+    unitMajor: string | null;
+    difficulty: number | null;
+  };
+}
+
 export function useTutorChat(sessionId: string) {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [problem, setProblem] = useState<SessionData["problem"] | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Load existing session messages on mount
+  useEffect(() => {
+    if (!sessionId) return;
+    (async () => {
+      try {
+        const session = await api.get<SessionData>(`/student-ai/tutor/sessions/${sessionId}`);
+        if (session.problem) setProblem(session.problem);
+        if (session.messages?.length > 0) {
+          setMessages(
+            session.messages.map((m, i) => ({
+              id: `init-${i}`,
+              role: m.role as "student" | "tutor",
+              content: m.content,
+            })),
+          );
+        }
+      } catch {
+        // Session may not exist yet
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  }, [sessionId]);
+
   const sendMessage = useCallback(async (content: string, imageS3Key?: string) => {
-    // Add student message
     const studentMsg: Message = { id: Date.now().toString(), role: "student", content };
     setMessages((prev) => [...prev, studentMsg]);
     setIsStreaming(true);
@@ -44,7 +84,6 @@ export function useTutorChat(sessionId: string) {
       let tutorContent = "";
       const tutorMsgId = `tutor-${Date.now()}`;
 
-      // Add empty tutor message
       setMessages((prev) => [...prev, { id: tutorMsgId, role: "tutor", content: "" }]);
 
       while (true) {
@@ -86,5 +125,5 @@ export function useTutorChat(sessionId: string) {
     abortRef.current?.abort();
   }, []);
 
-  return { messages, isStreaming, sendMessage, abort };
+  return { messages, problem, isStreaming, isLoading, sendMessage, abort };
 }
