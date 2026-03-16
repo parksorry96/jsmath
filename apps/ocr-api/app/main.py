@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app.api.health_routes import router as health_router
 from app.api.ocr_routes import router as ocr_router
+from app.api.single_ocr_routes import router as single_ocr_router
 from app.config import settings
 from app.services.event_listener import listen_for_events, listen_for_events_stream
 
@@ -40,6 +41,7 @@ app = FastAPI(
 )
 
 app.include_router(ocr_router)
+app.include_router(single_ocr_router)
 app.include_router(health_router)
 
 
