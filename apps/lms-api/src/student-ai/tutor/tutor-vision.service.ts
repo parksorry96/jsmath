@@ -238,7 +238,7 @@ When the student sends a handwritten solution image:
     // Generate initial greeting via OpenAI (non-streaming)
     const completion = await this.getClient().chat.completions.create({
       model,
-      temperature: 0.7,
+      temperature: 1,
       messages: [
         { role: "system", content: systemPrompt },
         {
@@ -372,7 +372,7 @@ When the student sends a handwritten solution image:
     const model = this.config.get("AI_MODEL") ?? "gpt-5.4";
     const stream = await this.getClient().chat.completions.create({
       model,
-      temperature: 0.7,
+      temperature: 1,
       stream: true,
       messages: chatMessages,
     });
