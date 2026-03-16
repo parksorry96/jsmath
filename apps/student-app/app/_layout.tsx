@@ -1,5 +1,5 @@
 import "../global.css";
-import { Slot, useRouter, useSegments } from "expo-router";
+import { Stack, useRouter, useSegments } from "expo-router";
 import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from "@/lib/auth";
@@ -25,7 +25,16 @@ function RootNavigator() {
     }
   }, [user, isLoading, isNewUser, segments]);
 
-  return <Slot />;
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="(auth)" />
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="camera" options={{ headerShown: true, title: "문제 촬영", presentation: "modal" }} />
+      <Stack.Screen name="problem/[id]" options={{ headerShown: true, title: "문제" }} />
+      <Stack.Screen name="tutor/[sessionId]" options={{ headerShown: true, title: "AI 튜터" }} />
+      <Stack.Screen name="canvas/[problemId]" options={{ headerShown: true, title: "펜슬 풀이" }} />
+    </Stack>
+  );
 }
 
 export default function RootLayout() {
