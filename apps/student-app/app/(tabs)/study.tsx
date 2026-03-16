@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { View, Text, ScrollView, Pressable, RefreshControl } from "react-native";
+import { View, Text, ScrollView, Pressable, RefreshControl, useWindowDimensions } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/lib/theme";
 import { WrongAnswersSection } from "@/components/study/wrong-answers-section";
@@ -21,6 +21,8 @@ const SECTIONS: { key: StudySection; label: string }[] = [
 export default function StudyScreen() {
   const { colors } = useTheme();
   const queryClient = useQueryClient();
+  const { width } = useWindowDimensions();
+  const isTablet = width > 768;
   const [activeSection, setActiveSection] = useState<StudySection>("wrong");
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -37,13 +39,14 @@ export default function StudyScreen() {
           <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} tintColor={colors.accent} />
         }
         stickyHeaderIndices={[0]}
+        contentContainerStyle={isTablet ? { maxWidth: 800, alignSelf: "center", width: "100%" } : undefined}
       >
         {/* Segmented control */}
         <View style={{ backgroundColor: colors.bg, paddingVertical: 10 }}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}
+            contentContainerStyle={{ paddingHorizontal: isTablet ? 32 : 16, gap: 8 }}
           >
             {SECTIONS.map((section) => {
               const active = activeSection === section.key;

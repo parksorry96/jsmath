@@ -1,6 +1,7 @@
 import { View, Text, ActivityIndicator } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useTheme } from "@/lib/theme";
+import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 
 interface SubjectPrediction {
@@ -22,10 +23,12 @@ function gradeColor(grade: number): string {
 
 export function GradePredictionSection() {
   const { colors } = useTheme();
+  const { user } = useAuth();
 
   const { data, isLoading } = useQuery({
     queryKey: ["grade-prediction"],
     queryFn: () => api.get<GradePredictionResponse>("/grade-prediction/me"),
+    enabled: !!user,
   });
 
   if (isLoading) {

@@ -38,7 +38,7 @@ export default function ProblemDetailScreen() {
   if (!problem) return null;
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 20 }}>
+    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: isTablet ? 32 : 20, ...(isTablet && { maxWidth: 800, alignSelf: "center", width: "100%" }) }}>
       <Stack.Screen options={{ title: `${problem.subject} · ${problem.unitMajor}`, headerShown: true }} />
 
       {/* Meta badges */}

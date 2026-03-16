@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 interface Problem {
   id: string;
@@ -25,6 +26,8 @@ export function useProblems(params: {
   difficulty?: number;
   page?: number;
 }) {
+  const { user } = useAuth();
+
   return useQuery({
     queryKey: ["problems", params],
     queryFn: () => {
@@ -36,5 +39,6 @@ export function useProblems(params: {
       if (params.page) qs.set("page", String(params.page));
       return api.get<BrowseResponse>(`/problems/browse?${qs.toString()}`);
     },
+    enabled: !!user,
   });
 }

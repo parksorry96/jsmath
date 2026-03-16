@@ -1,6 +1,7 @@
-import { ScrollView, View, Text } from "react-native";
+import { ScrollView, View, Text, useWindowDimensions } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import { StreakCard } from "@/components/home/streak-card";
 import { ReviewCard } from "@/components/home/review-card";
@@ -8,19 +9,25 @@ import { QuickActions } from "@/components/home/quick-actions";
 
 export default function HomeScreen() {
   const { colors } = useTheme();
+  const { user } = useAuth();
+  const { width } = useWindowDimensions();
+  const isTablet = width > 768;
+  const padding = isTablet ? 32 : 20;
 
   const { data: gamification } = useQuery({
     queryKey: ["gamification"],
     queryFn: () => api.get<{ level: number; xp: number; streak: number }>("/gamification/profile"),
+    enabled: !!user,
   });
 
   const { data: reviewStats } = useQuery({
     queryKey: ["review-stats"],
     queryFn: () => api.get<{ todayDue: number; todayCompleted: number }>("/student-ai/reviews/stats"),
+    enabled: !!user,
   });
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 20, gap: 20 }}>
+    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding, gap: 20, ...(isTablet && { maxWidth: 800, alignSelf: "center", width: "100%" }) }}>
       <View>
         <Text style={{ fontSize: 22, fontWeight: "800", color: colors.textPrimary }}>
           오늘도 같이 풀어볼까?

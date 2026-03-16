@@ -1,4 +1,4 @@
-import { View, Text, ScrollView, Pressable, Switch } from "react-native";
+import { View, Text, ScrollView, Pressable, Switch, useWindowDimensions } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { LogOut, Moon, Flame, Trophy, Target } from "lucide-react-native";
@@ -10,19 +10,24 @@ export default function ProfileScreen() {
   const { user, logout } = useAuth();
   const { colors, isDark, mode, setMode } = useTheme();
   const router = useRouter();
+  const { width } = useWindowDimensions();
+  const isTablet = width > 768;
+  const padding = isTablet ? 32 : 20;
 
   const { data: gamification } = useQuery({
     queryKey: ["gamification"],
     queryFn: () => api.get<{ level: number; xp: number; streak: number }>("/gamification/profile"),
+    enabled: !!user,
   });
 
   const { data: achievements } = useQuery({
     queryKey: ["achievements"],
     queryFn: () => api.get<Array<{ id: string; title: string; earned: boolean }>>("/gamification/achievements"),
+    enabled: !!user,
   });
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 20, gap: 20 }}>
+    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding, gap: 20, ...(isTablet && { maxWidth: 800, alignSelf: "center", width: "100%" }) }}>
       {/* Profile card */}
       <View style={{ backgroundColor: colors.card, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: colors.border, alignItems: "center" }}>
         <View style={{

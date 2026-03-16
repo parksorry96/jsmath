@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Text, View, type TextStyle } from "react-native";
-import MathView, { MathText } from "react-native-math-view";
+import MathView from "react-native-math-view";
 import { useTheme } from "@/lib/theme";
 
 interface LatexTextProps {
@@ -10,7 +10,7 @@ interface LatexTextProps {
 
 /**
  * Renders a string that may contain inline LaTeX ($...$) and display LaTeX ($$...$$).
- * Plain text is rendered as Text, math segments as MathView.
+ * Plain text segments render as Text; math segments render via MathView (MathJax SVG fallback on iOS).
  */
 export function LatexText({ children, style }: LatexTextProps) {
   const { colors } = useTheme();
@@ -44,24 +44,29 @@ export function LatexText({ children, style }: LatexTextProps) {
         if (seg.type === "display") {
           return (
             <View key={i} style={{ width: "100%", alignItems: "center", marginVertical: 8 }}>
-              <MathView
-                math={seg.content}
-                style={{ color: colors.textPrimary }}
-              />
+              <MathViewSafe math={seg.content} color={colors.textPrimary} />
             </View>
           );
         }
         // inline math
-        return (
-          <MathView
-            key={i}
-            math={seg.content}
-            style={{ color: colors.textPrimary }}
-          />
-        );
+        return <MathViewSafe key={i} math={seg.content} color={colors.textPrimary} />;
       })}
     </View>
   );
+}
+
+/**
+ * Wraps MathView in a try/catch boundary.
+ * If MathJax/SVG rendering fails, falls back to raw LaTeX text.
+ */
+function MathViewSafe({ math, color }: { math: string; color: string }) {
+  try {
+    return <MathView math={`\\(${math}\\)`} color={color} resizeMode="contain" />;
+  } catch {
+    return (
+      <Text style={{ color, fontSize: 14, fontStyle: "italic" }}>{math}</Text>
+    );
+  }
 }
 
 interface Segment {
@@ -80,20 +85,17 @@ function parseLatex(input: string): Segment[] {
     const inlineIdx = remaining.indexOf("$");
 
     if (displayIdx !== -1 && (displayIdx <= inlineIdx || inlineIdx === -1)) {
-      // Text before $$
       if (displayIdx > 0) {
         segments.push({ type: "text", content: remaining.slice(0, displayIdx) });
       }
       const endIdx = remaining.indexOf("$$", displayIdx + 2);
       if (endIdx === -1) {
-        // No closing $$, treat rest as text
         segments.push({ type: "text", content: remaining.slice(displayIdx) });
         break;
       }
       segments.push({ type: "display", content: remaining.slice(displayIdx + 2, endIdx) });
       remaining = remaining.slice(endIdx + 2);
     } else if (inlineIdx !== -1) {
-      // Text before $
       if (inlineIdx > 0) {
         segments.push({ type: "text", content: remaining.slice(0, inlineIdx) });
       }
@@ -105,7 +107,6 @@ function parseLatex(input: string): Segment[] {
       segments.push({ type: "inline", content: remaining.slice(inlineIdx + 1, endIdx) });
       remaining = remaining.slice(endIdx + 1);
     } else {
-      // No more math
       segments.push({ type: "text", content: remaining });
       break;
     }

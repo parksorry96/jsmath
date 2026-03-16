@@ -1,6 +1,7 @@
 import { View, Text, ActivityIndicator } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useTheme } from "@/lib/theme";
+import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 
 type MasteryState = "mastered" | "practicing" | "learning" | "not_started";
@@ -28,10 +29,12 @@ const STATE_CONFIG: Record<MasteryState, { label: string; color: string }> = {
 
 export function MasterySection() {
   const { colors } = useTheme();
+  const { user } = useAuth();
 
   const { data, isLoading } = useQuery({
     queryKey: ["mastery", "tree"],
     queryFn: () => api.get<MasteryTreeResponse>("/student-ai/mastery/tree"),
+    enabled: !!user,
   });
 
   if (isLoading) {

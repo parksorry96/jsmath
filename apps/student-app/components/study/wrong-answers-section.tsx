@@ -3,6 +3,7 @@ import { View, Text, FlatList, Pressable, ActivityIndicator } from "react-native
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { useTheme } from "@/lib/theme";
+import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 
 interface WrongAnswer {
@@ -38,6 +39,7 @@ const ERROR_COLORS: Record<string, string> = {
 
 export function WrongAnswersSection() {
   const { colors } = useTheme();
+  const { user } = useAuth();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -45,6 +47,7 @@ export function WrongAnswersSection() {
   const { data, isLoading } = useQuery({
     queryKey: ["wrong-answers"],
     queryFn: () => api.get<WrongAnswersResponse>("/student-ai/wrong-answers?limit=50"),
+    enabled: !!user,
   });
 
   const resolveMutation = useMutation({

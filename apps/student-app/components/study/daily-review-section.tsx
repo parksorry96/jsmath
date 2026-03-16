@@ -2,7 +2,9 @@ import { useState } from "react";
 import { View, Text, Pressable, ActivityIndicator } from "react-native";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/lib/theme";
+import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
+import { LatexText } from "@/components/math/latex-text";
 
 interface ReviewProblem {
   id: string;
@@ -33,6 +35,7 @@ const QUALITY_BUTTONS = [
 
 export function DailyReviewSection() {
   const { colors } = useTheme();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showSolution, setShowSolution] = useState(false);
@@ -41,6 +44,7 @@ export function DailyReviewSection() {
   const { data, isLoading } = useQuery({
     queryKey: ["reviews", "daily"],
     queryFn: () => api.get<DailyReviewResponse>("/student-ai/reviews/daily"),
+    enabled: !!user,
   });
 
   const gradeMutation = useMutation({
@@ -106,9 +110,9 @@ export function DailyReviewSection() {
         <View style={{ backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, overflow: "hidden" }}>
           <View style={{ padding: 20 }}>
             <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 8 }}>문제</Text>
-            <Text style={{ color: colors.textPrimary, fontSize: 15, lineHeight: 22 }}>
+            <LatexText style={{ fontSize: 15, lineHeight: 22 }}>
               {current.problem.stemText || current.problem.stemLatex}
-            </Text>
+            </LatexText>
             {current.problem.choices.length > 0 && (
               <View style={{ marginTop: 12, gap: 6 }}>
                 {current.problem.choices.map((c) => (

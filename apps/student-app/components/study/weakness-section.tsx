@@ -1,6 +1,7 @@
 import { View, Text, Pressable, ActivityIndicator } from "react-native";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/lib/theme";
+import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 
 interface UnitAccuracy {
@@ -16,11 +17,13 @@ interface WeaknessResponse {
 
 export function WeaknessSection() {
   const { colors } = useTheme();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
     queryKey: ["weakness"],
     queryFn: () => api.get<WeaknessResponse>("/student-ai/weakness"),
+    enabled: !!user,
   });
 
   const generateMutation = useMutation({
