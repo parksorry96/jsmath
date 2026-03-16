@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "JSMath Student",
+    "slug": "jsmath-student",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "scheme": "jsmath-student",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#fefcf9"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.jsmath.student"
+    },
+    "android": {
+      "package": "com.jsmath.student"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-image-picker",
+      [
+        "expo-camera",
+        { "cameraPermission": "수학 문제를 촬영하기 위해 카메라 접근이 필요합니다." }
+      ]
+    ]
+  }
+}
