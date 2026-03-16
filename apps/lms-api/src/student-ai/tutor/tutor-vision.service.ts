@@ -319,6 +319,10 @@ When the student sends a handwritten solution image:
     // Download image if provided
     let imageData: { base64: string; mimeType: string } | null = null;
     if (imageS3Key) {
+      const expectedPrefix = `canvas/${studentId}/`;
+      if (!imageS3Key.startsWith(expectedPrefix) || imageS3Key.includes('..')) {
+        throw new ForbiddenException('Invalid image key');
+      }
       imageData = await this.canvasUpload.downloadAsBase64(imageS3Key);
     }
 

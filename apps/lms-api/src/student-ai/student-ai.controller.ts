@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpException,
+  Logger,
   Post,
   Patch,
   Body,
@@ -39,6 +40,8 @@ interface AuthRequest {
 @Controller("student-ai")
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class StudentAiController {
+  private readonly logger = new Logger(StudentAiController.name);
+
   constructor(
     private tutor: TutorVisionService,
     private wrongAnswers: WrongAnswersService,
@@ -86,12 +89,14 @@ export class StudentAiController {
       }
       res.write("event: done\ndata: {}\n\n");
     } catch (err: unknown) {
-      if (err instanceof HttpException) {
-        throw err; // Let NestJS handle proper HTTP error response
+      const message = err instanceof HttpException
+        ? err.message
+        : "An error occurred";
+      const status = err instanceof HttpException ? err.getStatus() : 500;
+      if (!(err instanceof HttpException)) {
+        this.logger.error("Tutor SSE stream error", err instanceof Error ? err.stack : err);
       }
-      const message =
-        err instanceof Error ? err.message : "Streaming error";
-      res.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`);
+      res.write(`event: error\ndata: ${JSON.stringify({ error: message, status })}\n\n`);
     }
 
     res.end();
@@ -154,6 +159,7 @@ export class StudentAiController {
   }
 
   @Patch("wrong-answers/:id/classify")
+  @Roles("teacher", "admin")
   classifyError(
     @Param("id") id: string,
     @Body("errorType") errorType: string,
