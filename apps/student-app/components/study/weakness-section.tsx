@@ -20,10 +20,11 @@ export function WeaknessSection() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["weakness"],
     queryFn: () => api.get<WeaknessResponse>("/student-ai/weakness"),
     enabled: !!user,
+    retry: false,
   });
 
   const generateMutation = useMutation({
@@ -39,10 +40,10 @@ export function WeaknessSection() {
     );
   }
 
-  if (!data) {
+  if (isError || !data) {
     return (
       <View style={{ alignItems: "center", paddingVertical: 48 }}>
-        <Text style={{ color: colors.textMuted, fontSize: 14 }}>분석 데이터가 없습니다</Text>
+        <Text style={{ color: colors.textMuted, fontSize: 14 }}>문제를 더 풀면 약점 분석이 시작돼요</Text>
       </View>
     );
   }

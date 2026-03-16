@@ -12,7 +12,9 @@ interface SubjectPrediction {
   confidence: number;
 }
 
-type GradePredictionResponse = SubjectPrediction[];
+interface GradePredictionResponse {
+  predictions: SubjectPrediction[];
+}
 
 function gradeColor(grade: number): string {
   if (grade <= 2) return "#4ade80";
@@ -39,7 +41,7 @@ export function GradePredictionSection() {
     );
   }
 
-  const predictions = data ?? [];
+  const predictions = data?.predictions ?? [];
 
   if (predictions.length === 0) {
     return (
