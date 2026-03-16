@@ -1,8 +1,9 @@
 import { useState, useRef } from "react";
-import { View, Text, TextInput, Pressable, FlatList, KeyboardAvoidingView, Platform, ScrollView, useWindowDimensions, ActivityIndicator } from "react-native";
-import { useLocalSearchParams, Stack } from "expo-router";
-import { Send, Camera } from "lucide-react-native";
+import { View, Text, TextInput, Pressable, FlatList, KeyboardAvoidingView, Platform, ScrollView, useWindowDimensions, ActivityIndicator, Alert } from "react-native";
+import { useLocalSearchParams, Stack, useRouter } from "expo-router";
+import { Send, Camera, X } from "lucide-react-native";
 import { useTheme } from "@/lib/theme";
+import { api } from "@/lib/api";
 import { useTutorChat } from "@/hooks/useTutorChat";
 import { ChatBubble } from "@/components/tutor/chat-bubble";
 import { LatexText } from "@/components/math/latex-text";
@@ -15,6 +16,23 @@ export default function TutorChatScreen() {
   const flatListRef = useRef<FlatList>(null);
   const { width } = useWindowDimensions();
   const isTablet = width > 768;
+  const router = useRouter();
+
+  function handleEndSession() {
+    Alert.alert("대화 종료", "이 튜터링 세션을 종료할까요?", [
+      { text: "취소", style: "cancel" },
+      {
+        text: "종료",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await api.post(`/student-ai/tutor/sessions/${sessionId}/end`);
+          } catch { /* ignore */ }
+          router.back();
+        },
+      },
+    ]);
+  }
 
   function handleSend() {
     if (!input.trim() || isStreaming) return;
@@ -25,7 +43,14 @@ export default function TutorChatScreen() {
   if (isLoading) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: "center", alignItems: "center" }}>
-        <Stack.Screen options={{ title: "AI 튜터", headerShown: true }} />
+        <Stack.Screen options={{
+          title: "AI 튜터", headerShown: true,
+          headerRight: () => (
+            <Pressable onPress={handleEndSession} style={{ padding: 8 }}>
+              <X color={colors.destructive} size={20} />
+            </Pressable>
+          ),
+        }} />
         <ActivityIndicator size="large" color={colors.accent} />
       </View>
     );
@@ -87,7 +112,14 @@ export default function TutorChatScreen() {
   if (isTablet && problem) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
-        <Stack.Screen options={{ title: "AI 튜터", headerShown: true }} />
+        <Stack.Screen options={{
+          title: "AI 튜터", headerShown: true,
+          headerRight: () => (
+            <Pressable onPress={handleEndSession} style={{ padding: 8 }}>
+              <X color={colors.destructive} size={20} />
+            </Pressable>
+          ),
+        }} />
 
         {/* Top: Problem (collapsible) */}
         <ScrollView
@@ -128,7 +160,14 @@ export default function TutorChatScreen() {
   // Phone: Full-screen chat
   return (
     <View style={{ flex: 1 }}>
-      <Stack.Screen options={{ title: "AI 튜터", headerShown: true }} />
+      <Stack.Screen options={{
+          title: "AI 튜터", headerShown: true,
+          headerRight: () => (
+            <Pressable onPress={handleEndSession} style={{ padding: 8 }}>
+              <X color={colors.destructive} size={20} />
+            </Pressable>
+          ),
+        }} />
       {/* Problem banner on phone */}
       {problem && (
         <Pressable

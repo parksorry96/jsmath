@@ -1,11 +1,12 @@
 import { View, Text, Pressable, useWindowDimensions } from "react-native";
-import { Camera, Search, FileText, Activity } from "lucide-react-native";
+import { Camera, Search, FileText, Activity, MessageCircle } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import { useTheme } from "@/lib/theme";
 
 const actions = [
   { icon: Camera, label: "문제 찍기", route: "/camera" },
   { icon: Search, label: "문제 검색", route: "/(tabs)/explore" },
+  { icon: MessageCircle, label: "대화 기록", route: "/tutor" },
   { icon: FileText, label: "오답노트", route: "/(tabs)/study?section=wrong" },
   { icon: Activity, label: "내 약점", route: "/(tabs)/study?section=weakness" },
 ] as const;

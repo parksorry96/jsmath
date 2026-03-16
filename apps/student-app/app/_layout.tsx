@@ -31,6 +31,7 @@ function RootNavigator() {
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="camera" options={{ headerShown: true, title: "문제 촬영", presentation: "modal" }} />
       <Stack.Screen name="problem/[id]" options={{ headerShown: true, title: "문제" }} />
+      <Stack.Screen name="tutor/index" options={{ headerShown: true, title: "대화 기록" }} />
       <Stack.Screen name="tutor/[sessionId]" options={{ headerShown: true, title: "AI 튜터" }} />
       <Stack.Screen name="canvas/[problemId]" options={{ headerShown: true, title: "펜슬 풀이" }} />
     </Stack>
