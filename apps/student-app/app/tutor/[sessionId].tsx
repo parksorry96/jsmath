@@ -67,12 +67,14 @@ export default function TutorChatScreen() {
           placeholderTextColor={colors.textMuted}
           multiline
           maxLength={2000}
+          blurOnSubmit={false}
+          submitBehavior="submit"
+          onSubmitEditing={handleSend}
           style={{
             flex: 1, backgroundColor: colors.surface, borderRadius: 20,
             paddingHorizontal: 16, paddingVertical: 10, color: colors.textPrimary,
             fontSize: 15, maxHeight: 100,
           }}
-          onSubmitEditing={handleSend}
         />
         <Pressable onPress={handleSend} disabled={isStreaming || !input.trim()} style={{ padding: 8 }}>
           <Send color={input.trim() ? colors.accent : colors.textMuted} size={22} />
