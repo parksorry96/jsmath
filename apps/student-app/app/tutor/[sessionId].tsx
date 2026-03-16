@@ -90,7 +90,7 @@ export default function TutorChatScreen() {
         {/* Top: Problem (collapsible) */}
         <ScrollView
           style={{
-            maxHeight: 220, borderBottomWidth: 1, borderBottomColor: colors.border,
+            maxHeight: 340, borderBottomWidth: 1, borderBottomColor: colors.border,
           }}
           contentContainerStyle={{
             padding: 20, maxWidth: 800, alignSelf: "center", width: "100%",
