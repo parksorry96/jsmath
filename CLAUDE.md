@@ -117,13 +117,43 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
+### Branch Strategy (Git Flow Simplified)
+
+```
+main          ← Production-ready (stable, deployable)
+  └── develop ← Development integration branch
+       ├── feat/*    ← Feature branches (from develop)
+       ├── fix/*     ← Bug fix branches (from develop)
+       └── hotfix/*  ← Production hotfixes (from main)
+```
+
+**Rules:**
+- `main`: Protected. No direct push. Merge only via PR from `develop` (or `hotfix/*` for emergencies).
+- `develop`: Protected. No direct push. Merge via PR from `feat/*` or `fix/*`.
+- Feature branches: `feat/<feature-name>` from `develop`. Delete after merge.
+- Bug fixes: `fix/<bug-name>` from `develop`. Delete after merge.
+- Hotfixes: `hotfix/<issue>` from `main`. Merge to both `main` and `develop`.
+
+**Workflow:**
+```bash
+# New feature
+git checkout develop && git pull
+git checkout -b feat/my-feature
+# ... work ...
+# Create PR to develop
+
+# Release to production
+# Create PR from develop to main
+```
+
 ### Project-Specific Rules
 
 1. **Language**: 코드/커밋/주석은 영어, 사용자 대화는 한국어.
 2. **OCR is king**: OCR 파이프라인 품질이 제품의 핵심 차별점. 성능/정확도 타협 금지.
-3. **Schema boundary**: NestJS는 `lms.*` 테이블만, FastAPI는 `ocr.*` 테이블만 직접 접근. 교차 필요 시 Redis 이벤트.
+3. **Schema boundary**: NestJS는 `lms.*` 테이블만, FastAPI는 `ocr.*` 테이블만 직접 접근. 교차 필요 시 Redis 이벤트. (예외: `student-ai` 모듈은 `ocr.*` 읽기 허용)
 4. **No env secrets in code**: `.env` 값 하드코딩 절대 금지. 항상 config/settings에서 로드.
 5. **Test with real PDFs**: OCR 관련 변경은 실제 수학 교재 PDF로 검증.
+6. **Branch naming**: `feat/`, `fix/`, `hotfix/` prefix 필수. 직접 `main`/`develop` push 금지.
 
 ---
 
