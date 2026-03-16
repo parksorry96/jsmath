@@ -77,36 +77,59 @@ export function useTutorChat(sessionId: string) {
         },
       );
 
-      if (!res.ok || !res.body) throw new Error("Stream failed");
+      if (!res.ok) throw new Error("Stream failed");
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
       let tutorContent = "";
       const tutorMsgId = `tutor-${Date.now()}`;
-
       setMessages((prev) => [...prev, { id: tutorMsgId, role: "tutor", content: "" }]);
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      // Try streaming via ReadableStream (works in some RN environments)
+      if (res.body && typeof res.body.getReader === "function") {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        for (const line of lines) {
+          const chunk = decoder.decode(value, { stream: true });
+          for (const line of chunk.split("\n")) {
+            if (line.startsWith("event: done")) break;
+            if (line.startsWith("data: ")) {
+              const data = line.slice(6);
+              if (data === "[DONE]" || data === "{}") continue;
+              try {
+                const parsed = JSON.parse(data);
+                const text = parsed.chunk ?? parsed.content;
+                if (text) {
+                  tutorContent += text;
+                  setMessages((prev) =>
+                    prev.map((m) => m.id === tutorMsgId ? { ...m, content: tutorContent } : m),
+                  );
+                }
+              } catch { /* non-JSON SSE line */ }
+            }
+          }
+        }
+      } else {
+        // Fallback: read entire response as text, parse SSE lines
+        const text = await res.text();
+        for (const line of text.split("\n")) {
+          if (line.startsWith("event: done")) break;
           if (line.startsWith("data: ")) {
             const data = line.slice(6);
-            if (data === "[DONE]") break;
+            if (data === "[DONE]" || data === "{}") continue;
             try {
               const parsed = JSON.parse(data);
-              if (parsed.content) {
-                tutorContent += parsed.content;
-                setMessages((prev) =>
-                  prev.map((m) => m.id === tutorMsgId ? { ...m, content: tutorContent } : m),
-                );
-              }
-            } catch { /* non-JSON SSE line */ }
+              const chunk = parsed.chunk ?? parsed.content;
+              if (chunk) tutorContent += chunk;
+            } catch { /* skip */ }
           }
+        }
+        if (tutorContent) {
+          setMessages((prev) =>
+            prev.map((m) => m.id === tutorMsgId ? { ...m, content: tutorContent } : m),
+          );
         }
       }
     } catch (e) {
