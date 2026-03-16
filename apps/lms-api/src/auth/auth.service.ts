@@ -74,7 +74,7 @@ export class AuthService {
     });
 
     if (existing) {
-      return this.issueToken(existing.id, existing.email, existing.role);
+      return { ...this.issueToken(existing.id, existing.email, existing.role), isNewUser: false };
     }
 
     // If email matches an existing account, link the social provider
@@ -90,7 +90,7 @@ export class AuthService {
             providerAccountId: profile.providerAccountId,
           },
         });
-        return this.issueToken(updated.id, updated.email, updated.role);
+        return { ...this.issueToken(updated.id, updated.email, updated.role), isNewUser: false };
       }
     }
 
@@ -108,7 +108,7 @@ export class AuthService {
       },
     });
 
-    return this.issueToken(user.id, user.email, user.role);
+    return { ...this.issueToken(user.id, user.email, user.role), isNewUser: true };
   }
 
   async updatePreferences(userId: string, dto: UpdatePreferencesDto) {
@@ -186,7 +186,8 @@ export class AuthService {
 
   private async verifyGoogle(accessToken: string): Promise<SocialProfile> {
     const res = await fetch(
-      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${accessToken}`,
+      "https://www.googleapis.com/oauth2/v3/userinfo",
+      { headers: { Authorization: `Bearer ${accessToken}` } },
     );
     if (!res.ok) throw new UnauthorizedException("Invalid Google token");
 
