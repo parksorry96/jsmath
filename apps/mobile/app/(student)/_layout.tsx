@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { Home, Calendar, ClipboardList, BarChart3 } from "lucide-react-native";
+import { Home, Calendar, ClipboardList, BarChart3, BookOpen } from "lucide-react-native";
 
 export default function StudentLayout() {
   return (
@@ -33,6 +33,13 @@ export default function StudentLayout() {
         options={{
           title: "캘린더",
           tabBarIcon: ({ color, size }) => <Calendar color={color} size={size ?? 22} />,
+        }}
+      />
+      <Tabs.Screen
+        name="study"
+        options={{
+          title: "학습",
+          tabBarIcon: ({ color, size }) => <BookOpen color={color} size={size ?? 22} />,
         }}
       />
       <Tabs.Screen
