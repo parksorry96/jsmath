@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { MessageCircle, PenTool } from "lucide-react-native";
 import { api } from "@/lib/api";
 import { useTheme } from "@/lib/theme";
+import { LatexText } from "@/components/math/latex-text";
 
 interface ProblemDetail {
   id: string;
@@ -58,9 +59,9 @@ export default function ProblemDetailScreen() {
         backgroundColor: colors.card, borderRadius: 16, padding: 20,
         borderWidth: 1, borderColor: colors.border, minHeight: 120,
       }}>
-        <Text style={{ fontSize: 16, color: colors.textPrimary, lineHeight: 26 }}>
-          {problem.stemText || problem.stemLatex}
-        </Text>
+        <LatexText style={{ fontSize: 16, lineHeight: 26 }}>
+          {problem.stemLatex || problem.stemText}
+        </LatexText>
       </View>
 
       {/* Actions */}

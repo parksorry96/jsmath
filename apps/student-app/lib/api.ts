@@ -1,7 +1,8 @@
 import { getItemAsync } from "./storage";
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:3001/v1";
-const OCR_URL = process.env.EXPO_PUBLIC_OCR_URL || "http://localhost:8000";
+// iOS simulator cannot reach localhost — use LAN IP for dev
+const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://192.168.0.78:3001/v1";
+const OCR_URL = process.env.EXPO_PUBLIC_OCR_URL || "http://192.168.0.78:8000";
 
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown) {
