@@ -238,6 +238,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
           problemNumber: true,
           displayNumber: true,
           problemType: true,
+          bbox: true,
           reviewStatus: true,
           gradeLevel: true,
           subject: true,
@@ -315,6 +316,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         problemNumber: true,
         displayNumber: true,
         problemType: true,
+        bbox: true,
         difficulty: true,
         subject: true,
         unitMajor: true,
@@ -523,6 +525,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         problemNumber: true,
         displayNumber: true,
         problemType: true,
+        bbox: true,
         reviewStatus: true,
         gradeLevel: true,
         subject: true,
@@ -659,6 +662,17 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     if (dto.unitMajor !== undefined) updateData.unitMajor = dto.unitMajor;
     if (dto.unitMinor !== undefined) updateData.unitMinor = dto.unitMinor;
     if (dto.difficulty !== undefined) updateData.difficulty = dto.difficulty;
+    if ((dto.stemLatex !== undefined || dto.stemText !== undefined) && problem.bbox) {
+      const bbox =
+        typeof problem.bbox === "object" && !Array.isArray(problem.bbox)
+          ? { ...(problem.bbox as Record<string, unknown>) }
+          : null;
+      if (bbox) {
+        delete bbox.boxed_blocks;
+        delete bbox.structured_stem;
+        updateData.bbox = bbox;
+      }
+    }
 
     return this.problemRevisionService.saveRevisionAndUpdate(
       id,
@@ -866,6 +880,127 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       count,
       difficultyTarget,
     );
+  }
+
+  async browse(query: {
+    subject?: string;
+    gradeLevel?: string;
+    difficulty?: string;
+    unitMajor?: string;
+    problemType?: string;
+    q?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 100);
+    const skip = (page - 1) * limit;
+
+    const where: Record<string, unknown> = {
+      reviewStatus: { in: ["approved", "auto_approved"] },
+    };
+
+    if (query.subject) where.subject = query.subject;
+    if (query.gradeLevel) where.gradeLevel = query.gradeLevel;
+    if (query.unitMajor) where.unitMajor = query.unitMajor;
+    if (query.problemType) where.problemType = query.problemType;
+    if (query.difficulty !== undefined) {
+      const parsed = parseInt(query.difficulty, 10);
+      if (!isNaN(parsed)) where.difficulty = parsed;
+    }
+    if (query.q) {
+      where.stemText = { contains: query.q, mode: "insensitive" };
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.problem.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          stemLatex: true,
+          stemText: true,
+          problemNumber: true,
+          displayNumber: true,
+          problemType: true,
+          gradeLevel: true,
+          subject: true,
+          unitMajor: true,
+          unitMinor: true,
+          difficulty: true,
+          choices: {
+            select: {
+              label: true,
+              contentLatex: true,
+              contentText: true,
+              position: true,
+            },
+            orderBy: { position: "asc" },
+          },
+          assets: {
+            select: {
+              id: true,
+              kind: true,
+              subKind: true,
+              s3Key: true,
+              format: true,
+              widthPx: true,
+              heightPx: true,
+            },
+          },
+        },
+      }),
+      this.prisma.problem.count({ where }),
+    ]);
+
+    return { data: items, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  async studentView(id: string) {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id,
+        reviewStatus: { in: ["approved", "auto_approved"] },
+      },
+      select: {
+        id: true,
+        stemLatex: true,
+        stemText: true,
+        problemNumber: true,
+        displayNumber: true,
+        problemType: true,
+        gradeLevel: true,
+        subject: true,
+        unitMajor: true,
+        unitMinor: true,
+        difficulty: true,
+        solutionTags: true,
+        choices: {
+          select: {
+            label: true,
+            contentLatex: true,
+            contentText: true,
+            position: true,
+          },
+          orderBy: { position: "asc" },
+        },
+        assets: {
+          select: {
+            id: true,
+            kind: true,
+            subKind: true,
+            s3Key: true,
+            format: true,
+            widthPx: true,
+            heightPx: true,
+          },
+        },
+      },
+    });
+    if (!problem) throw new NotFoundException("Problem not found");
+    return problem;
   }
 
   async review(

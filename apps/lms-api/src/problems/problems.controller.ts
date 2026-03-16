@@ -106,6 +106,30 @@ export class ProblemsController {
     });
   }
 
+  @Get("browse")
+  @Roles("admin", "teacher", "student")
+  browse(
+    @Query("subject") subject?: string,
+    @Query("gradeLevel") gradeLevel?: string,
+    @Query("difficulty") difficulty?: string,
+    @Query("unitMajor") unitMajor?: string,
+    @Query("problemType") problemType?: string,
+    @Query("q") q?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.problems.browse({
+      subject,
+      gradeLevel,
+      difficulty,
+      unitMajor,
+      problemType,
+      q,
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
   @Get("flagged")
   @Roles("admin", "teacher")
   getFlagged(
@@ -164,6 +188,12 @@ export class ProblemsController {
       req.user.role,
       dto.difficultyTarget,
     );
+  }
+
+  @Get(":id/student-view")
+  @Roles("admin", "teacher", "student")
+  studentView(@Param("id") id: string) {
+    return this.problems.studentView(id);
   }
 
   @Get(":id/analysis")
