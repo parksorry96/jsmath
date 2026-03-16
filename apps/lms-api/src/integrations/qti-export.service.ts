@@ -81,7 +81,7 @@ export class QtiExportService {
     for (const item of items) {
       // Find or create a minimal OCR job to satisfy the FK requirement.
       // In a real import flow the caller would supply an ocrJobId.
-      let ocrJob = await this.prisma.ocrJob.findFirst({
+      const ocrJob = await this.prisma.ocrJob.findFirst({
         where: { sourceFile: { uploaderId: userId } },
         orderBy: { createdAt: "desc" },
         select: { id: true },

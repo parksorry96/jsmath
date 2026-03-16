@@ -6,7 +6,7 @@
     "dev": "nest start --watch",
     "build": "nest build",
     "start": "node dist/main",
-    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "lint": "eslint \"{src,test}/**/*.ts\" --max-warnings 20",
     "test": "jest"
   },
   "dependencies": {
@@ -54,6 +54,9 @@
     "@types/multer": "^1",
     "@types/node": "^22",
     "@types/passport-jwt": "^4",
+    "@typescript-eslint/eslint-plugin": "^8.57.0",
+    "@typescript-eslint/parser": "^8.57.0",
+    "eslint": "^8.57.1",
     "jest": "^29",
     "ts-jest": "^29",
     "ts-loader": "^9",

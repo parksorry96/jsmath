@@ -79,7 +79,7 @@ export class ClassMonitorController {
     }, 5000);
 
     // Clean up on disconnect
-    req.user; // keep reference to avoid early GC
+    void req.user; // keep reference to avoid early GC
     res.on("close", () => {
       clearInterval(interval);
     });

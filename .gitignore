@@ -51,3 +51,21 @@ packages/db-schema/prisma/*.db
 npm-debug.log*
 pnpm-debug.log*
 .superpowers/
+
+# Screenshots & temp files
+*.png
+*.pdf
+!apps/web/public/**/*.png
+
+# Docs (generated specs/plans, not committed)
+docs/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Claude Code
+.claude/
+
+# Misc temp
+CODE_REVIEW_REPORT.md
+PRIORITY_MATRIX.md
