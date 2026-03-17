@@ -25,7 +25,6 @@ import {
   Trash2,
   Eraser,
   Send,
-  Pen,
 } from "lucide-react-native";
 import { useTheme } from "@/lib/theme";
 import {
@@ -154,19 +153,22 @@ function DrawingCanvasImpl(
   }
 
   function handleTouchEnd() {
-    if (!currentPath) {
-      currentPathRef.current = "";
-      return;
-    }
+    if (!currentPathRef.current) return;
 
-    setActivePaths((prev) => [...prev, currentPath]);
+    const finishedPath: DrawingPath = {
+      path: currentPathRef.current,
+      color: isEraser ? canvasBg : currentColor,
+      strokeWidth: currentStrokeWidth,
+      isEraser,
+    };
+    setActivePaths((prev) => [...prev, finishedPath]);
     setCurrentPath(null);
     currentPathRef.current = "";
     onCanvasChange?.();
 
     // Callbacks only in solution mode
     if (mode === "solution") {
-      if (currentPath.isEraser) {
+      if (finishedPath.isEraser) {
         onEraserStrokeEnd?.();
       } else {
         onStrokeEnd?.();
@@ -201,7 +203,7 @@ function DrawingCanvasImpl(
       handleTouchEnd();
     })
     .onFinalize(() => {
-      shouldDrawRef.current = false;
+      shouldDrawRef.current = true;
     });
 
   // ------- Actions -------
@@ -562,13 +564,13 @@ const styles = StyleSheet.create({
   },
   exportCanvasContainer: {
     position: "absolute",
-    width: 1,
-    height: 1,
-    overflow: "hidden",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     opacity: 0,
   },
   exportCanvas: {
-    width: 2048,
-    height: 2048,
+    flex: 1,
   },
 });

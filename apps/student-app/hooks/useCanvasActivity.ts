@@ -58,7 +58,7 @@ export function useCanvasActivity({
   // When isBusy transitions false while idle, fire auto-analyze
   const prevBusyRef = useRef(isBusy);
   useEffect(() => {
-    if (prevBusyRef.current && !isBusy && enabledRef.current) {
+    if (prevBusyRef.current && !isBusy && enabledRef.current && enteredIdleRef.current) {
       if (strokesSinceAnalysisRef.current >= TIMING.MIN_STROKES_FOR_ANALYSIS) {
         onAutoAnalyzeRef.current();
         strokesSinceAnalysisRef.current = 0;
