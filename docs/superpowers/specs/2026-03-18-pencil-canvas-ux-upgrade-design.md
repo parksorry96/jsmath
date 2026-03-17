@@ -23,12 +23,13 @@ interface CanvasActivityOptions {
   onAutoAnalyze: () => void;
   onNudge: (message: string) => void;
   enabled: boolean;
+  isBusy: boolean; // true when isSubmitting || isTutorStreaming — guards against concurrent analysis
 }
 
 interface CanvasActivityState {
   activityState: 'writing' | 'paused' | 'idle' | 'struggling';
   handleStrokeEnd: () => void;
-  handleEraseStroke: () => void;
+  handleEraserStrokeEnd: () => void; // called when a stroke is drawn with isEraser=true
   resetTimers: () => void;
 }
 ```
@@ -41,7 +42,20 @@ interface CanvasActivityState {
 | 5s no input | `writing` → `paused` | None (may be thinking) |
 | 20s no input + ≥3 strokes since last analysis | `paused` → `idle` | Auto-analyze (level 0 prompt) |
 | 45s no input | `idle` → `struggling` | Nudge: "Need a hint?" |
-| >50% strokes erased in 30s | any → `struggling` | Encourage: "Fresh approach is good" |
+| >50% of recent strokes are eraser strokes (last 30s window) | any → `struggling` | Encourage: "Fresh approach is good" |
+
+**Erase detection:** Since the eraser paints over with background color rather than removing strokes, we track erase activity by counting strokes where `isEraser=true`. The `handleEraserStrokeEnd` callback increments an eraser stroke counter. The hook maintains a sliding window (30s) of total strokes vs eraser strokes. When the eraser ratio exceeds 50%, the state transitions to `struggling`.
+
+#### `enabled` Toggle Behavior
+
+- When `enabled` becomes `false`: all timers are cleared, state resets to `writing`, no `onAutoAnalyze` or `onNudge` fires.
+- When `enabled` becomes `true` mid-session: timers restart from the current moment as if the student just started writing.
+- The `onNudge` callback (struggling state from erase detection) also respects `enabled` — it does NOT fire when disabled.
+
+#### `isBusy` Guard
+
+- When `isBusy` is `true`, the `onAutoAnalyze` callback is suppressed. The hook stays in `idle` state and re-checks when `isBusy` transitions back to `false`.
+- This prevents concurrent analysis when the user manually submits while auto-analysis timer fires.
 
 #### Constants (tunable)
 
@@ -58,7 +72,8 @@ const TIMING = {
 
 #### Integration Point
 - `[problemId].tsx`: replace `scheduleAutoAnalysis` and `autoAnalysisTimerRef` with `useCanvasActivity`
-- `DrawingCanvas`: add `onStrokeEnd` and `onEraseStroke` callbacks alongside existing `onCanvasChange`
+- `DrawingCanvas`: add `onStrokeEnd` and `onEraserStrokeEnd` callbacks alongside existing `onCanvasChange`
+- Pass `isBusy: isSubmitting || isTutorStreaming` to the hook
 
 ---
 
@@ -97,6 +112,8 @@ interface AiStatusIndicatorProps {
 #### Moti Usage
 
 ```tsx
+import { MotiView } from 'moti';
+
 <MotiView
   animate={{
     opacity: isWriting ? 0.5 : 1,
@@ -156,6 +173,10 @@ const HINT_PROMPTS: Record<number, string> = {
 };
 ```
 
+#### Prompt Injection Point
+
+All hint prompts are sent as the `content` parameter of `sendTutorTurn` with `showStudentMessage: false`. This means they appear as hidden student messages in the conversation history. The AI sees them as instructions but they are not rendered in the chat UI. This matches the current behavior of `analyzeCurrentCanvas` which already uses `showStudentMessage: false`.
+
 #### UI: "More Hint" Button
 - Added to `LiveTutorPanel` header, next to "전체 보기" button
 - Shows current level as dots: `●●○○`
@@ -164,7 +185,7 @@ const HINT_PROMPTS: Record<number, string> = {
 
 #### Integration Point
 - `[problemId].tsx`: `analyzeCurrentCanvas` uses `promptForLevel()` instead of hardcoded string
-- `live-tutor-panel.tsx`: adds hint level UI
+- `live-tutor-panel.tsx`: adds hint level UI + onEscalateHint callback
 - Auto-analysis always uses level 0. Manual escalation only via button.
 
 ---
@@ -181,22 +202,56 @@ Native responder API cannot read `pointerType` — no palm rejection. Pen option
 Replace `onResponderGrant/Move/Release` with `Gesture.Pan()` from `react-native-gesture-handler`.
 
 ```typescript
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+
+const shouldDrawRef = useRef(true);
+const pencilDetectedRef = useRef(false);
+
 const panGesture = Gesture.Pan()
+  .minDistance(0)  // capture dots and short marks (default 10px would miss them)
+  .minPointers(1)
+  .maxPointers(1)
   .onBegin((e) => {
-    if (pencilDetected && e.pointerType !== PointerType.STYLUS) return;
+    // Palm rejection: if pencil was ever detected, reject touch input
+    if (e.pointerType === 2 /* STYLUS */) {
+      pencilDetectedRef.current = true;
+    }
+    if (pencilDetectedRef.current && e.pointerType !== 2) {
+      shouldDrawRef.current = false;
+      return;
+    }
+    shouldDrawRef.current = true;
     handleTouchStart(e.x, e.y);
   })
   .onUpdate((e) => {
+    if (!shouldDrawRef.current) return;
     handleTouchMove(e.x, e.y);
   })
   .onEnd(() => {
+    if (!shouldDrawRef.current) return;
     handleTouchEnd();
   })
-  .minPointers(1)
-  .maxPointers(1);
+  .onFinalize(() => {
+    shouldDrawRef.current = true;
+  });
 ```
 
-Key: `e.pointerType` distinguishes stylus from touch. When stylus is detected, subsequent touch events are ignored (palm rejection). When no stylus has been detected, touch is allowed as fallback.
+**Palm rejection approach:** A `shouldDrawRef` guard ref is set in `onBegin` and checked in `onUpdate`/`onEnd`. Returning early from `onBegin` alone does NOT prevent subsequent callbacks, so the guard ref is necessary. Once any stylus event is detected (`pencilDetectedRef`), all non-stylus input is rejected. When no stylus has been detected, touch is allowed as fallback.
+
+**Wrapper change:**
+```tsx
+// Before:
+<View onStartShouldSetResponder ... >
+  <Canvas ... />
+</View>
+
+// After:
+<GestureDetector gesture={panGesture}>
+  <View>
+    <Canvas ... />
+  </View>
+</GestureDetector>
+```
 
 #### 4-2. Pen Colors (Okabe-Ito Palette)
 
@@ -217,7 +272,7 @@ const STROKE_WIDTHS = [1, 3, 5] as const;
 UI: three circles of increasing size next to color selectors.
 
 ```
-[●][●][●] color  [·][•][●] width  [eraser]  |  [undo][redo][clear]  [submit]
+[풀이|연습장]  [●][●][●] color  [·][•][●] width  [eraser]  |  [undo][redo][clear]  [submit]
 ```
 
 #### 4-4. Eraser Size
@@ -230,7 +285,7 @@ When eraser is active, the width selector switches to eraser sizes.
 
 #### Integration Point
 - `drawing-canvas.tsx`: full rewrite of touch handling section + toolbar UI
-- `drawing-canvas.web.tsx`: unchanged (web unsupported)
+- `drawing-canvas.web.tsx`: requires stub updates (see Section 5)
 
 ---
 
@@ -285,8 +340,29 @@ Added to toolbar, left side:
 
 - `onCanvasChange` only fires when `mode === 'solution'`
 - `onStrokeEnd` only fires when `mode === 'solution'`
-- `capture()` always captures from `solutionPaths` regardless of current mode
 - `hasContent()` checks `solutionPaths.length > 0`
+
+#### Capture Behavior
+
+`capture()` must always return the solution layer, regardless of current mode. Since `canvasRef.current.makeImageSnapshot()` captures whatever is currently rendered on the Skia Canvas, the implementation must:
+
+1. Temporarily switch the rendered paths to `solutionPaths`
+2. Force a synchronous render on the Skia canvas
+3. Call `makeImageSnapshot()`
+4. Restore the previously rendered paths
+
+Implementation approach: the `capture()` method will set a `captureOverridePaths` ref. When this ref is set, the Canvas renders from it instead of `activePaths`. After snapshot, the ref is cleared. This avoids a visible flicker since the Skia Canvas renders synchronously within the same frame.
+
+```typescript
+const captureOverrideRef = useRef<DrawingPath[] | null>(null);
+const renderedPaths = captureOverrideRef.current ?? activePaths;
+
+// In capture():
+captureOverrideRef.current = solutionPaths;
+// Force Skia re-render by reading canvas
+const image = canvasRef.current.makeImageSnapshot();
+captureOverrideRef.current = null;
+```
 
 #### New Ref Methods
 
@@ -301,6 +377,25 @@ export interface DrawingCanvasRef {
   setMode: (mode: 'solution' | 'scratch') => void;  // new
 }
 ```
+
+#### Web Stub Updates
+
+`drawing-canvas.web.tsx` must be updated to implement the expanded `DrawingCanvasRef` interface and accept the new optional props to avoid TypeScript compilation errors:
+
+```typescript
+// drawing-canvas.web.tsx additions
+useImperativeHandle(ref, () => ({
+  capture: () => null,
+  clear: () => undefined,
+  undo: () => undefined,
+  redo: () => undefined,
+  hasContent: () => false,
+  getMode: () => 'solution' as const,   // new stub
+  setMode: () => undefined,              // new stub
+}), []);
+```
+
+New optional props (`onStrokeEnd`, `onEraserStrokeEnd`) are accepted but ignored in the web stub.
 
 ---
 
@@ -330,15 +425,29 @@ function parseStepTag(content: string): {
 } | null {
   const match = content.match(/\[STEP:(\d+)\/(\d+)\]/);
   if (!match) return null;
+
+  const currentStep = parseInt(match[1]);
+  const totalSteps = parseInt(match[2]);
+
+  // Validate: N >= 1, T >= 1, N <= T
+  if (currentStep < 1 || totalSteps < 1 || currentStep > totalSteps) return null;
+
   return {
-    currentStep: parseInt(match[1]),
-    totalSteps: parseInt(match[2]),
+    currentStep,
+    totalSteps,
     cleanContent: content.replace(/\[STEP:\d+\/\d+\]\s*/, ''),
   };
 }
 ```
 
 The `[STEP:N/T]` tag is stripped from displayed message content.
+
+#### Edge Case Handling
+
+- **AI response lacks `[STEP:N/T]`:** Progress bar retains the last valid step data. This happens for free-text chat messages from student typing — the bar simply keeps showing the previous state.
+- **Total steps change mid-session** (e.g., `[STEP:2/4]` then `[STEP:2/5]`): Bar re-renders with the new total. Steps 1 through N-1 are marked completed. Previously completed steps beyond the new total are discarded.
+- **Invalid values** (N=0, N>T, T=0): `parseStepTag` returns `null`, treated as "no tag present" — bar retains previous state.
+- **First response ever:** Bar is hidden until the first valid `[STEP:N/T]` is parsed.
 
 #### Component: `StepProgressBar`
 
@@ -366,8 +475,8 @@ If `totalSteps` differs from 4, fall back to numbered labels: `['1단계', '2단
 Height: ~40px. Placed between problem card and canvas in `[problemId].tsx`.
 
 #### Visibility
-- Hidden until first `[STEP:N/T]` is parsed from an AI response
-- Appears with moti `AnimatePresence` fade-in
+- Hidden until first valid `[STEP:N/T]` is parsed from an AI response
+- Appears with `MotiView` opacity animation (0 → 1) conditioned on `stepProgress !== null`
 - State stored in `[problemId].tsx`: `stepProgress: { current: number, total: number } | null`
 
 ---
@@ -387,15 +496,15 @@ Height: ~40px. Placed between problem card and canvas in `[problemId].tsx`.
 ### Modified Files
 | File | Changes |
 |------|---------|
-| `components/canvas/drawing-canvas.tsx` | Gesture Handler migration, dual-layer paths, pen tool UI, scratch pad tabs, eraser sizes, new ref methods |
-| `components/tutor/live-tutor-panel.tsx` | Hint level dots + "더 자세한 힌트" button |
-| `app/canvas/[problemId].tsx` | Integrate useCanvasActivity, useHintLevel, AiStatusIndicator, StepProgressBar, wire new DrawingCanvas callbacks |
+| `components/canvas/drawing-canvas.tsx` | Gesture Handler migration, dual-layer paths, pen tool UI, scratch pad tabs, eraser sizes, capture override, new ref methods |
+| `components/canvas/drawing-canvas.web.tsx` | Add stub implementations for `getMode`, `setMode`; accept new optional props |
+| `components/tutor/live-tutor-panel.tsx` | Hint level dots + "더 자세한 힌트" button + `onEscalateHint` callback |
+| `app/canvas/[problemId].tsx` | Integrate useCanvasActivity, useHintLevel, AiStatusIndicator, StepProgressBar, wire new DrawingCanvas callbacks, pass isBusy guard |
 | `package.json` | Add `moti` dependency |
 
 ### Unchanged Files
 | File | Reason |
 |------|--------|
-| `components/canvas/drawing-canvas.web.tsx` | Web unsupported, no changes |
 | `lib/tutor-stream.ts` | SSE streaming unchanged |
 | `hooks/useTutorChat.ts` | Used by full-screen tutor, not canvas screen |
 | `components/tutor/chat-bubble.tsx` | No changes needed |
@@ -405,10 +514,10 @@ Height: ~40px. Placed between problem card and canvas in `[problemId].tsx`.
 ## Dependencies
 
 ### Added
-- `moti` — Declarative animations on top of Reanimated. ~15KB gzipped.
+- `moti` — Declarative animations on top of Reanimated. ~15KB gzipped. Import: `import { MotiView } from 'moti'`
 
 ### Already Installed (used more fully)
-- `react-native-gesture-handler` ~2.30.0 — Gesture.Pan() for canvas
+- `react-native-gesture-handler` ~2.30.0 — `Gesture.Pan()`, `GestureDetector` for canvas
 - `react-native-reanimated` 4.2.1 — Required by moti
 - `lucide-react-native` ^0.577.0 — Eye, Hand icons (already bundled)
 
