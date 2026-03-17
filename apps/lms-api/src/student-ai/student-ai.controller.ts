@@ -102,6 +102,12 @@ export class StudentAiController {
     res.end();
   }
 
+  @Get("tutor/sessions")
+  @Roles("student")
+  listSessions(@Request() req: AuthRequest) {
+    return this.tutor.listSessions(req.user.id);
+  }
+
   @Get("tutor/sessions/:id")
   getSession(@Param("id") id: string, @Request() req: AuthRequest) {
     return this.tutor.getSession(id, req.user.id);

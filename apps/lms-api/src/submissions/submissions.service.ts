@@ -352,15 +352,17 @@ export class SubmissionsService {
 
     await this.wrongAnswers.collectFromSubmission(submissionId).catch(() => {});
 
-    for (const answer of graded.answers) {
-      if (answer.isCorrect !== null && answer.isCorrect !== undefined) {
-        await this.masteryService.updateOnAnswer(
-          graded.studentId,
-          answer.problemId,
-          answer.isCorrect,
-        ).catch(() => {});
-      }
-    }
+    await Promise.allSettled(
+      graded.answers
+        .filter((answer) => answer.isCorrect !== null && answer.isCorrect !== undefined)
+        .map((answer) =>
+          this.masteryService.updateOnAnswer(
+            graded.studentId,
+            answer.problemId,
+            answer.isCorrect as boolean,
+          ),
+        ),
+    );
 
     // Gamification: fire-and-forget
     this.gamification.awardXp(graded.studentId, 10, "auto_grade").catch(() => {});

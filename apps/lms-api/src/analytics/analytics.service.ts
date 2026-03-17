@@ -73,67 +73,43 @@ export class AnalyticsService {
         status: { in: ["graded", "returned"] },
         ...(classId ? { assignment: { classId } } : {}),
       },
-      include: {
-        answers: true,
+      select: {
+        submittedAt: true,
+        score: true,
+        maxScore: true,
         assignment: {
           select: {
-            id: true,
             title: true,
-            classId: true,
             maxScore: true,
-            createdAt: true,
           },
-        },
-        photos: {
-          where: { analysisStatus: "completed" },
-          select: { aiFeedback: true },
         },
       },
       orderBy: { submittedAt: "asc" },
     });
 
-    // Collect all problemIds from answers
-    const problemIds = [
-      ...new Set(submissions.flatMap((s) => s.answers.map((a) => a.problemId))),
-    ];
-
-    // Fetch problems for unit info (cross-schema via Prisma)
-    const problems =
-      problemIds.length > 0
-        ? await this.prisma.problem.findMany({
-            where: { id: { in: problemIds } },
-            select: {
-              id: true,
-              unitMajor: true,
-              unitMinor: true,
-              subject: true,
-              difficulty: true,
-            },
-          })
-        : [];
-    const problemMap = new Map(problems.map((p) => [p.id, p]));
-
-    // Accuracy by unit
-    const unitStats: Record<string, { correct: number; total: number }> = {};
-    for (const sub of submissions) {
-      for (const ans of sub.answers) {
-        if (ans.isCorrect === null) continue;
-        const problem = problemMap.get(ans.problemId);
-        const unit = problem?.unitMajor || "미분류";
-        if (!unitStats[unit]) unitStats[unit] = { correct: 0, total: 0 };
-        unitStats[unit].total++;
-        if (ans.isCorrect) unitStats[unit].correct++;
-      }
-    }
-
-    const accuracyByUnit = Object.entries(unitStats)
-      .map(([unit, { correct, total }]) => ({
-        unit,
-        accuracy: total > 0 ? Math.round((correct / total) * 100) : 0,
-        correct,
-        total,
-      }))
-      .sort((a, b) => a.accuracy - b.accuracy);
+    const accuracyByUnit = await this.prisma.$queryRaw<
+      Array<{ unit: string; correct: bigint; total: bigint }>
+    >`
+      SELECT
+        COALESCE(p.unit_major, '미분류') AS unit,
+        COUNT(*) FILTER (WHERE sa.is_correct = true) AS correct,
+        COUNT(*) FILTER (WHERE sa.is_correct IS NOT NULL) AS total
+      FROM public.submission_answers sa
+      JOIN public.submissions s ON s.id = sa.submission_id
+      JOIN public.assignments a ON a.id = s.assignment_id
+      LEFT JOIN ocr.problems p ON p.id = sa.problem_id
+      WHERE s.student_id = ${studentId}
+        AND s.status IN ('graded', 'returned')
+        AND (${classId}::text IS NULL OR a.class_id = ${classId})
+      GROUP BY COALESCE(p.unit_major, '미분류')
+      HAVING COUNT(*) FILTER (WHERE sa.is_correct IS NOT NULL) > 0
+      ORDER BY
+        CASE
+          WHEN COUNT(*) FILTER (WHERE sa.is_correct IS NOT NULL) = 0 THEN 1
+          ELSE COUNT(*) FILTER (WHERE sa.is_correct = true)::float
+            / COUNT(*) FILTER (WHERE sa.is_correct IS NOT NULL)
+        END ASC
+    `;
 
     // Score trend over time
     const scoreTrend = submissions.map((s) => ({
@@ -144,138 +120,124 @@ export class AnalyticsService {
     }));
 
     // Weak topics (lowest accuracy, min 3 problems attempted)
-    const weakTopics = accuracyByUnit.filter((u) => u.total >= 3).slice(0, 5);
-
-    // Overall stats
-    const allAnswers = submissions
-      .flatMap((s) => s.answers)
-      .filter((a) => a.isCorrect !== null);
+    const normalizedAccuracyByUnit = accuracyByUnit.map((row) => {
+      const correct = Number(row.correct);
+      const total = Number(row.total);
+      return {
+        unit: row.unit,
+        accuracy: total > 0 ? Math.round((correct / total) * 100) : 0,
+        correct,
+        total,
+      };
+    });
+    const weakTopics = normalizedAccuracyByUnit.filter((u) => u.total >= 3).slice(0, 5);
+    const totalCorrect = normalizedAccuracyByUnit.reduce((sum, row) => sum + row.correct, 0);
+    const totalAnswered = normalizedAccuracyByUnit.reduce((sum, row) => sum + row.total, 0);
     const overallAccuracy =
-      allAnswers.length > 0
-        ? Math.round(
-            (allAnswers.filter((a) => a.isCorrect).length / allAnswers.length) *
-              100,
-          )
-        : 0;
+      totalAnswered > 0 ? Math.round((totalCorrect / totalAnswered) * 100) : 0;
 
-    // Common error types from AI feedback
-    const errorTypes: Record<string, number> = {};
-    for (const sub of submissions) {
-      for (const photo of sub.photos) {
-        const feedback = photo.aiFeedback as Record<string, unknown> | null;
-        if (feedback?.errorType) {
-          const key = String(feedback.errorType);
-          errorTypes[key] = (errorTypes[key] || 0) + 1;
-        }
-      }
-    }
+    const commonErrors = await this.prisma.$queryRaw<
+      Array<{ type: string; count: bigint }>
+    >`
+      SELECT
+        sp.ai_feedback->>'errorType' AS type,
+        COUNT(*) AS count
+      FROM public.submission_photos sp
+      JOIN public.submissions s ON s.id = sp.submission_id
+      JOIN public.assignments a ON a.id = s.assignment_id
+      WHERE s.student_id = ${studentId}
+        AND s.status IN ('graded', 'returned')
+        AND sp.analysis_status = 'completed'
+        AND jsonb_typeof(sp.ai_feedback) = 'object'
+        AND sp.ai_feedback ? 'errorType'
+        AND (${classId}::text IS NULL OR a.class_id = ${classId})
+      GROUP BY sp.ai_feedback->>'errorType'
+      ORDER BY COUNT(*) DESC
+      LIMIT 5
+    `;
 
     return {
       studentId,
       totalSubmissions: submissions.length,
       overallAccuracy,
-      accuracyByUnit,
+      accuracyByUnit: normalizedAccuracyByUnit,
       scoreTrend,
       weakTopics,
-      commonErrors: Object.entries(errorTypes)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
-        .map(([type, count]) => ({ type, count })),
+      commonErrors: commonErrors.map((row) => ({
+        type: row.type,
+        count: Number(row.count),
+      })),
     };
   }
 
   async getClassReport(classId: string) {
-    // Average scores per assignment
-    const assignments = await this.prisma.assignment.findMany({
-      where: { classId },
-      include: {
-        submissions: {
-          where: { status: { in: ["graded", "returned"] } },
-          select: { score: true, studentId: true },
-        },
-        _count: { select: { submissions: true } },
-      },
-    });
-
-    const assignmentStats = assignments.map((a) => ({
-      id: a.id,
-      title: a.title,
-      avgScore:
-        a.submissions.length > 0
-          ? Math.round(
-              (a.submissions.reduce((sum, s) => sum + (s.score || 0), 0) /
-                a.submissions.length) *
-                10,
-            ) / 10
-          : null,
-      submissionCount: a._count.submissions,
-      maxScore: a.maxScore,
-    }));
-
-    // Student completion rates
-    const enrollments = await this.prisma.enrollment.findMany({
-      where: {
-        classId,
-        user: { role: "student" },
-      },
-      include: { user: { select: { id: true, name: true } } },
-    });
-
-    const studentIds = enrollments.map((enrollment) => enrollment.userId);
-    const submissions = studentIds.length
-      ? await this.prisma.submission.findMany({
-          where: {
-            studentId: { in: studentIds },
-            assignment: { classId },
-            status: { in: ["graded", "returned"] },
-          },
-          select: {
-            studentId: true,
-            score: true,
-          },
-        })
-      : [];
-
-    const submissionStats = new Map<
-      string,
-      { completedAssignments: number; totalScore: number; scoredAssignments: number }
-    >();
-
-    for (const submission of submissions) {
-      const current = submissionStats.get(submission.studentId) ?? {
-        completedAssignments: 0,
-        totalScore: 0,
-        scoredAssignments: 0,
-      };
-
-      current.completedAssignments += 1;
-      if (submission.score !== null) {
-        current.totalScore += submission.score;
-        current.scoredAssignments += 1;
-      }
-
-      submissionStats.set(submission.studentId, current);
-    }
-
-    const studentStats = enrollments.map((enrollment) => {
-      const stats = submissionStats.get(enrollment.userId);
-      return {
-        studentId: enrollment.userId,
-        name: enrollment.user.name,
-        completedAssignments: stats?.completedAssignments ?? 0,
-        avgScore:
-          stats && stats.scoredAssignments > 0
-            ? Math.round((stats.totalScore / stats.scoredAssignments) * 10) / 10
-            : null,
-      };
-    });
+    const [assignmentStats, studentStats] = await Promise.all([
+      this.prisma.$queryRaw<
+        Array<{
+          id: string;
+          title: string;
+          maxScore: number;
+          submissionCount: bigint;
+          avgScore: number | null;
+        }>
+      >`
+        SELECT
+          a.id,
+          a.title,
+          a.max_score AS "maxScore",
+          COUNT(s.id) FILTER (WHERE s.status IN ('graded', 'returned')) AS "submissionCount",
+          ROUND(AVG(s.score)::numeric, 1)::float AS "avgScore"
+        FROM public.assignments a
+        LEFT JOIN public.submissions s
+          ON s.assignment_id = a.id
+         AND s.status IN ('graded', 'returned')
+        WHERE a.class_id = ${classId}
+        GROUP BY a.id, a.title, a.max_score
+        ORDER BY a.created_at ASC
+      `,
+      this.prisma.$queryRaw<
+        Array<{
+          studentId: string;
+          name: string;
+          completedAssignments: bigint;
+          avgScore: number | null;
+        }>
+      >`
+        SELECT
+          e.user_id AS "studentId",
+          u.name AS name,
+          COUNT(s.id) FILTER (WHERE s.status IN ('graded', 'returned')) AS "completedAssignments",
+          ROUND(AVG(s.score)::numeric, 1)::float AS "avgScore"
+        FROM public.enrollments e
+        JOIN public.users u ON u.id = e.user_id
+        LEFT JOIN public.submissions s
+          ON s.student_id = e.user_id
+         AND s.status IN ('graded', 'returned')
+         AND s.assignment_id IN (
+           SELECT id FROM public.assignments WHERE class_id = ${classId}
+         )
+        WHERE e.class_id = ${classId}
+          AND e.role = 'student'
+        GROUP BY e.user_id, u.name
+        ORDER BY "avgScore" DESC NULLS LAST, u.name ASC
+      `,
+    ]);
 
     return {
       classId,
-      assignmentStats,
-      studentStats: studentStats.sort(
-        (a, b) => (b.avgScore || 0) - (a.avgScore || 0),
-      ),
+      assignmentStats: assignmentStats.map((row) => ({
+        id: row.id,
+        title: row.title,
+        avgScore: row.avgScore,
+        submissionCount: Number(row.submissionCount),
+        maxScore: row.maxScore,
+      })),
+      studentStats: studentStats.map((row) => ({
+        studentId: row.studentId,
+        name: row.name,
+        completedAssignments: Number(row.completedAssignments),
+        avgScore: row.avgScore,
+      })),
     };
   }
 }

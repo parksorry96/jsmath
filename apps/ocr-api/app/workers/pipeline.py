@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from celery import chain
 
@@ -28,7 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 @celery.task(name="task.pipeline.checkpoint_save")
-def checkpoint_save(prev_result, stage_name=None):
+def checkpoint_save(
+    prev_result: dict[str, Any] | None,
+    stage_name: str | None = None,
+) -> dict[str, Any] | None:
     """Save a completed checkpoint with stage output, then pass through."""
     if prev_result and stage_name:
         ocr_job_id = prev_result.get("ocr_job_id")
@@ -38,13 +42,18 @@ def checkpoint_save(prev_result, stage_name=None):
 
 
 @celery.task(bind=True, name="task.pipeline.checkpoint_fail")
-def checkpoint_fail(self, task_id, ocr_job_id=None, document_type="exam"):
+def checkpoint_fail(
+    self: Any,
+    task_id: str,
+    ocr_job_id: str | None = None,
+    document_type: str = "exam",
+) -> None:
     """Chain error callback — mark the next unfinished stage as failed."""
     if ocr_job_id:
         asyncio.run(_fail(ocr_job_id, document_type, f"Task {task_id} failed"))
 
 
-async def _save(ocr_job_id: str, stage_name: str, payload: dict) -> None:
+async def _save(ocr_job_id: str, stage_name: str, payload: dict[str, Any]) -> None:
     async with worker_session() as session:
         await save_checkpoint(session, ocr_job_id, stage_name, payload=payload)
 
@@ -64,7 +73,11 @@ async def _fail(ocr_job_id: str, document_type: str, error: str) -> None:
 # ── Stage → task mapping ──
 
 
-def _stage_signature(stage_name: str, ocr_job_id: str, answer_s3_key: str | None = None):
+def _stage_signature(
+    stage_name: str,
+    ocr_job_id: str,
+    answer_s3_key: str | None = None,
+) -> Any:
     """Return the Celery task signature for a given stage."""
     if stage_name == "ocr_submit":
         return submit_pdf_to_mathpix.s(ocr_job_id)
@@ -98,7 +111,7 @@ def _build_chain(
     stages: list[str],
     ocr_job_id: str,
     answer_s3_key: str | None = None,
-) -> list:
+) -> list[Any]:
     """Build a Celery task list with checkpoint_save after each stage."""
     tasks = []
     for stage in stages:
@@ -179,7 +192,10 @@ def resume_pipeline(
     return result.id
 
 
-async def _get_resume_point(ocr_job_id: str, document_type: str):
+async def _get_resume_point(
+    ocr_job_id: str,
+    document_type: str,
+) -> tuple[Any, list[str]]:
     async with worker_session() as session:
         last = await get_last_checkpoint(session, ocr_job_id, document_type)
     return last, get_stage_order(document_type)

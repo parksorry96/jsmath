@@ -73,6 +73,23 @@ describe("SmartRecommendService", () => {
     });
   });
 
+  describe("extractRootCauseUnits", () => {
+    it("extracts unit names from string and object root causes", () => {
+      const result = service.extractRootCauseUnits([
+        "수학::함수",
+        { unit: "방정식" },
+        "기하",
+      ]);
+
+      expect(result).toEqual(["함수", "방정식", "기하"]);
+    });
+
+    it("returns empty array for invalid input", () => {
+      expect(service.extractRootCauseUnits(null)).toEqual([]);
+      expect(service.extractRootCauseUnits({ unit: "방정식" })).toEqual([]);
+    });
+  });
+
   describe("filterCommonMistakes", () => {
     it("returns problems matching the target error type", () => {
       const problems = [

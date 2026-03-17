@@ -369,15 +369,6 @@ export default function UploadPage() {
       uploadDocumentType: DocumentType,
       uploadAutoAnalyze: boolean,
     ) => {
-      const token = localStorage.getItem("token");
-      if (!token) {
-        updateFile(uploadId, {
-          status: "failed",
-          error: "로그인이 필요합니다. 다시 로그인해주세요.",
-        });
-        return;
-      }
-
       const existing = streamControllers.current.get(uploadId);
       if (existing) {
         existing.abort();
@@ -398,7 +389,6 @@ export default function UploadPage() {
 
         void streamSse({
           url: `${API_URL}/files/${jobId}/events`,
-          token,
           signal: controller.signal,
           onOpen: () => {
             reconnectDelay = 1000;
@@ -779,9 +769,8 @@ export default function UploadPage() {
   );
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
     fetch(`${API_URL}/files`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: "include",
     })
       .then((response) => response.json())
       .then(

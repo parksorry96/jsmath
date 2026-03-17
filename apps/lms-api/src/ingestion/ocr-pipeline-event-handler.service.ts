@@ -1,28 +1,19 @@
-import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
+import { Injectable, Logger } from "@nestjs/common";
 import { createHash } from "crypto";
-import { Redis } from "ioredis";
+import { RedisEventBusService } from "../common/redis-event-bus.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { OcrProblemMaterializerService } from "./ocr-problem-materializer.service";
 
 @Injectable()
-export class OcrPipelineEventHandlerService implements OnModuleDestroy {
+export class OcrPipelineEventHandlerService {
   private readonly logger = new Logger(OcrPipelineEventHandlerService.name);
   private readonly recentlyHandled = new Map<string, number>();
-  private readonly redisPublisher: Redis;
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly config: ConfigService,
+    private readonly eventBus: RedisEventBusService,
     private readonly materializer: OcrProblemMaterializerService,
-  ) {
-    const redisUrl = this.config.getOrThrow<string>("REDIS_URL");
-    this.redisPublisher = new Redis(redisUrl);
-  }
-
-  async onModuleDestroy() {
-    await this.redisPublisher.quit();
-  }
+  ) {}
 
   async handle(channel: string, message: string) {
     try {
@@ -60,7 +51,39 @@ export class OcrPipelineEventHandlerService implements OnModuleDestroy {
 
       if (channel === "ocr:completed") {
         const maybeCount = payload.problemCount;
-        const job = await this.prisma.ocrJob.update({
+        const job = await this.prisma.ocrJob.findUniqueOrThrow({
+          where: { id: payload.ocrJobId },
+        });
+
+        let materializeError: string | null = null;
+        if (
+          Array.isArray(payload.problems) &&
+          payload.problems.length > 0
+        ) {
+          const result = await this.materializer.materialize(
+            payload.ocrJobId!,
+            job.sourceFileId,
+            payload.problems,
+          );
+          if (result.failedCount > 0) {
+            materializeError = `Failed to materialize ${result.failedCount} OCR problems`;
+          }
+        }
+
+        if (materializeError) {
+          await this.prisma.ocrJob.update({
+            where: { id: payload.ocrJobId },
+            data: {
+              status: "failed",
+              errorMessage: materializeError,
+              completedAt: new Date(),
+            },
+          });
+          this.logger.error(materializeError);
+          return;
+        }
+
+        await this.prisma.ocrJob.update({
           where: { id: payload.ocrJobId },
           data: {
             status: "completed",
@@ -70,18 +93,6 @@ export class OcrPipelineEventHandlerService implements OnModuleDestroy {
             completedAt: new Date(),
           },
         });
-
-        // Create Problem records from pipeline results
-        if (
-          Array.isArray(payload.problems) &&
-          payload.problems.length > 0
-        ) {
-          await this.materializer.materialize(
-            payload.ocrJobId!,
-            job.sourceFileId,
-            payload.problems,
-          );
-        }
 
         if (!job.autoAnalyze) {
           this.logger.log(
@@ -107,13 +118,18 @@ export class OcrPipelineEventHandlerService implements OnModuleDestroy {
             },
             data: { analysisStatus: "analyzing" },
           });
-          await this.redisPublisher.publish(
-            "analysis:request",
-            JSON.stringify({
+          try {
+            await this.eventBus.publishDurable("analysis:request", {
               ocrJobId: payload.ocrJobId,
               problemIds: analysisProblemIds,
-            }),
-          );
+            });
+          } catch (error) {
+            await this.prisma.problem.updateMany({
+              where: { id: { in: analysisProblemIds } },
+              data: { analysisStatus: "failed" },
+            });
+            throw error;
+          }
           this.logger.log(
             `Auto-triggered analysis for ${analysisProblemIds.length} problems (job ${payload.ocrJobId})`,
           );
@@ -172,6 +188,7 @@ export class OcrPipelineEventHandlerService implements OnModuleDestroy {
         `Failed to process OCR event on channel ${channel}`,
         error instanceof Error ? error.stack : String(error),
       );
+      throw error;
     }
   }
 }

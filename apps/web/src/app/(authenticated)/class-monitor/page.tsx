@@ -109,17 +109,9 @@ function useClassMonitorWS(classId: string | null, assignmentId: string | null) 
       process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
     // Derive the socket.io server origin from the API URL
     const origin = apiBase.replace(/\/v1\/?$/, "");
-    const token = localStorage.getItem("token");
-    if (!token) {
-      setConnected(false);
-      return;
-    }
-
     const socket = io(`${origin}/class-monitor`, {
-      auth: (cb) => {
-        cb({ token: localStorage.getItem("token") ?? "" });
-      },
       transports: ["websocket", "polling"],
+      withCredentials: true,
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 10000,

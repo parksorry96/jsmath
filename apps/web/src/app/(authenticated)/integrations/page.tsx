@@ -69,9 +69,8 @@ function QtiTab() {
 
   async function downloadXml(path: string, filename: string) {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     const res = await fetch(`${apiUrl}${path}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: "include",
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const xml = await res.text();

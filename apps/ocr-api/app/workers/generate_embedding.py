@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from sqlalchemy import select
@@ -15,9 +16,9 @@ from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.config import settings
-from app.services.openai_client import get_openai_client
 from app.database import worker_session
-from app.models.problem import Problem, ProblemChoice
+from app.models.problem import Problem
+from app.services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,11 @@ def _build_embedding_text(problem: Problem, solution_strategy: str | None = None
     acks_late=True,
 )
 def generate_embedding(
-    self, previous_result=None, *, problem_id: str | None = None
-) -> dict:
+    self: Any,
+    previous_result: dict[str, Any] | None = None,
+    *,
+    problem_id: str | None = None,
+) -> dict[str, Any]:
     """Generate and store embedding for a single problem."""
     if previous_result and isinstance(previous_result, dict):
         problem_id = problem_id or previous_result.get("problem_id")
@@ -73,15 +77,16 @@ def generate_embedding(
 
 
 async def generate_embedding_async(
-    problem_id: str, stage1_result: dict | None = None,
-) -> dict:
+    problem_id: str,
+    stage1_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Standalone async embedding generation. Used by batch processing."""
     return await _generate(problem_id, stage1_result)
 
 
 async def generate_embeddings_batch(
-    items: list[tuple[str, dict | None]],
-) -> list[dict]:
+    items: list[tuple[str, dict[str, Any] | None]],
+) -> list[dict[str, Any]]:
     """Batch embedding generation — single API call for multiple problems.
 
     Args:
@@ -161,7 +166,10 @@ async def generate_embeddings_batch(
     ]
 
 
-async def _generate(problem_id: str, stage1_result: dict | None) -> dict:
+async def _generate(
+    problem_id: str,
+    stage1_result: dict[str, Any] | None,
+) -> dict[str, Any]:
     async with worker_session() as session:
         result = await session.execute(
             select(Problem)

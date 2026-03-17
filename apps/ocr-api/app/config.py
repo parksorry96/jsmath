@@ -25,7 +25,10 @@ class Settings(BaseSettings):
     ai_api_base_url: str = "https://api.openai.com/v1"
     ai_model: str = "gpt-5-mini"
     internal_api_token: str = ""
+    jwt_secret: str = ""
     enable_api_docs: bool = False
+    enable_legacy_pubsub: bool = False
+    single_ocr_rate_limit_per_minute: int = Field(default=20, ge=1)
     celery_worker_concurrency: int = Field(default=16, ge=1)
     use_unified_analysis: bool = True
 

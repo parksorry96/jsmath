@@ -87,8 +87,6 @@ export function useTutorChat() {
 
       const apiUrl =
         process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
-      const token =
-        typeof window !== "undefined" ? localStorage.getItem("token") : null;
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -101,9 +99,9 @@ export function useTutorChat() {
             headers: {
               "Content-Type": "application/json",
               Accept: "text/event-stream",
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
             },
             body: JSON.stringify({ content }),
+            credentials: "include",
             signal: controller.signal,
           },
         );

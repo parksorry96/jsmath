@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from typing import Any
 
 import cv2
 import numpy as np
@@ -41,11 +42,11 @@ MIN_FIGURE_AREA = 5000  # minimum area in pixels to consider a figure
     acks_late=True,
 )
 def crop_figures(
-    self,
-    segment_result: dict | None = None,
+    self: Any,
+    segment_result: dict[str, Any] | None = None,
     *,
     ocr_job_id: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Detect and crop figures from OCR pages."""
     if segment_result:
         ocr_job_id = segment_result["ocr_job_id"]
@@ -55,7 +56,11 @@ def crop_figures(
     return asyncio.run(_crop(self, ocr_job_id, segment_result))
 
 
-async def _crop(task, ocr_job_id: str, segment_result: dict | None) -> dict:
+async def _crop(
+    task: Any,
+    ocr_job_id: str,
+    segment_result: dict[str, Any] | None,
+) -> dict[str, Any]:
     async with worker_session() as session:
         job_result = await session.execute(
             select(OcrJobTracking).where(OcrJobTracking.id == ocr_job_id)

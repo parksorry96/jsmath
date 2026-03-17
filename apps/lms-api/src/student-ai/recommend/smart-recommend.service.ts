@@ -6,6 +6,10 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { canAccessAssignment } from "../../common/access-control";
+import {
+  extractTutorWeaknessSignal,
+  tutorRootCauseKey,
+} from "../tutor/tutor-weakness-signal";
 
 interface SimilarProblemRow {
   id: string;
@@ -357,13 +361,36 @@ export class SmartRecommendService {
       select: { problemId: true },
     });
 
-    if (wrongAnswers.length === 0) {
+    const tutorMessages = await this.prisma.tutorMessage.findMany({
+      where: {
+        role: "student",
+        createdAt: { gte: thirtyDaysAgo },
+        session: {
+          studentId,
+        },
+      },
+      select: {
+        metadata: true,
+      },
+    });
+    const tutorSignals = tutorMessages
+      .map((message) => extractTutorWeaknessSignal(message.metadata))
+      .filter((signal): signal is NonNullable<typeof signal> => signal !== null);
+
+    if (wrongAnswers.length === 0 && tutorSignals.length === 0) {
       return [];
     }
 
     const problems = await this.prisma.problem.findMany({
       where: {
-        id: { in: wrongAnswers.map((wrongAnswer) => wrongAnswer.problemId) },
+        id: {
+          in: [
+            ...new Set([
+              ...wrongAnswers.map((wrongAnswer) => wrongAnswer.problemId),
+              ...tutorSignals.map((signal) => signal.problemId),
+            ]),
+          ],
+        },
       },
       select: {
         id: true,
@@ -392,6 +419,27 @@ export class SmartRecommendService {
           count: 1,
           problemId: problem.id,
           stemText: problem.stemText,
+        });
+      }
+    }
+
+    for (const signal of tutorSignals) {
+      const rootCauseKey = tutorRootCauseKey(signal);
+      if (!signal.curriculumNodeId || !rootCauseKey) {
+        continue;
+      }
+
+      const existing = grouped.get(signal.curriculumNodeId);
+      const problem = problemMap.get(signal.problemId);
+      const weight = signal.source === "worked_solution" ? 2 : 1;
+
+      if (existing) {
+        existing.count += weight;
+      } else {
+        grouped.set(signal.curriculumNodeId, {
+          count: weight,
+          problemId: signal.problemId,
+          stemText: problem?.stemText ?? "",
         });
       }
     }
@@ -574,10 +622,14 @@ export class SmartRecommendService {
     const items: RecommendationItem[] = [];
 
     // Priority 1: Root-cause basics
-    const rootCauses = (profile.rootCauses ?? []) as Array<{ unit?: string }>;
-    const rootCauseUnits = rootCauses
-      .map((rc) => rc.unit)
-      .filter((u): u is string => !!u);
+    const rootCauseUnits = [
+      ...new Set([
+        ...this.extractRootCauseUnits(profile.rootCauses),
+        ...profile.units
+          .filter((unit) => unit.accuracy <= 0.5)
+          .map((unit) => unit.unitMajor),
+      ]),
+    ];
 
     if (rootCauseUnits.length > 0) {
       const basics = await this.prisma.problem.findMany({
@@ -701,6 +753,36 @@ export class SmartRecommendService {
     if (accuracy < 0.4) return [1, 2];
     if (accuracy <= 0.7) return [2, 3];
     return [3, 4];
+  }
+
+  extractRootCauseUnits(rootCauses: unknown): string[] {
+    if (!Array.isArray(rootCauses)) {
+      return [];
+    }
+
+    const units = new Set<string>();
+    for (const rootCause of rootCauses) {
+      if (typeof rootCause === "string") {
+        const unit = rootCause.includes("::")
+          ? rootCause.split("::")[1]
+          : rootCause;
+        if (unit) {
+          units.add(unit);
+        }
+        continue;
+      }
+
+      if (
+        rootCause &&
+        typeof rootCause === "object" &&
+        "unit" in rootCause &&
+        typeof (rootCause as { unit?: unknown }).unit === "string"
+      ) {
+        units.add((rootCause as { unit: string }).unit);
+      }
+    }
+
+    return [...units];
   }
 
   mergeAndRank(

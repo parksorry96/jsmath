@@ -14,11 +14,15 @@ model User {
   id             String       @id @default(cuid())
   email          String       @unique
   name           String
-  passwordHash   String       @map("password_hash")
+  passwordHash   String?      @map("password_hash")
   role           Role         @default(student)
+  provider           String?
+  providerAccountId  String?  @map("provider_account_id")
   organizationId String?      @map("organization_id")
   organization   Organization? @relation(fields: [organizationId], references: [id])
   pushToken      String?      @map("push_token")
+  gradeLevel     String?      @map("grade_level")
+  curriculumYear Int?         @map("curriculum_year")
   enrollments    Enrollment[]
   parentLinks    ParentStudent[] @relation("ParentRelation")
   childLinks     ParentStudent[] @relation("StudentRelation")
@@ -42,6 +46,7 @@ model User {
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
+  @@unique([provider, providerAccountId])
   @@map("users")
   @@schema("public")
 }

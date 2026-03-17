@@ -1,5 +1,8 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { runWithConcurrency } from "../common/concurrency";
 import { PrismaService } from "../prisma/prisma.service";
+
+const PARENT_REPORT_CONCURRENCY = 4;
 
 interface WeaknessHeatmapEntry {
   unit: string;
@@ -310,7 +313,7 @@ export class ParentAnalyticsService {
     const { start, end } = getWeekBounds();
     let count = 0;
 
-    for (const link of links) {
+    await runWithConcurrency(links, PARENT_REPORT_CONCURRENCY, async (link) => {
       try {
         await this.generateReport(link.parentId, link.studentId, start, end);
         count++;
@@ -320,7 +323,7 @@ export class ParentAnalyticsService {
           err instanceof Error ? err.stack : String(err),
         );
       }
-    }
+    });
 
     return count;
   }

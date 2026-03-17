@@ -16,6 +16,7 @@ import { basename } from "path";
 import { randomUUID } from "crypto";
 import { Redis } from "ioredis";
 import { canAccessSubmission } from "../common/access-control";
+import { RedisEventBusService } from "../common/redis-event-bus.service";
 import { RedisStreamService } from "../common/redis-stream.service";
 
 const ALLOWED_IMAGE_MIME_TYPES = new Map<string, string>([
@@ -28,13 +29,13 @@ const ALLOWED_IMAGE_MIME_TYPES = new Map<string, string>([
 export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SubmissionPhotosService.name);
   private s3: S3Client;
-  private redisPublisher: Redis;
   private redisSubscriber: Redis;
   private bucket: string;
 
   constructor(
     private prisma: PrismaService,
     private config: ConfigService,
+    private redisEventBus: RedisEventBusService,
     private redisStream: RedisStreamService,
   ) {
     const s3Region =
@@ -56,7 +57,6 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
     });
     this.bucket = this.config.getOrThrow<string>("S3_BUCKET");
     const redisUrl = this.config.getOrThrow<string>("REDIS_URL");
-    this.redisPublisher = new Redis(redisUrl);
     this.redisSubscriber = new Redis(redisUrl);
   }
 
@@ -69,31 +69,35 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
       "photo:rubric:failed",
     );
     this.redisSubscriber.on("message", (channel, message) => {
-      this.dispatchPhotoEvent(channel, message);
+      void this.dispatchPhotoEvent(channel, message).catch((error) => {
+        this.logger.error(
+          `Failed to process legacy Pub/Sub photo event ${channel}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      });
     });
 
     // Stream-based listener (durable)
     this.redisStream.onMessage((channel, message) => {
-      this.dispatchPhotoEvent(channel, message);
+      return this.dispatchPhotoEvent(channel, message);
     });
   }
 
-  private dispatchPhotoEvent(channel: string, message: string) {
+  private async dispatchPhotoEvent(channel: string, message: string) {
     if (channel === "photo:analysis:completed") {
-      void this.handleAnalysisCompleted(message);
+      await this.handleAnalysisCompleted(message);
     } else if (channel === "photo:analysis:failed") {
-      void this.handleAnalysisFailed(message);
+      await this.handleAnalysisFailed(message);
     } else if (channel === "photo:rubric:completed") {
-      void this.handleRubricCompleted(message);
+      await this.handleRubricCompleted(message);
     } else if (channel === "photo:rubric:failed") {
-      void this.handleRubricFailed(message);
+      await this.handleRubricFailed(message);
     }
   }
 
   async onModuleDestroy() {
     await Promise.allSettled([
       this.redisSubscriber.quit(),
-      this.redisPublisher.quit(),
     ]);
   }
 
@@ -119,6 +123,7 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
         "Failed to process photo:analysis:completed",
         error instanceof Error ? error.stack : String(error),
       );
+      throw error;
     }
   }
 
@@ -141,6 +146,7 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
         "Failed to process photo:analysis:failed",
         error instanceof Error ? error.stack : String(error),
       );
+      throw error;
     }
   }
 
@@ -211,6 +217,7 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
         "Failed to process photo:rubric:completed",
         error instanceof Error ? error.stack : String(error),
       );
+      throw error;
     }
   }
 
@@ -229,6 +236,7 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
         "Failed to process photo:rubric:failed",
         error instanceof Error ? error.stack : String(error),
       );
+      throw error;
     }
   }
 
@@ -321,15 +329,21 @@ export class SubmissionPhotosService implements OnModuleInit, OnModuleDestroy {
       s3Key,
       problems: problemContexts,
     };
-    await this.redisPublisher.publish(
-      "photo:analyze",
-      JSON.stringify(payload),
-    );
-
-    await this.prisma.submissionPhoto.update({
-      where: { id: photo.id },
-      data: { analysisStatus: "analyzing" },
-    });
+    try {
+      await this.redisEventBus.publishDurable("photo:analyze", payload);
+      await this.prisma.submissionPhoto.update({
+        where: { id: photo.id },
+        data: { analysisStatus: "analyzing" },
+      });
+    } catch (error) {
+      await this.prisma.submissionPhoto.update({
+        where: { id: photo.id },
+        data: { analysisStatus: "failed" },
+      });
+      throw new InternalServerErrorException(
+        error instanceof Error ? error.message : "Failed to queue photo analysis",
+      );
+    }
 
     return photo;
   }

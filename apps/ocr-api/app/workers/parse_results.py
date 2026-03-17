@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 def _generate_id() -> str:
     """Generate a cuid-like short ID."""
-    import time
     import random
     import string
+    import time
 
     ts = hex(int(time.time() * 1000))[2:]
     rand = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
@@ -52,7 +52,7 @@ def _cnt_to_bbox(cnt: list[list[float]]) -> tuple[float, float, float, float] | 
     acks_late=True,
 )
 def parse_mathpix_results(
-    self,
+    self: Any,
     poll_result: dict[str, str] | None = None,
     *,
     ocr_job_id: str | None = None,
@@ -69,7 +69,11 @@ def parse_mathpix_results(
     return asyncio.run(_parse(self, ocr_job_id, mathpix_pdf_id))
 
 
-async def _parse(self, ocr_job_id: str, mathpix_pdf_id: str) -> dict[str, str | int]:
+async def _parse(
+    self: Any,
+    ocr_job_id: str,
+    mathpix_pdf_id: str,
+) -> dict[str, str | int]:
     try:
         lines_data = await mathpix.get_lines_json(mathpix_pdf_id)
     except Exception as exc:

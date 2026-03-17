@@ -12,7 +12,6 @@ from app.api.security import verify_internal_api_token
 from app.database import get_db
 from app.models.job import JobStatus, OcrJobTracking
 from app.models.ocr import OcrLine, OcrPage
-from app.models.checkpoint import PipelineCheckpoint
 from app.schemas.ocr import (
     CheckpointResponse,
     OcrJobCreate,
@@ -154,6 +153,7 @@ async def resync_ocr_job(
 
     # Inline async segment + notify (avoid Celery asyncio.run conflict)
     from sqlalchemy.orm import selectinload
+
     from app.workers.segment_problems import _rule_based_segment
 
     # 1. Fetch pages with lines
@@ -185,6 +185,7 @@ async def resync_ocr_job(
             "endPage": seg_dict.get("end_page", 0),
             "stemLatex": seg_dict.get("stem_latex", ""),
             "stemText": seg_dict.get("stem_text", ""),
+            "bbox": seg_dict.get("bbox"),
             "pageImageS3Key": page_image_map.get(seg_dict.get("start_page", 0)),
             "problemImageS3Key": seg_dict.get("problem_image_s3_key"),
         }

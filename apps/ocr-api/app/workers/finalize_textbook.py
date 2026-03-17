@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
 
@@ -24,11 +25,11 @@ logger = logging.getLogger(__name__)
     acks_late=True,
 )
 def finalize_textbook(
-    self,
-    prev_result: dict | None = None,
+    self: Any,
+    prev_result: dict[str, Any] | None = None,
     *,
     ocr_job_id: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Mark textbook job as completed, build problem payloads, and notify NestJS."""
     if prev_result:
         ocr_job_id = ocr_job_id or prev_result.get("ocr_job_id")
@@ -40,7 +41,10 @@ def finalize_textbook(
     return asyncio.run(_finalize(ocr_job_id, segments))
 
 
-async def _finalize(ocr_job_id: str, segments: list[dict]) -> dict:
+async def _finalize(
+    ocr_job_id: str,
+    segments: list[dict[str, Any]],
+) -> dict[str, Any]:
     # Idempotency: skip if job already completed
     book_title: str | None = None
     publisher: str | None = None
@@ -88,6 +92,7 @@ async def _finalize(ocr_job_id: str, segments: list[dict]) -> dict:
             "endPage": end_page,
             "stemLatex": segment.get("stem_latex", ""),
             "stemText": segment.get("stem_text", ""),
+            "bbox": segment.get("bbox"),
             "pageImageS3Key": page_image_map.get(start_page),
             "problemImageS3Key": segment.get("problem_image_s3_key"),
             # Textbook-specific fields

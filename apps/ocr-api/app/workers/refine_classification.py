@@ -9,16 +9,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from sqlalchemy import select
 
 from app.celery_app import celery
 from app.config import settings
-from app.services.openai_client import get_openai_client
 from app.database import worker_session
 from app.models.problem import Problem
 from app.schemas.problem import CURRICULUM_TREE, SUBJECTS
+from app.services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,12 @@ COMMON_SUBJECTS = {"수학I", "수학II"}
     retry_backoff=True,
     acks_late=True,
 )
-def refine_classification(self, previous_result=None, *, problem_id: str | None = None) -> dict:
+def refine_classification(
+    self: Any,
+    previous_result: dict[str, Any] | None = None,
+    *,
+    problem_id: str | None = None,
+) -> dict[str, Any]:
     """Refine classification for a single problem."""
     if previous_result and isinstance(previous_result, dict):
         problem_id = problem_id or previous_result.get("problem_id")
@@ -117,7 +123,7 @@ def refine_classification(self, previous_result=None, *, problem_id: str | None 
     return asyncio.run(_refine(self, problem_id))
 
 
-async def _refine(task, problem_id: str) -> dict:
+async def _refine(task: Any, problem_id: str) -> dict[str, Any]:
     async with worker_session() as session:
         result = await session.execute(
             select(Problem).where(Problem.id == problem_id)
@@ -178,7 +184,7 @@ async def _refine(task, problem_id: str) -> dict:
     }
 
 
-def _heuristic_refine(problem_id: str) -> dict:
+def _heuristic_refine(problem_id: str) -> dict[str, Any]:
     """Fallback when no API key."""
     return {
         "problem_id": problem_id,

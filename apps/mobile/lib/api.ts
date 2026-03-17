@@ -1,6 +1,45 @@
+import Constants from "expo-constants";
+import { Platform } from "react-native";
 import { getItemAsync } from "./storage";
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:3001/v1";
+function inferExpoHost() {
+  const candidates = [
+    Constants.expoConfig?.hostUri,
+    (Constants as { manifest2?: { extra?: { expoClient?: { hostUri?: string } } } }).manifest2
+      ?.extra?.expoClient?.hostUri,
+    (Constants as { manifest?: { debuggerHost?: string } }).manifest?.debuggerHost,
+    (Constants as { expoGoConfig?: { debuggerHost?: string } }).expoGoConfig?.debuggerHost,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.length > 0) {
+      return candidate.split(":")[0];
+    }
+  }
+
+  return null;
+}
+
+function resolvePublicUrl(envValue: string | undefined, port: number, suffix: string) {
+  if (envValue) {
+    return envValue;
+  }
+
+  if (Platform.OS === "web") {
+    return `http://localhost:${port}${suffix}`;
+  }
+
+  const host = inferExpoHost();
+  if (!host) {
+    throw new Error(
+      "Missing Expo public API URL. Set EXPO_PUBLIC_API_URL or run from Expo with a reachable dev host.",
+    );
+  }
+
+  return `http://${host}:${port}${suffix}`;
+}
+
+export const API_URL = resolvePublicUrl(process.env.EXPO_PUBLIC_API_URL, 3001, "/v1");
 
 export class ApiError extends Error {
   constructor(
@@ -20,7 +59,7 @@ async function request<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const token = await getItemAsync("auth_token");
+  const token = Platform.OS === "web" ? null : await getItemAsync("auth_token");
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -33,6 +72,7 @@ async function request<T>(
 
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
+    credentials: Platform.OS === "web" ? "include" : undefined,
     headers,
   });
 
