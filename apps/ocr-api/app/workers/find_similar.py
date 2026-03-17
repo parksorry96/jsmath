@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from typing import Any
 
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -31,7 +32,12 @@ MIN_SIMILARITY = 0.5  # Minimum cosine similarity threshold
     default_retry_delay=5,
     acks_late=True,
 )
-def find_similar(self, previous_result=None, *, problem_id: str | None = None) -> dict:
+def find_similar(
+    self: Any,
+    previous_result: dict[str, Any] | None = None,
+    *,
+    problem_id: str | None = None,
+) -> dict[str, Any]:
     """Find top-K similar problems using pgvector cosine distance."""
     if previous_result and isinstance(previous_result, dict):
         problem_id = problem_id or previous_result.get("problem_id")
@@ -41,7 +47,7 @@ def find_similar(self, previous_result=None, *, problem_id: str | None = None) -
     return asyncio.run(_find(problem_id))
 
 
-async def _find(problem_id: str) -> dict:
+async def _find(problem_id: str) -> dict[str, Any]:
     async with worker_session() as session:
         # Get the problem's embedding
         result = await session.execute(

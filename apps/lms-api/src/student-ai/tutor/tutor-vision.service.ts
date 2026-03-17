@@ -6,10 +6,16 @@ import {
   BadRequestException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Prisma } from "@prisma/client";
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { PrismaService } from "../../prisma/prisma.service";
 import { CanvasUploadService } from "../canvas/canvas-upload.service";
+import { WeaknessProfileService } from "../weakness/weakness-profile.service";
+import {
+  TutorWeaknessSignal,
+  TutorWeaknessErrorType,
+} from "./tutor-weakness-signal";
 
 @Injectable()
 export class TutorVisionService {
@@ -20,6 +26,7 @@ export class TutorVisionService {
     private prisma: PrismaService,
     private config: ConfigService,
     private canvasUpload: CanvasUploadService,
+    private weaknessProfile: WeaknessProfileService,
   ) {}
 
   private getClient(): OpenAI {
@@ -35,6 +42,132 @@ export class TutorVisionService {
       this.client = new OpenAI({ apiKey, baseURL });
     }
     return this.client;
+  }
+
+  private mapSessionSummaries(
+    sessions: Array<{
+      id: string;
+      problemId: string;
+      status: string;
+      createdAt: Date;
+      updatedAt: Date;
+      _count: { messages: number };
+    }>,
+    problemMap: Map<
+      string,
+      {
+        stemText: string;
+        stemLatex: string;
+        subject: string | null;
+        unitMajor: string | null;
+      }
+    >,
+  ) {
+    return sessions.map((session) => {
+      const problem = problemMap.get(session.problemId);
+
+      return {
+        id: session.id,
+        problemId: session.problemId,
+        status: session.status,
+        createdAt: session.createdAt.toISOString(),
+        updatedAt: session.updatedAt.toISOString(),
+        problem: problem
+          ? {
+              stemText: problem.stemText || problem.stemLatex || "",
+              subject: problem.subject,
+              unitMajor: problem.unitMajor,
+            }
+          : null,
+        _count: {
+          messages: session._count.messages,
+        },
+      };
+    });
+  }
+
+  inferWeaknessSignal(
+    problem: {
+      id: string;
+      curriculumNodeId: string | null;
+      subject: string | null;
+      unitMajor: string | null;
+    },
+    studentContent: string,
+    tutorResponse: string,
+    imageS3Key?: string,
+  ): TutorWeaknessSignal | null {
+    const normalizedStudent = studentContent.toLowerCase();
+    const normalizedTutor = tutorResponse.toLowerCase();
+    const combined = `${normalizedStudent}\n${normalizedTutor}`;
+
+    const errorType = this.detectErrorType(combined);
+    const expressesConfusion =
+      /모르겠|헷갈|어려|막혔|이해가 안|왜 안|잘 안|도와줘|힌트/.test(studentContent);
+    const exactClassification =
+      /\bconcept_gap\b|\bpattern_gap\b|\bcalculation_error\b|\bcareless_mistake\b/.test(
+        combined,
+      );
+
+    let confidence = imageS3Key ? 0.8 : 0.38;
+    if (expressesConfusion) confidence += 0.08;
+    if (errorType) confidence += 0.08;
+    if (exactClassification) confidence += 0.06;
+    confidence = Math.max(0.2, Math.min(0.95, confidence));
+
+    const evidence = [studentContent.trim(), tutorResponse.trim()]
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, 500);
+
+    if (!problem.subject && !problem.unitMajor && evidence.length === 0) {
+      return null;
+    }
+
+    return {
+      source: imageS3Key ? "worked_solution" : "tutor_message",
+      problemId: problem.id,
+      curriculumNodeId: problem.curriculumNodeId,
+      subject: problem.subject,
+      unitMajor: problem.unitMajor,
+      errorType,
+      confidence,
+      evidence,
+    };
+  }
+
+  private detectErrorType(content: string): TutorWeaknessErrorType | null {
+    if (
+      /\bconcept_gap\b|개념\s*(부족|오류|이해)|정의|공식|원리|개념부터/.test(
+        content,
+      )
+    ) {
+      return "concept_gap";
+    }
+
+    if (
+      /\bpattern_gap\b|유형|패턴|접근\s*방법|전략|풀이\s*방향|논리/.test(content)
+    ) {
+      return "pattern_gap";
+    }
+
+    if (
+      /\bcalculation_error\b|계산\s*실수|연산\s*실수|전개\s*실수|부호\s*계산|산술/.test(
+        content,
+      )
+    ) {
+      return "calculation_error";
+    }
+
+    if (
+      /\bcareless_mistake\b|부주의|조건을?\s*놓|잘못\s*읽|단순\s*실수|기호를?\s*빼먹/.test(
+        content,
+      )
+    ) {
+      return "careless_mistake";
+    }
+
+    return null;
   }
 
   private buildSystemPrompt(
@@ -238,7 +371,7 @@ When the student sends a handwritten solution image:
     // Generate initial greeting via OpenAI (non-streaming)
     const completion = await this.getClient().chat.completions.create({
       model,
-      temperature: 0.7,
+      temperature: 1,
       messages: [
         { role: "system", content: systemPrompt },
         {
@@ -291,6 +424,48 @@ When the student sends a handwritten solution image:
         unitMajor: problem.unitMajor,
       },
     };
+  }
+
+  async listSessions(studentId: string) {
+    const sessions = await this.prisma.tutorSession.findMany({
+      where: { studentId },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: 100,
+      select: {
+        id: true,
+        problemId: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: {
+          select: {
+            messages: true,
+          },
+        },
+      },
+    });
+
+    if (sessions.length === 0) {
+      return [];
+    }
+
+    const problemIds = [...new Set(sessions.map((session) => session.problemId))];
+    const problems = await this.prisma.problem.findMany({
+      where: { id: { in: problemIds } },
+      select: {
+        id: true,
+        stemText: true,
+        stemLatex: true,
+        subject: true,
+        unitMajor: true,
+      },
+    });
+
+    const problemMap = new Map(
+      problems.map((problem) => [problem.id, problem]),
+    );
+
+    return this.mapSessionSummaries(sessions, problemMap);
   }
 
   async *sendMessage(
@@ -372,7 +547,7 @@ When the student sends a handwritten solution image:
     const model = this.config.get("AI_MODEL") ?? "gpt-5.4";
     const stream = await this.getClient().chat.completions.create({
       model,
-      temperature: 0.7,
+      temperature: 1,
       stream: true,
       messages: chatMessages,
     });
@@ -400,17 +575,45 @@ When the student sends a handwritten solution image:
         },
       });
 
-      // Update student message metadata with image analysis if applicable
-      if (imageS3Key && fullResponse) {
+      const weaknessSignal = this.inferWeaknessSignal(
+        {
+          id: problem.id,
+          curriculumNodeId: problem.curriculumNodeId,
+          subject: problem.subject,
+          unitMajor: problem.unitMajor,
+        },
+        content,
+        fullResponse,
+        imageS3Key,
+      );
+
+      const metadata: Record<string, unknown> = {};
+      if (imageS3Key) {
+        metadata.imageS3Key = imageS3Key;
+        metadata.imageAnalysis = fullResponse.slice(0, 500);
+      }
+      if (weaknessSignal) {
+        metadata.weaknessSignal = weaknessSignal;
+      }
+
+      if (Object.keys(metadata).length > 0) {
         await this.prisma.tutorMessage.update({
           where: { id: studentMessage.id },
           data: {
-            metadata: {
-              imageS3Key,
-              imageAnalysis: fullResponse.slice(0, 500),
-            },
+            metadata: metadata as Prisma.InputJsonValue,
           },
         });
+      }
+
+      if (weaknessSignal) {
+        this.weaknessProfile
+          .updateProfile(studentId, { skipAiSummary: true })
+          .catch((err) => {
+            this.logger.error(
+              `Failed to refresh weakness profile for ${studentId}`,
+              err instanceof Error ? err.stack : err,
+            );
+          });
       }
     }
   }

@@ -10,17 +10,18 @@ Supports:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import logging
 import re
-from typing import Any
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.database import worker_session
-from app.models.ocr import OcrLine, OcrPage
+from app.models.ocr import OcrPage
 from app.services import mathpix, s3
 from app.workers.detect_sections import _find_quick_answer_page
 from app.workers.ocr_poll import MAX_POLL_ATTEMPTS_TEXTBOOK, _get_poll_delay
@@ -104,6 +105,18 @@ class ParsedAnswerLine:
 class ParsedAnswerPage:
     page_number: int
     lines: list[ParsedAnswerLine]
+
+
+class AnswerLine(Protocol):
+    line_number: int
+    text: str
+    line_type: str | None
+    latex: str | None
+
+
+class AnswerPage(Protocol):
+    page_number: int
+    lines: Sequence[AnswerLine]
 
 
 def _clean_latex_table(text: str) -> str:
@@ -325,7 +338,7 @@ def _parse_ebs_solution_section(
     # Extract leading number from summary line
     _SUMMARY_NUM = re.compile(r"^(\d{1,2})")
 
-    def _flush():
+    def _flush() -> None:
         nonlocal current_number, current_lines
         if current_chapter and current_section and current_number and current_lines:
             key = (current_chapter, current_section, current_number)
@@ -618,12 +631,12 @@ def _fix_two_column_misattribution(
     acks_late=True,
 )
 def match_answers(
-    self,
-    prev_result: dict | None = None,
+    self: Any,
+    prev_result: dict[str, Any] | None = None,
     *,
     ocr_job_id: str | None = None,
     answer_s3_key: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Match answers from answer section to problem segments."""
     if prev_result:
         ocr_job_id = ocr_job_id or prev_result.get("ocr_job_id")
@@ -648,14 +661,14 @@ def match_answers(
 
 async def _match(
     ocr_job_id: str,
-    segments: list[dict],
+    segments: list[dict[str, Any]],
     answer_pages: list[int] | None,
     has_quick_answers: bool,
-    prev_result: dict | None = None,
+    prev_result: dict[str, Any] | None = None,
     *,
     answer_s3_key: str | None = None,
-) -> dict:
-    pages: list = []
+) -> dict[str, Any]:
+    pages: Sequence[ParsedAnswerPage] | Sequence[OcrPage] = ()
     quick_answer_pages_range = None
 
     if answer_s3_key:
@@ -691,7 +704,7 @@ async def _match(
                     .options(selectinload(OcrPage.lines))
                     .order_by(OcrPage.page_number)
                 )
-                qa_pages = qa_pages_result.scalars().all()
+                qa_pages = list(qa_pages_result.scalars().all())
         ebs_answers = _parse_ebs_quick_answer_table(qa_pages)
 
     # No answer section and no EBS answers — mark all as no_answer_key
@@ -740,16 +753,16 @@ async def _match(
                 .options(selectinload(OcrPage.lines))
                 .order_by(OcrPage.page_number)
             )
-            pages = pages_result.scalars().all()
+            pages = list(pages_result.scalars().all())
 
     # Parse EBS solution section (정답과 풀이) if this is an EBS textbook
     ebs_solutions: dict[tuple[str, str, str], dict] = {}
     if ebs_answers and pages:
         # Skip quick answer pages — solution pages start after
         qa_end = quick_answer_pages_range[1] if quick_answer_pages_range else 0
-        solution_pages = [p for p in pages if p.page_number > qa_end]
-        if solution_pages:
-            ebs_solutions = _parse_ebs_solution_section(solution_pages)
+        ebs_solution_pages = [p for p in pages if p.page_number > qa_end]
+        if ebs_solution_pages:
+            ebs_solutions = _parse_ebs_solution_section(ebs_solution_pages)
             # Fix two-column layout misattributions using quick answer table
             ebs_solutions = _fix_two_column_misattribution(ebs_solutions, ebs_answers)
             logger.info(
@@ -872,8 +885,8 @@ async def _match(
 
 
 def _split_answer_sections(
-    pages: list[OcrPage],
-) -> tuple[list[OcrPage], list[OcrPage]]:
+    pages: Sequence[AnswerPage],
+) -> tuple[list[AnswerPage], list[AnswerPage]]:
     """Split pages into quick-answer pages and detailed-solution pages.
 
     The quick answer table usually comes first, followed by detailed solutions.
@@ -892,10 +905,11 @@ def _split_answer_sections(
         if solution_start_idx < len(pages):
             break
 
-    return pages[:solution_start_idx], pages[solution_start_idx:]
+    page_list = list(pages)
+    return page_list[:solution_start_idx], page_list[solution_start_idx:]
 
 
-def _parse_quick_answer_table(pages: list[OcrPage]) -> dict[str, str]:
+def _parse_quick_answer_table(pages: Sequence[AnswerPage]) -> dict[str, str]:
     """Parse '0001③ 0002② 0003①...' format from quick answer tables."""
     answers: dict[str, str] = {}
     for page in pages:
@@ -911,11 +925,11 @@ def _parse_quick_answer_table(pages: list[OcrPage]) -> dict[str, str]:
     return answers
 
 
-def _parse_answer_section(pages: list[OcrPage]) -> dict[str, dict]:
+def _parse_answer_section(pages: Sequence[AnswerPage]) -> dict[str, dict]:
     """Parse answer section lines into a map of problem_number -> answer data."""
     answer_map: dict[str, dict] = {}
     current_number: str | None = None
-    current_lines: list[OcrLine] = []
+    current_lines: list[AnswerLine] = []
 
     for page in pages:
         sorted_lines = sorted(page.lines, key=lambda l: l.line_number)
@@ -953,7 +967,7 @@ def _match_answer_number(text: str) -> str | None:
     return None
 
 
-def _build_answer_entry(lines: list[OcrLine]) -> dict:
+def _build_answer_entry(lines: Sequence[AnswerLine]) -> dict[str, str | None]:
     """Build an answer entry from collected lines."""
     # First line likely contains the answer itself
     first_text = lines[0].text.strip()

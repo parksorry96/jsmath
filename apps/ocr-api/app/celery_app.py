@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from celery import Celery
 from celery.signals import task_failure
@@ -26,7 +27,16 @@ celery.conf.update(
 )
 
 @task_failure.connect
-def on_task_failure(sender=None, task_id=None, exception=None, args=None, kwargs=None, traceback=None, einfo=None, **kw):
+def on_task_failure(
+    sender: Any = None,
+    task_id: str | None = None,
+    exception: Exception | None = None,
+    args: tuple[Any, ...] | None = None,
+    kwargs: dict[str, Any] | None = None,
+    traceback: Any = None,
+    einfo: Any = None,
+    **kw: Any,
+) -> None:
     """Record failed tasks to DLQ when all retries are exhausted."""
     max_retries = getattr(sender, "max_retries", 0) or 0
     retries = getattr(sender.request, "retries", 0) if sender and hasattr(sender, "request") else 0

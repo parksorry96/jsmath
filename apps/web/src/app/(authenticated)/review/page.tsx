@@ -29,6 +29,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { LatexRenderer } from "@/components/math/latex-renderer";
+import { ProblemLayoutMeta, ProblemStemDisplay } from "@/components/problems/problem-stem-display";
 import { ProblemSourcePreview } from "@/components/problems/problem-source-preview";
 import { api } from "@/lib/api";
 import {
@@ -70,6 +71,7 @@ interface Problem {
   classificationConfidence: number | null;
   solutionConfidence?: number | null;
   reviewConfidence?: number | null;
+  bbox?: ProblemLayoutMeta | null;
   assets?: ProblemAsset[];
   sourceFile?: string;
   startPage?: number;
@@ -259,26 +261,26 @@ function formatDate(dateStr: string): string {
 type ConfidenceFilter = "all" | "high" | "medium" | "low";
 type StatusFilter = "all" | "pending_review" | "auto_approved" | "approved" | "rejected";
 
-const REVIEW_FETCH_LIMIT = 500;
+const REVIEW_FETCH_LIMIT = 100;
 
 async function fetchAllProblemsForReview(
   ocrJobId: string,
 ): Promise<PaginatedResponse> {
   const firstPage = await api.get<PaginatedResponse>(
-    `/problems?ocrJobId=${ocrJobId}&page=1&limit=${REVIEW_FETCH_LIMIT}`,
+    `/problems?ocrJobId=${ocrJobId}&page=1&limit=${REVIEW_FETCH_LIMIT}&includeDetails=false`,
   );
 
   if (firstPage.totalPages <= 1) {
     return firstPage;
   }
 
-  const restPages = await Promise.all(
-    Array.from({ length: firstPage.totalPages - 1 }, (_, index) =>
-      api.get<PaginatedResponse>(
-        `/problems?ocrJobId=${ocrJobId}&page=${index + 2}&limit=${REVIEW_FETCH_LIMIT}`,
-      ),
-    ),
-  );
+  const restPages: PaginatedResponse[] = [];
+  for (let page = 2; page <= firstPage.totalPages; page += 1) {
+    const response = await api.get<PaginatedResponse>(
+      `/problems?ocrJobId=${ocrJobId}&page=${page}&limit=${REVIEW_FETCH_LIMIT}&includeDetails=false`,
+    );
+    restPages.push(response);
+  }
 
   return {
     ...firstPage,
@@ -959,6 +961,16 @@ function ProblemReviewView({
   // Use filtered problems for display, but currentIndex refers to filteredProblems
   const problems = filteredProblems;
   const current = problems[currentIndex] ?? null;
+  const {
+    data: currentDetail,
+  } = useQuery({
+    queryKey: ["review-problem", current?.id],
+    queryFn: () => api.get<Problem>(`/problems/${current!.id}`),
+    enabled: Boolean(current?.id),
+  });
+  const currentProblem = currentDetail
+    ? { ...current, ...currentDetail }
+    : current;
 
   // Clamp currentIndex when filters change
   useEffect(() => {
@@ -1245,8 +1257,8 @@ function ProblemReviewView({
     );
   }
 
-  const rawLatex = current!.stemLatex || current!.stemText || "";
-  const displayContent = editingLatex ?? getDisplayContent(current!);
+  const rawLatex = currentProblem!.stemLatex || currentProblem!.stemText || "";
+  const displayContent = editingLatex ?? getDisplayContent(currentProblem!);
 
   return (
     <div>
@@ -1263,7 +1275,7 @@ function ProblemReviewView({
         actionFeedback={actionFeedback}
         goNext={goNext}
         goPrev={goPrev}
-        current={current!}
+        current={currentProblem ?? undefined}
         onBulkApproveFiltered={handleBulkApproveFiltered}
         onBulkApproveAll={handleBulkApproveAll}
         isBulkPending={bulkApproveMutation.isPending}
@@ -1284,56 +1296,56 @@ function ProblemReviewView({
         onStatusFilter={setStatusFilter}
       />
 
-      <ProblemSourcePreview assets={current!.assets} />
+      <ProblemSourcePreview assets={currentProblem?.assets} />
 
       {/* Metadata chips */}
       <div className="flex flex-wrap items-center gap-2">
-        {(current!.displayNumber || current!.bookSource?.displayNumber) && (
+        {(currentProblem!.displayNumber || currentProblem!.bookSource?.displayNumber) && (
           <Badge variant="outline" className="text-xs">
-            {current!.displayNumber || current!.bookSource?.displayNumber}
+            {currentProblem!.displayNumber || currentProblem!.bookSource?.displayNumber}
           </Badge>
         )}
         <Badge variant="secondary" className="text-xs">
-          {PROBLEM_TYPE_LABELS[current!.problemType] ?? current!.problemType}
+          {PROBLEM_TYPE_LABELS[currentProblem!.problemType] ?? currentProblem!.problemType}
         </Badge>
-        {current!.bookSource?.chapter && (
+        {currentProblem!.bookSource?.chapter && (
           <Badge variant="outline" className="text-xs">
-            {current!.bookSource.chapter}
-            {current!.bookSource.section && ` ${current!.bookSource.section}`}
+            {currentProblem!.bookSource.chapter}
+            {currentProblem!.bookSource.section && ` ${currentProblem!.bookSource.section}`}
           </Badge>
         )}
-        {current!.bookSource?.itemCode && (
+        {currentProblem!.bookSource?.itemCode && (
           <Badge variant="outline" className="text-xs">
-            {current!.bookSource.itemCode}
+            {currentProblem!.bookSource.itemCode}
           </Badge>
         )}
-        {current!.answerMatchStatus && current!.answerMatchStatus !== "no_answer_key" && (
+        {currentProblem!.answerMatchStatus && currentProblem!.answerMatchStatus !== "no_answer_key" && (
           <span
             className={`text-xs px-2 py-0.5 rounded-full border ${
-              current!.answerMatchStatus === "matched"
+              currentProblem!.answerMatchStatus === "matched"
                 ? "bg-green-500/20 text-green-400 border-green-500/30"
                 : "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
             }`}
           >
-            {current!.answerMatchStatus === "matched" ? "해설 매칭" : "매칭 안됨"}
+            {currentProblem!.answerMatchStatus === "matched" ? "해설 매칭" : "매칭 안됨"}
           </span>
         )}
-        {current!.sourceFile && (
+        {currentProblem!.sourceFile && (
           <span className="text-xs text-muted-foreground">
-            {current!.sourceFile}
-            {current!.startPage != null &&
-              ` p.${current!.startPage}${
-                current!.endPage != null && current!.endPage !== current!.startPage
-                  ? `-${current!.endPage}`
+            {currentProblem!.sourceFile}
+            {currentProblem!.startPage != null &&
+              ` p.${currentProblem!.startPage}${
+                currentProblem!.endPage != null && currentProblem!.endPage !== currentProblem!.startPage
+                  ? `-${currentProblem!.endPage}`
                   : ""
               }`}
           </span>
         )}
         <div
-          className={`ml-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${confidenceBg(getConfidence(current!))}`}
+          className={`ml-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${confidenceBg(getConfidence(currentProblem!))}`}
         >
-          <span className={confidenceColor(getConfidence(current!))}>
-            검수 신뢰도 {Math.round(getConfidence(current!) * 100)}%
+          <span className={confidenceColor(getConfidence(currentProblem!))}>
+            검수 신뢰도 {Math.round(getConfidence(currentProblem!) * 100)}%
           </span>
         </div>
       </div>
@@ -1345,14 +1357,16 @@ function ProblemReviewView({
         </CardHeader>
         <CardContent className="p-5">
           <div className="min-h-[200px] rounded-lg border border-border bg-brand-dark p-5">
-            <LatexRenderer
-              content={displayContent}
+            <ProblemStemDisplay
+              stemLatex={displayContent}
+              stemText={currentProblem!.stemText}
+              layout={editingLatex === null ? currentProblem!.bbox : null}
               className="text-sm leading-relaxed text-foreground"
             />
 
-            {current!.choices && current!.choices.length > 0 && (
+            {currentProblem!.choices && currentProblem!.choices.length > 0 && (
               <div className="mt-5 space-y-2.5 border-t border-border pt-4">
-                {current!.choices.map((choice, i) => (
+                {currentProblem!.choices.map((choice, i) => (
                   <div key={i} className="flex items-start gap-2 text-sm">
                     <span className="shrink-0 font-medium text-brand-beige">
                       {choice.label || CIRCLE_NUMBERS[i] || `(${i + 1})`}
@@ -1366,11 +1380,11 @@ function ProblemReviewView({
               </div>
             )}
 
-            {current!.solutionLatex && (
+            {currentProblem!.solutionLatex && (
               <div className="mt-4 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
                 <h4 className="text-sm font-medium text-blue-400 mb-2">해설지 풀이</h4>
                 <LatexRenderer
-                  content={current!.solutionLatex}
+                  content={currentProblem!.solutionLatex}
                   className="text-sm text-foreground"
                 />
               </div>
@@ -1380,10 +1394,10 @@ function ProblemReviewView({
       </Card>
 
       {/* AI Analysis — default expanded */}
-      <AnalysisSection problem={current!} ocrJobId={ocrJobId} />
+      <AnalysisSection problem={currentProblem!} ocrJobId={ocrJobId} />
 
       {/* Twin problem generation */}
-      <TwinProblemSection problem={current!} />
+      <TwinProblemSection problem={currentProblem!} />
 
       {/* Raw LaTeX source — collapsed by default */}
       <Card>

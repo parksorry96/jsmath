@@ -27,6 +27,19 @@ interface Recommendation {
   reason: string;
 }
 
+interface CachedPrerequisiteGraph {
+  prerequisites: Array<{
+    fromSubject: string;
+    fromUnit: string;
+    toSubject: string;
+    toUnit: string;
+    strength: number;
+  }>;
+  forwardAdj: Map<string, { target: string; strength: number }[]>;
+  reverseAdj: Map<string, { target: string; strength: number }[]>;
+  allNodeKeys: Set<string>;
+}
+
 export interface KnowledgeGraphResult {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -42,30 +55,45 @@ function nodeKey(subject: string, unit: string): string {
 
 @Injectable()
 export class KnowledgeGraphService {
+  private prerequisiteGraphPromise: Promise<CachedPrerequisiteGraph> | null = null;
+
   constructor(private prisma: PrismaService) {}
+
+  private async getPrerequisiteGraph(): Promise<CachedPrerequisiteGraph> {
+    if (!this.prerequisiteGraphPromise) {
+      this.prerequisiteGraphPromise = this.prisma.curriculumPrerequisite
+        .findMany()
+        .then((prerequisites) => {
+          const forwardAdj = new Map<string, { target: string; strength: number }[]>();
+          const reverseAdj = new Map<string, { target: string; strength: number }[]>();
+          const allNodeKeys = new Set<string>();
+
+          for (const edge of prerequisites) {
+            const fromKey = nodeKey(edge.fromSubject, edge.fromUnit);
+            const toKey = nodeKey(edge.toSubject, edge.toUnit);
+            allNodeKeys.add(fromKey);
+            allNodeKeys.add(toKey);
+
+            if (!forwardAdj.has(fromKey)) forwardAdj.set(fromKey, []);
+            forwardAdj.get(fromKey)!.push({ target: toKey, strength: edge.strength });
+
+            if (!reverseAdj.has(toKey)) reverseAdj.set(toKey, []);
+            reverseAdj.get(toKey)!.push({ target: fromKey, strength: edge.strength });
+          }
+
+          return { prerequisites, forwardAdj, reverseAdj, allNodeKeys };
+        });
+    }
+
+    return this.prerequisiteGraphPromise;
+  }
 
   async getStudentKnowledgeGraph(
     studentId: string,
   ): Promise<KnowledgeGraphResult> {
-    // 1. Fetch all prerequisite edges and build adjacency lists
-    const prerequisites = await this.prisma.curriculumPrerequisite.findMany();
-
-    const forwardAdj = new Map<string, { target: string; strength: number }[]>();
-    const reverseAdj = new Map<string, { target: string; strength: number }[]>();
-    const allNodeKeys = new Set<string>();
-
-    for (const edge of prerequisites) {
-      const fromKey = nodeKey(edge.fromSubject, edge.fromUnit);
-      const toKey = nodeKey(edge.toSubject, edge.toUnit);
-      allNodeKeys.add(fromKey);
-      allNodeKeys.add(toKey);
-
-      if (!forwardAdj.has(fromKey)) forwardAdj.set(fromKey, []);
-      forwardAdj.get(fromKey)!.push({ target: toKey, strength: edge.strength });
-
-      if (!reverseAdj.has(toKey)) reverseAdj.set(toKey, []);
-      reverseAdj.get(toKey)!.push({ target: fromKey, strength: edge.strength });
-    }
+    const { prerequisites, reverseAdj, allNodeKeys: prerequisiteNodeKeys } =
+      await this.getPrerequisiteGraph();
+    const allNodeKeys = new Set(prerequisiteNodeKeys);
 
     // 2. Fetch student mastery per (subject, unitMajor) from SubmissionAnswer + Problem
     const masteryMap = await this.computeMasteryMap(studentId);
@@ -192,37 +220,36 @@ export class KnowledgeGraphService {
     studentId: string,
   ): Promise<Map<string, { correct: number; total: number }>> {
     // Join SubmissionAnswer with Problem to get per-topic accuracy
-    const answers = await this.prisma.submissionAnswer.findMany({
-      where: {
-        submission: { studentId },
-        isCorrect: { not: null },
-      },
-      select: {
-        isCorrect: true,
-        problemId: true,
-      },
-    });
-
-    if (answers.length === 0) return new Map();
-
-    const problemIds = [...new Set(answers.map((a) => a.problemId))];
-    const problems = await this.prisma.problem.findMany({
-      where: { id: { in: problemIds } },
-      select: { id: true, subject: true, unitMajor: true },
-    });
-
-    const problemMap = new Map(problems.map((p) => [p.id, p]));
     const masteryMap = new Map<string, { correct: number; total: number }>();
 
-    for (const ans of answers) {
-      const problem = problemMap.get(ans.problemId);
-      if (!problem?.subject || !problem?.unitMajor) continue;
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        subject: string;
+        unitMajor: string;
+        correct: bigint;
+        total: bigint;
+      }>
+    >`
+      SELECT
+        p.subject AS subject,
+        p.unit_major AS "unitMajor",
+        COUNT(*) FILTER (WHERE sa.is_correct = true) AS correct,
+        COUNT(*) FILTER (WHERE sa.is_correct IS NOT NULL) AS total
+      FROM public.submission_answers sa
+      JOIN public.submissions s ON s.id = sa.submission_id
+      JOIN ocr.problems p ON p.id = sa.problem_id
+      WHERE s.student_id = ${studentId}
+        AND sa.is_correct IS NOT NULL
+        AND p.subject IS NOT NULL
+        AND p.unit_major IS NOT NULL
+      GROUP BY p.subject, p.unit_major
+    `;
 
-      const key = nodeKey(problem.subject, problem.unitMajor);
-      const current = masteryMap.get(key) ?? { correct: 0, total: 0 };
-      current.total++;
-      if (ans.isCorrect) current.correct++;
-      masteryMap.set(key, current);
+    for (const row of rows) {
+      masteryMap.set(nodeKey(row.subject, row.unitMajor), {
+        correct: Number(row.correct),
+        total: Number(row.total),
+      });
     }
 
     return masteryMap;

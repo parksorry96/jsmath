@@ -5,8 +5,8 @@ describe("ProblemsService", () => {
     $queryRawUnsafe: jest.fn(),
   };
 
-  const config = {
-    getOrThrow: jest.fn(),
+  const eventBus = {
+    publishDurable: jest.fn(),
   };
 
   const twinProblemService = {
@@ -28,7 +28,7 @@ describe("ProblemsService", () => {
     jest.clearAllMocks();
     service = new ProblemsService(
       prisma as never,
-      config as never,
+      eventBus as never,
       twinProblemService as never,
       embeddingService as never,
       problemRevisionService as never,

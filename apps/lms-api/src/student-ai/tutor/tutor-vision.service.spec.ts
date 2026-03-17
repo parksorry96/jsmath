@@ -10,6 +10,7 @@ describe("TutorVisionService", () => {
       null as any,
       null as any,
       null as any,
+      null as any,
     );
   });
 
@@ -72,6 +73,157 @@ describe("TutorVisionService", () => {
       expect(() => service.validateSessionLimits(session)).toThrow(
         "Maximum 30 messages per session reached",
       );
+    });
+  });
+
+  describe("listSessions", () => {
+    it("returns session summaries with problem preview and message count", async () => {
+      const prisma = {
+        tutorSession: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: "session-1",
+              problemId: "problem-1",
+              status: "active",
+              createdAt: new Date("2026-03-16T10:00:00.000Z"),
+              updatedAt: new Date("2026-03-16T10:05:00.000Z"),
+              _count: { messages: 3 },
+            },
+          ]),
+        },
+        problem: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: "problem-1",
+              stemText: "",
+              stemLatex: "x+1=2",
+              subject: "수학",
+              unitMajor: "방정식",
+            },
+          ]),
+        },
+      };
+      const listService = new TutorVisionService(
+        prisma as any,
+        null as any,
+        null as any,
+        null as any,
+      );
+
+      await expect(listService.listSessions("student-1")).resolves.toEqual([
+        {
+          id: "session-1",
+          problemId: "problem-1",
+          status: "active",
+          createdAt: "2026-03-16T10:00:00.000Z",
+          updatedAt: "2026-03-16T10:05:00.000Z",
+          problem: {
+            stemText: "x+1=2",
+            subject: "수학",
+            unitMajor: "방정식",
+          },
+          _count: { messages: 3 },
+        },
+      ]);
+      expect(prisma.tutorSession.findMany).toHaveBeenCalledWith({
+        where: { studentId: "student-1" },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+        take: 100,
+        select: {
+          id: true,
+          problemId: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+          _count: {
+            select: {
+              messages: true,
+            },
+          },
+        },
+      });
+      expect(prisma.problem.findMany).toHaveBeenCalledWith({
+        where: { id: { in: ["problem-1"] } },
+        select: {
+          id: true,
+          stemText: true,
+          stemLatex: true,
+          subject: true,
+          unitMajor: true,
+        },
+      });
+    });
+
+    it("returns an empty array without querying problems when no sessions exist", async () => {
+      const prisma = {
+        tutorSession: {
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        problem: {
+          findMany: jest.fn(),
+        },
+      };
+      const listService = new TutorVisionService(
+        prisma as any,
+        null as any,
+        null as any,
+        null as any,
+      );
+
+      await expect(listService.listSessions("student-1")).resolves.toEqual([]);
+      expect(prisma.problem.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("inferWeaknessSignal", () => {
+    it("captures a high-confidence worked-solution signal from image review", () => {
+      const signal = service.inferWeaknessSignal(
+        {
+          id: "problem-1",
+          curriculumNodeId: "node-1",
+          subject: "수학",
+          unitMajor: "방정식",
+        },
+        "여기서 왜 안 되는지 모르겠어요.",
+        "이건 calculation_error 입니다. 계산 실수를 먼저 점검해 봅시다.",
+        "canvas/student-1/1.png",
+      );
+
+      expect(signal).toEqual(
+        expect.objectContaining({
+          source: "worked_solution",
+          problemId: "problem-1",
+          curriculumNodeId: "node-1",
+          subject: "수학",
+          unitMajor: "방정식",
+          errorType: "calculation_error",
+        }),
+      );
+      expect(signal?.confidence).toBeGreaterThanOrEqual(0.8);
+    });
+
+    it("creates a tutor-message signal even without explicit error classification", () => {
+      const signal = service.inferWeaknessSignal(
+        {
+          id: "problem-2",
+          curriculumNodeId: null,
+          subject: "수학",
+          unitMajor: "함수",
+        },
+        "이 부분이 너무 헷갈려요.",
+        "먼저 어떤 식을 세워야 하는지 같이 볼까요?",
+      );
+
+      expect(signal).toEqual(
+        expect.objectContaining({
+          source: "tutor_message",
+          problemId: "problem-2",
+          subject: "수학",
+          unitMajor: "함수",
+          errorType: null,
+        }),
+      );
+      expect(signal?.confidence).toBeGreaterThan(0.4);
     });
   });
 });

@@ -35,8 +35,13 @@ const IMAGE_OR_MATH_SPLIT_PATTERN = new RegExp(
 );
 const IMAGE_OR_MATH_PARSE_PATTERN =
   /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\$([^\n$]+?)\$|\\\(([\s\S]+?)\\\)/g;
+const LEFT_RIGHT_DELIMITER_PATTERN = String.raw`(?:\\\{|\\\}|[(){}\[\]|.])`;
 const CROSS_DELIMITED_LEFT_RIGHT_PATTERN = new RegExp(
-  String.raw`\\left\s*(\\\{|\\\}|[(){}\[\]|.])\s*(${EXPLICIT_MATH_PATTERN})\s*\\right\s*(\\\{|\\\}|[(){}\[\]|.])`,
+  String.raw`\\left\s*(${LEFT_RIGHT_DELIMITER_PATTERN})\s*(${EXPLICIT_MATH_PATTERN})\s*\\right\s*(${LEFT_RIGHT_DELIMITER_PATTERN})`,
+  "g",
+);
+const BARE_LEFT_RIGHT_COMMAND_PATTERN = new RegExp(
+  String.raw`\\(?:left|right)\s*${LEFT_RIGHT_DELIMITER_PATTERN}`,
   "g",
 );
 const BARE_MATH_ENVIRONMENTS = [
@@ -76,6 +81,100 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function isExplicitMathSegment(part: string): boolean {
+  return part.startsWith("$") || part.startsWith("\\(") || part.startsWith("\\[");
+}
+
+function consumeLeftRightCommand(
+  input: string,
+  start: number,
+  command: "left" | "right",
+): number {
+  const prefix = `\\${command}`;
+  if (!input.startsWith(prefix, start)) {
+    return -1;
+  }
+
+  let cursor = start + prefix.length;
+  while (cursor < input.length && /\s/.test(input[cursor])) {
+    cursor += 1;
+  }
+
+  if (input.startsWith("\\{", cursor) || input.startsWith("\\}", cursor)) {
+    return cursor + 2;
+  }
+
+  const delimiter = input[cursor] ?? "";
+  return "(){}[]|.".includes(delimiter) ? cursor + 1 : -1;
+}
+
+function findBareLeftRightSpanEnd(input: string, start: number): number {
+  let cursor = consumeLeftRightCommand(input, start, "left");
+  if (cursor === -1) {
+    return -1;
+  }
+
+  let depth = 1;
+  while (cursor < input.length) {
+    const nextLeft = input.indexOf("\\left", cursor);
+    const nextRight = input.indexOf("\\right", cursor);
+
+    if (nextLeft === -1 && nextRight === -1) {
+      return -1;
+    }
+
+    const useLeft =
+      nextLeft !== -1 && (nextRight === -1 || nextLeft < nextRight);
+    const nextIndex = useLeft ? nextLeft : nextRight;
+    const nextCursor = consumeLeftRightCommand(
+      input,
+      nextIndex,
+      useLeft ? "left" : "right",
+    );
+
+    if (nextCursor === -1) {
+      cursor = nextIndex + 1;
+      continue;
+    }
+
+    depth += useLeft ? 1 : -1;
+    cursor = nextCursor;
+
+    if (depth === 0) {
+      return cursor;
+    }
+  }
+
+  return -1;
+}
+
+function wrapBareLeftRightSpans(input: string): string {
+  let output = "";
+  let cursor = 0;
+
+  while (cursor < input.length) {
+    const nextLeft = input.indexOf("\\left", cursor);
+    if (nextLeft === -1) {
+      output += input.slice(cursor);
+      break;
+    }
+
+    output += input.slice(cursor, nextLeft);
+    const spanEnd = findBareLeftRightSpanEnd(input, nextLeft);
+
+    if (spanEnd === -1) {
+      output += input.slice(nextLeft, nextLeft + "\\left".length);
+      cursor = nextLeft + "\\left".length;
+      continue;
+    }
+
+    output += `$${input.slice(nextLeft, spanEnd)}$`;
+    cursor = spanEnd;
+  }
+
+  return output;
 }
 
 /**
@@ -313,20 +412,20 @@ function wrapBareLatexCommands(input: string): string {
   const parts = input.split(MATH_SEGMENT_SPLIT_PATTERN);
   return parts
     .map((part) => {
-      // Skip existing math blocks
-      if (part.startsWith("$")) return part;
-      if (part.startsWith("\\(") || part.startsWith("\\[")) return part;
-      // Wrap \left\{...\right. spans
-      part = part.replace(
-        /\\left\s*[\\{([\|.][\s\S]*?\\right\s*[\\})\]|.]/g,
-        (m) => `$${m}$`,
-      );
-      // Wrap remaining bare commands: \frac, \sqrt, \left, \right, \sum, etc.
-      part = part.replace(
-        /\\(?:left|right)\s*[\\{}()\[\]|.]/g,
-        (m) => `$${m}$`,
-      );
-      return part;
+      if (isExplicitMathSegment(part)) {
+        return part;
+      }
+
+      return wrapBareLeftRightSpans(part)
+        .split(MATH_SEGMENT_SPLIT_PATTERN)
+        .map((subpart) => {
+          if (isExplicitMathSegment(subpart)) {
+            return subpart;
+          }
+
+          return subpart.replace(BARE_LEFT_RIGHT_COMMAND_PATTERN, (match) => `$${match}$`);
+        })
+        .join("");
     })
     .join("");
 }

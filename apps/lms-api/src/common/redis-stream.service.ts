@@ -36,7 +36,10 @@ const STREAM_TO_CHANNEL: Record<string, string> = {
   "stream:photo:rubric:failed": "photo:rubric:failed",
 };
 
-export type StreamHandler = (channel: string, message: string) => void;
+export type StreamHandler = (
+  channel: string,
+  message: string,
+) => void | Promise<void>;
 
 @Injectable()
 export class RedisStreamService implements OnModuleInit, OnModuleDestroy {
@@ -50,6 +53,22 @@ export class RedisStreamService implements OnModuleInit, OnModuleDestroy {
   /** Register a handler that receives (channel, rawJsonMessage) for each stream event. */
   onMessage(handler: StreamHandler) {
     this.handlers.push(handler);
+  }
+
+  private async processStreamMessage(
+    streamName: string,
+    msgId: string,
+    fields: string[],
+  ) {
+    const channel = STREAM_TO_CHANNEL[streamName] ?? streamName;
+    const dataIndex = fields.indexOf("data");
+    const raw = dataIndex >= 0 ? fields[dataIndex + 1] : "{}";
+
+    for (const handler of this.handlers) {
+      await handler(channel, raw);
+    }
+
+    await this.redis.xack(streamName, CONSUMER_GROUP, msgId);
   }
 
   async onModuleInit() {
@@ -102,15 +121,9 @@ export class RedisStreamService implements OnModuleInit, OnModuleDestroy {
         if (!results) continue;
 
         for (const [streamName, messages] of results as [string, [string, string[]][]][]) {
-          const channel = STREAM_TO_CHANNEL[streamName] ?? streamName;
           for (const [msgId, fields] of messages) {
             try {
-              const dataIndex = fields.indexOf("data");
-              const raw = dataIndex >= 0 ? fields[dataIndex + 1] : "{}";
-              for (const handler of this.handlers) {
-                handler(channel, raw);
-              }
-              await this.redis.xack(streamName, CONSUMER_GROUP, msgId);
+              await this.processStreamMessage(streamName, msgId, fields);
             } catch (err) {
               this.logger.error(
                 `Failed to process stream ${streamName} msg ${msgId}`,

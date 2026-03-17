@@ -1,6 +1,6 @@
 """Tests for EBS section-aware answer matching."""
-from tests.conftest import make_line, make_page
 from app.workers.match_answers import _parse_ebs_quick_answer_table
+from tests.conftest import make_line, make_page
 
 
 class TestEbsQuickAnswerParsing:

@@ -19,6 +19,9 @@
     "pnpm": ">=9"
   },
   "packageManager": "pnpm@10.30.3",
+  "overrides": {
+    "multer": "2.0.2"
+  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "@nestjs/core",

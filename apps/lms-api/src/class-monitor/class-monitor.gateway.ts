@@ -14,6 +14,7 @@ import { JwtService } from "@nestjs/jwt";
 import { Server, Socket } from "socket.io";
 import { Redis } from "ioredis";
 import { createAdapter } from "@socket.io/redis-adapter";
+import { extractAuthTokenFromCookieHeader } from "../auth/auth-cookie";
 import { PrismaService } from "../prisma/prisma.service";
 import { ClassMonitorService, ClassMonitorStatus } from "./class-monitor.service";
 import { canAccessClass } from "../common/access-control";
@@ -71,7 +72,8 @@ export class ClassMonitorGateway
     try {
       const token =
         client.handshake.auth?.token ??
-        client.handshake.headers?.authorization?.replace("Bearer ", "");
+        client.handshake.headers?.authorization?.replace("Bearer ", "") ??
+        extractAuthTokenFromCookieHeader(client.handshake.headers?.cookie);
 
       if (!token) {
         client.disconnect(true);

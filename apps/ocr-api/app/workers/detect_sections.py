@@ -11,13 +11,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.database import worker_session
-from app.models.ocr import OcrLine, OcrPage
+from app.models.ocr import OcrPage
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +70,11 @@ _MIN_SECTION_LENGTH = 5
     acks_late=True,
 )
 def detect_sections(
-    self,
-    prev_result: dict | None = None,
+    self: Any,
+    prev_result: dict[str, Any] | None = None,
     *,
     ocr_job_id: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Detect where the answer/solution section starts in a textbook."""
     if prev_result:
         ocr_job_id = ocr_job_id or prev_result.get("ocr_job_id")
@@ -83,7 +84,7 @@ def detect_sections(
     return asyncio.run(_detect(ocr_job_id))
 
 
-async def _detect(ocr_job_id: str) -> dict:
+async def _detect(ocr_job_id: str) -> dict[str, Any]:
     async with worker_session() as session:
         pages_result = await session.execute(
             select(OcrPage)
@@ -105,7 +106,6 @@ async def _detect(ocr_job_id: str) -> dict:
         }
 
     total_pages = len(pages)
-    first_page = pages[0].page_number
     last_page = pages[-1].page_number
 
     # 1. Detect content_start_page (skip 표지/목차/서문)

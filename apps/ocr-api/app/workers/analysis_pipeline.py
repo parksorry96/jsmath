@@ -13,16 +13,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
-from celery import chord, group
 import redis
+from celery import chord, group
 from sqlalchemy import select
 
 from app.celery_app import celery
 from app.config import settings
 from app.database import worker_session
 from app.models.problem import AnalysisStatus, Problem
-from app.services.redis_events import notify_analysis_completed, notify_analysis_failed, notify_progress
+from app.services.redis_events import (
+    notify_analysis_completed,
+    notify_analysis_failed,
+    notify_progress,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +114,22 @@ def start_analysis_pipeline(
     soft_time_limit=600,
     time_limit=660,
 )
-def batch_analyze(self, *, problem_ids: list[str], ocr_job_id: str, total: int) -> list[dict]:
+def batch_analyze(
+    self: Any,
+    *,
+    problem_ids: list[str],
+    ocr_job_id: str,
+    total: int,
+) -> list[dict[str, Any]]:
     """Process a batch: per-problem streaming pipeline with no stage gating."""
     return asyncio.run(_process_batch(problem_ids, ocr_job_id, total))
 
 
-async def _process_batch(problem_ids: list[str], ocr_job_id: str, total: int) -> list[dict]:
+async def _process_batch(
+    problem_ids: list[str],
+    ocr_job_id: str,
+    total: int,
+) -> list[dict[str, Any]]:
     """Stream each problem through the full pipeline independently.
 
     No stage gating: as soon as a problem's GPT call completes,
@@ -124,7 +139,7 @@ async def _process_batch(problem_ids: list[str], ocr_job_id: str, total: int) ->
     logger.info("Batch start: %d problems", len(problem_ids))
 
     sem = asyncio.Semaphore(MAX_CONCURRENT_GPT)
-    final: list[dict] = []
+    final: list[dict[str, Any]] = []
     tasks = [
         asyncio.create_task(_process_single_safe(pid, sem))
         for pid in problem_ids
@@ -146,15 +161,18 @@ async def _process_batch(problem_ids: list[str], ocr_job_id: str, total: int) ->
     return final
 
 
-async def _process_single(problem_id: str, sem: asyncio.Semaphore) -> dict:
+async def _process_single(
+    problem_id: str,
+    sem: asyncio.Semaphore,
+) -> dict[str, Any]:
     """Full pipeline for a single problem — no waiting on other problems.
 
     GPT call is semaphore-gated; downstream steps run immediately after.
     """
-    from app.workers.detect_exam_pattern import _apply_rules
-    from app.workers.generate_embedding import generate_embedding_async
-    from app.workers.find_similar import _find
     from app.workers.auto_review import _review
+    from app.workers.detect_exam_pattern import _apply_rules
+    from app.workers.find_similar import _find
+    from app.workers.generate_embedding import generate_embedding_async
     from app.workers.unified_analysis import analyze_problem
 
     # Stage 1: GPT analysis (semaphore-controlled)
@@ -190,7 +208,10 @@ async def _process_single(problem_id: str, sem: asyncio.Semaphore) -> dict:
 
 SINGLE_PROBLEM_TIMEOUT = 120  # seconds
 
-async def _process_single_safe(problem_id: str, sem: asyncio.Semaphore) -> dict:
+async def _process_single_safe(
+    problem_id: str,
+    sem: asyncio.Semaphore,
+) -> dict[str, Any]:
     try:
         result = await asyncio.wait_for(
             _process_single(problem_id, sem),
@@ -253,7 +274,13 @@ async def _mark_problem_failed(problem_id: str, error_msg: str) -> None:
     default_retry_delay=10,
     reject_on_worker_lost=True,
 )
-def finalize_analysis(self, batch_results: list, *, ocr_job_id: str, total: int) -> dict:
+def finalize_analysis(
+    self: Any,
+    batch_results: list[Any],
+    *,
+    ocr_job_id: str,
+    total: int,
+) -> dict[str, Any]:
     """Finalize analysis — flatten batch results, count, and notify NestJS."""
     # Idempotency: check Redis key to avoid double-finalize
     r = redis.from_url(settings.redis_url, decode_responses=True)
@@ -324,12 +351,20 @@ def finalize_analysis(self, batch_results: list, *, ocr_job_id: str, total: int)
     default_retry_delay=5,
     acks_late=True,
 )
-def merge_stage1_results(self, stage1_results: list[dict], *, problem_id: str) -> dict:
+def merge_stage1_results(
+    self: Any,
+    stage1_results: list[dict[str, Any]],
+    *,
+    problem_id: str,
+) -> dict[str, Any]:
     """Merge parallel Stage 1 results and save to database (legacy mode)."""
     return asyncio.run(_merge(problem_id, stage1_results))
 
 
-async def _merge(problem_id: str, results: list[dict]) -> dict:
+async def _merge(
+    problem_id: str,
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
     merged: dict = {"problem_id": problem_id}
     for i, result in enumerate(results):
         if isinstance(result, dict):
@@ -409,7 +444,12 @@ async def _merge(problem_id: str, results: list[dict]) -> dict:
     name="task.analysis.on_problem_error",
     acks_late=True,
 )
-def on_problem_error(self, failed_task_id, *, problem_id: str) -> dict:
+def on_problem_error(
+    self: Any,
+    failed_task_id: str,
+    *,
+    problem_id: str,
+) -> dict[str, Any]:
     """Error callback for per-problem pipeline failures (legacy)."""
     error_msg = f"Task {failed_task_id} failed"
     logger.error("Analysis pipeline failed for problem %s: %s", problem_id, error_msg)

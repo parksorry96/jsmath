@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, Field, ValidationError
@@ -18,7 +18,6 @@ from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.config import settings
-from app.services.openai_client import get_openai_client
 from app.database import worker_session
 from app.models.problem import Problem
 from app.schemas.problem import (
@@ -28,6 +27,7 @@ from app.schemas.problem import (
     SUBJECTS_2015,
     SUBJECTS_2022,
 )
+from app.services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ SUBJECT_DETAILS_2022 = """- 공통수학1: 다항식, 방정식과 부등식, �
 - 기하: 이차곡선, 벡터, 공간도형. 고3 선택과목."""
 
 
-def _book_source_value(book_source: dict, *keys: str) -> str:
+def _book_source_value(book_source: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = book_source.get(key)
         if value:
@@ -207,7 +207,7 @@ Problem number: {problem_number}
 - 해설지 정답과 다르면 independently verified answer를 유지하세요."""
 
 
-def _make_strict_schema(schema: dict) -> dict:
+def _make_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Post-process Pydantic JSON schema for OpenAI strict structured output.
 
     Recursively adds additionalProperties: false to all object types,
@@ -415,7 +415,12 @@ Problem number: {problem_number}
     retry_backoff=True,
     acks_late=True,
 )
-def unified_analysis(self, prev_result=None, *, problem_id: str | None = None) -> dict:
+def unified_analysis(
+    self: Any,
+    prev_result: dict[str, Any] | None = None,
+    *,
+    problem_id: str | None = None,
+) -> dict[str, Any]:
     """Unified analysis: classification + solution + exam source in one GPT call."""
     if prev_result and isinstance(prev_result, dict):
         problem_id = problem_id or prev_result.get("problem_id")
@@ -428,7 +433,10 @@ def unified_analysis(self, prev_result=None, *, problem_id: str | None = None) -
         raise self.retry(exc=exc)
 
 
-async def analyze_problem(problem_id: str, max_retries: int = 3) -> dict:
+async def analyze_problem(
+    problem_id: str,
+    max_retries: int = 3,
+) -> dict[str, Any]:
     """Standalone async analysis with built-in retry. Used by batch processing."""
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
@@ -445,7 +453,7 @@ async def analyze_problem(problem_id: str, max_retries: int = 3) -> dict:
     raise last_exc  # type: ignore[misc]
 
 
-async def _unified_analyze(problem_id: str) -> dict:
+async def _unified_analyze(problem_id: str) -> dict[str, Any]:
     """Core GPT analysis — raises exceptions on failure (no Celery retry)."""
     async with worker_session() as session:
         result = await session.execute(
@@ -592,7 +600,7 @@ async def _unified_analyze(problem_id: str) -> dict:
     }
 
 
-def _heuristic_fallback(problem_id: str) -> dict:
+def _heuristic_fallback(problem_id: str) -> dict[str, Any]:
     """Minimal defaults when no API key is available."""
     return {
         "problem_id": problem_id,
@@ -663,7 +671,7 @@ def _format_problem_section(problem: Problem, choices_text: str) -> str:
     )
 
 
-def _postprocess_batch_item(item: BatchItemResult) -> dict:
+def _postprocess_batch_item(item: BatchItemResult) -> dict[str, Any]:
     """Post-process a single batch result item into a plain dict."""
     classification_2015 = _normalize_curriculum_classification(
         item.classification_2015,
@@ -705,7 +713,7 @@ def _postprocess_batch_item(item: BatchItemResult) -> dict:
     }
 
 
-async def analyze_problems_parallel(problem_ids: list[str]) -> list[dict]:
+async def analyze_problems_parallel(problem_ids: list[str]) -> list[dict[str, Any]]:
     """Analyze problems via concurrent individual GPT calls (faster than single batch).
 
     Fires N parallel API calls instead of 1 large call. Each call is smaller
@@ -725,7 +733,10 @@ async def analyze_problems_parallel(problem_ids: list[str]) -> list[dict]:
     return successful
 
 
-async def analyze_problems_batch(problem_ids: list[str], max_retries: int = 3) -> list[dict]:
+async def analyze_problems_batch(
+    problem_ids: list[str],
+    max_retries: int = 3,
+) -> list[dict[str, Any]]:
     """Batch analyze problems in a single GPT call with retry."""
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
@@ -743,7 +754,7 @@ async def analyze_problems_batch(problem_ids: list[str], max_retries: int = 3) -
     raise last_exc  # type: ignore[misc]
 
 
-async def _batch_analyze(problem_ids: list[str]) -> list[dict]:
+async def _batch_analyze(problem_ids: list[str]) -> list[dict[str, Any]]:
     """Core batch GPT analysis — multiple problems in one API call."""
     async with worker_session() as session:
         result = await session.execute(

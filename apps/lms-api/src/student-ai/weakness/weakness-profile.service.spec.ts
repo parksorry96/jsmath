@@ -101,11 +101,11 @@ describe("WeaknessProfileService", () => {
   describe("computeUnitAccuracy", () => {
     it("groups by unit and computes accuracy", () => {
       const answers = [
-        { isCorrect: true, problem: { subject: "math1", unitMajor: "algebra" } },
-        { isCorrect: false, problem: { subject: "math1", unitMajor: "algebra" } },
-        { isCorrect: true, problem: { subject: "math1", unitMajor: "algebra" } },
-        { isCorrect: true, problem: { subject: "math2", unitMajor: "calculus" } },
-        { isCorrect: false, problem: { subject: "math2", unitMajor: "calculus" } },
+        { isCorrect: true, subject: "math1", unitMajor: "algebra" },
+        { isCorrect: false, subject: "math1", unitMajor: "algebra" },
+        { isCorrect: true, subject: "math1", unitMajor: "algebra" },
+        { isCorrect: true, subject: "math2", unitMajor: "calculus" },
+        { isCorrect: false, subject: "math2", unitMajor: "calculus" },
       ];
 
       const result = service.computeUnitAccuracy(answers);
@@ -127,10 +127,10 @@ describe("WeaknessProfileService", () => {
 
     it("skips answers with null problem or missing subject/unitMajor", () => {
       const answers = [
-        { isCorrect: true, problem: null },
-        { isCorrect: true, problem: { subject: null, unitMajor: "algebra" } },
-        { isCorrect: true, problem: { subject: "math1", unitMajor: null } },
-        { isCorrect: true, problem: { subject: "math1", unitMajor: "algebra" } },
+        { isCorrect: true, subject: null, unitMajor: null },
+        { isCorrect: true, subject: null, unitMajor: "algebra" },
+        { isCorrect: true, subject: "math1", unitMajor: null },
+        { isCorrect: true, subject: "math1", unitMajor: "algebra" },
       ];
 
       const result = service.computeUnitAccuracy(answers);
@@ -141,8 +141,8 @@ describe("WeaknessProfileService", () => {
 
     it("skips answers with null isCorrect", () => {
       const answers = [
-        { isCorrect: null, problem: { subject: "math1", unitMajor: "algebra" } },
-        { isCorrect: true, problem: { subject: "math1", unitMajor: "algebra" } },
+        { isCorrect: null, subject: "math1", unitMajor: "algebra" },
+        { isCorrect: true, subject: "math1", unitMajor: "algebra" },
       ];
 
       const result = service.computeUnitAccuracy(answers);
@@ -155,6 +155,65 @@ describe("WeaknessProfileService", () => {
     it("returns empty array for empty input", () => {
       const result = service.computeUnitAccuracy([]);
       expect(result).toEqual([]);
+    });
+  });
+
+  describe("mergeTutorSignalsIntoUnitAccuracies", () => {
+    it("creates a weak unit entry from tutor-only signals", () => {
+      const result = service.mergeTutorSignalsIntoUnitAccuracies([], [
+        {
+          source: "worked_solution",
+          problemId: "p1",
+          curriculumNodeId: "node-1",
+          subject: "math1",
+          unitMajor: "algebra",
+          errorType: "concept_gap",
+          confidence: 0.8,
+          evidence: "concept issue",
+        },
+      ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual(
+        expect.objectContaining({
+          subject: "math1",
+          unitMajor: "algebra",
+          topErrorType: "concept_gap",
+        }),
+      );
+      expect(result[0].attemptCount).toBeGreaterThan(0);
+      expect(result[0].accuracy).toBeLessThan(0.5);
+    });
+
+    it("blends tutor signals into existing unit accuracy", () => {
+      const result = service.mergeTutorSignalsIntoUnitAccuracies(
+        [
+          {
+            subject: "math1",
+            unitMajor: "algebra",
+            accuracy: 0.75,
+            attemptCount: 4,
+            topErrorType: null,
+          },
+        ],
+        [
+          {
+            source: "tutor_message",
+            problemId: "p1",
+            curriculumNodeId: "node-1",
+            subject: "math1",
+            unitMajor: "algebra",
+            errorType: "pattern_gap",
+            confidence: 0.6,
+            evidence: "pattern issue",
+          },
+        ],
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0].attemptCount).toBe(5);
+      expect(result[0].accuracy).toBeLessThan(0.75);
+      expect(result[0].topErrorType).toBe("pattern_gap");
     });
   });
 });

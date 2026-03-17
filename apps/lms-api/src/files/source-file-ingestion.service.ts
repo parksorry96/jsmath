@@ -4,12 +4,12 @@ import {
   NotFoundException,
   Logger,
   OnModuleDestroy,
+  InternalServerErrorException,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { createHash, randomUUID } from "crypto";
-import { Redis } from "ioredis";
 import { normalizeFilename } from "../common/filename";
+import { RedisEventBusService } from "../common/redis-event-bus.service";
 import { UploadPolicyService } from "./upload-policy.service";
 import { FileStorageService } from "./file-storage.service";
 import { PdfBundleService } from "./pdf-bundle.service";
@@ -22,27 +22,24 @@ export type UploadMeta = {
   autoAnalyze?: boolean;
 };
 
-const MAX_DIRECT_PDF_UPLOAD_BYTES = 100 * 1024 * 1024;
-const MAX_DIRECT_TEXTBOOK_COMBINED_BYTES = 150 * 1024 * 1024;
+const MAX_DIRECT_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_DIRECT_TEXTBOOK_COMBINED_BYTES = 25 * 1024 * 1024;
+const QUEUE_FAILURE_MESSAGE = "Failed to queue OCR job";
 
 @Injectable()
 export class SourceFileIngestionService implements OnModuleDestroy {
   private readonly logger = new Logger(SourceFileIngestionService.name);
-  private redisPublisher: Redis;
 
   constructor(
     private prisma: PrismaService,
-    private config: ConfigService,
+    private eventBus: RedisEventBusService,
     private uploadPolicy: UploadPolicyService,
     private storage: FileStorageService,
     private pdfBundle: PdfBundleService,
-  ) {
-    const redisUrl = this.config.getOrThrow<string>("REDIS_URL");
-    this.redisPublisher = new Redis(redisUrl);
-  }
+  ) {}
 
   async onModuleDestroy() {
-    await this.redisPublisher.quit();
+    return;
   }
 
   private async createSourceFileAndQueueOcr(args: {
@@ -54,33 +51,36 @@ export class SourceFileIngestionService implements OnModuleDestroy {
     meta?: UploadMeta;
   }) {
     const normalizedFilename = normalizeFilename(args.filename) ?? args.filename;
-    const sourceFile = await this.prisma.sourceFile.create({
-      data: {
-        filename: normalizedFilename,
-        uploaderId: args.uploaderId,
-        s3Key: args.s3Key,
-        answerS3Key: args.meta?.answerS3Key ?? null,
-        fileHash: args.fileHash,
-        sizeBytes: args.sizeBytes,
-        documentType: args.meta?.documentType ?? "exam",
-        bookTitle: args.meta?.bookTitle ?? null,
-        publisher: args.meta?.publisher ?? null,
-      },
+    const { sourceFile, ocrJob } = await this.prisma.$transaction(async (tx) => {
+      const sourceFile = await tx.sourceFile.create({
+        data: {
+          filename: normalizedFilename,
+          uploaderId: args.uploaderId,
+          s3Key: args.s3Key,
+          answerS3Key: args.meta?.answerS3Key ?? null,
+          fileHash: args.fileHash,
+          sizeBytes: args.sizeBytes,
+          documentType: args.meta?.documentType ?? "exam",
+          bookTitle: args.meta?.bookTitle ?? null,
+          publisher: args.meta?.publisher ?? null,
+        },
+      });
+
+      const ocrJob = await tx.ocrJob.create({
+        data: {
+          sourceFileId: sourceFile.id,
+          autoAnalyze: args.meta?.autoAnalyze ?? true,
+          documentType: args.meta?.documentType ?? "exam",
+          bookTitle: args.meta?.bookTitle ?? null,
+          publisher: args.meta?.publisher ?? null,
+        },
+      });
+
+      return { sourceFile, ocrJob };
     });
 
-    const ocrJob = await this.prisma.ocrJob.create({
-      data: {
-        sourceFileId: sourceFile.id,
-        autoAnalyze: args.meta?.autoAnalyze ?? true,
-        documentType: args.meta?.documentType ?? "exam",
-        bookTitle: args.meta?.bookTitle ?? null,
-        publisher: args.meta?.publisher ?? null,
-      },
-    });
-
-    await this.redisPublisher.publish(
-      "ocr:submit",
-      JSON.stringify({
+    try {
+      await this.eventBus.publishDurable("ocr:submit", {
         jobId: ocrJob.id,
         sourceFileId: sourceFile.id,
         s3Key: args.s3Key,
@@ -89,12 +89,107 @@ export class SourceFileIngestionService implements OnModuleDestroy {
         documentType: args.meta?.documentType ?? "exam",
         bookTitle: args.meta?.bookTitle ?? null,
         publisher: args.meta?.publisher ?? null,
-      }),
-    );
+      });
+    } catch (error) {
+      await this.prisma.ocrJob.update({
+        where: { id: ocrJob.id },
+        data: {
+          status: "failed",
+          errorMessage: QUEUE_FAILURE_MESSAGE,
+          completedAt: new Date(),
+        },
+      });
+      throw new InternalServerErrorException(
+        error instanceof Error ? error.message : QUEUE_FAILURE_MESSAGE,
+      );
+    }
 
     return {
       id: sourceFile.id,
       filename: normalizeFilename(sourceFile.filename) ?? sourceFile.filename,
+      status: "pending",
+      jobId: ocrJob.id,
+    };
+  }
+
+  private async findExistingSourceFile(uploaderId: string, fileHash: string) {
+    return this.prisma.sourceFile.findFirst({
+      where: { uploaderId, fileHash },
+      include: { ocrJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
+    });
+  }
+
+  private async reprocessExistingSourceFile(args: {
+    existing: Awaited<ReturnType<SourceFileIngestionService["findExistingSourceFile"]>>;
+    filename: string;
+    meta?: UploadMeta;
+  }) {
+    const { existing, filename, meta } = args;
+    if (!existing) {
+      return null;
+    }
+
+    const normalizedFilename = normalizeFilename(filename) ?? filename;
+    const docType = meta?.documentType ?? "exam";
+
+    if (existing.documentType === docType) {
+      return {
+        id: existing.id,
+        filename: normalizeFilename(existing.filename) ?? existing.filename,
+        status: existing.ocrJobs[0]?.status ?? "pending",
+        jobId: existing.ocrJobs[0]?.id ?? null,
+      };
+    }
+
+    await this.prisma.sourceFile.update({
+      where: { id: existing.id },
+      data: {
+        documentType: docType,
+        bookTitle: meta?.bookTitle,
+        publisher: meta?.publisher,
+        answerS3Key: meta?.answerS3Key ?? null,
+        filename: normalizedFilename,
+      },
+    });
+
+    const ocrJob = await this.prisma.ocrJob.create({
+      data: {
+        sourceFileId: existing.id,
+        autoAnalyze: meta?.autoAnalyze ?? true,
+        documentType: docType,
+        bookTitle: meta?.bookTitle ?? null,
+        publisher: meta?.publisher ?? null,
+      },
+    });
+
+    try {
+      await this.eventBus.publishDurable("ocr:submit", {
+        jobId: ocrJob.id,
+        sourceFileId: existing.id,
+        s3Key: existing.s3Key,
+        answerS3Key: meta?.answerS3Key ?? existing.answerS3Key ?? null,
+        filename: normalizedFilename,
+        documentType: docType,
+        bookTitle: meta?.bookTitle ?? null,
+        publisher: meta?.publisher ?? null,
+      });
+    } catch (error) {
+      await this.prisma.ocrJob.update({
+        where: { id: ocrJob.id },
+        data: {
+          status: "failed",
+          errorMessage: QUEUE_FAILURE_MESSAGE,
+          completedAt: new Date(),
+        },
+      });
+      throw new InternalServerErrorException(
+        error instanceof Error ? error.message : QUEUE_FAILURE_MESSAGE,
+      );
+    }
+
+    return {
+      id: existing.id,
+      filename: normalizeFilename(existing.filename) ?? existing.filename,
       status: "pending",
       jobId: ocrJob.id,
     };
@@ -109,7 +204,7 @@ export class SourceFileIngestionService implements OnModuleDestroy {
     }
     if (file.size > MAX_DIRECT_PDF_UPLOAD_BYTES) {
       throw new BadRequestException(
-        "Direct PDF uploads are limited to 100MB. Please use multipart upload for larger files.",
+        "Direct PDF uploads are limited to 20MB. Please use multipart upload for larger files.",
       );
     }
 
@@ -117,59 +212,14 @@ export class SourceFileIngestionService implements OnModuleDestroy {
     const normalizedFilename = normalizeFilename(file.originalname) ?? file.originalname;
 
     // Idempotency: same file + same document type → return existing
-    const docType = meta?.documentType ?? "exam";
-    const existing = await this.prisma.sourceFile.findFirst({
-      where: { uploaderId, fileHash },
-      include: { ocrJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
+    const existing = await this.findExistingSourceFile(uploaderId, fileHash);
+    const existingResult = await this.reprocessExistingSourceFile({
+      existing,
+      filename: normalizedFilename,
+      meta,
     });
-    if (existing && existing.documentType === docType) {
-      return {
-        id: existing.id,
-        filename: normalizeFilename(existing.filename) ?? existing.filename,
-        status: existing.ocrJobs[0]?.status ?? "pending",
-        jobId: existing.ocrJobs[0]?.id ?? null,
-      };
-    }
-    // Same file but different type → update source and re-process
-    if (existing) {
-      await this.prisma.sourceFile.update({
-        where: { id: existing.id },
-        data: {
-          documentType: docType,
-          bookTitle: meta?.bookTitle,
-          publisher: meta?.publisher,
-          answerS3Key: meta?.answerS3Key ?? null,
-          filename: normalizedFilename,
-        },
-      });
-      const ocrJob = await this.prisma.ocrJob.create({
-        data: {
-          sourceFileId: existing.id,
-          autoAnalyze: meta?.autoAnalyze ?? true,
-          documentType: docType,
-          bookTitle: meta?.bookTitle ?? null,
-          publisher: meta?.publisher ?? null,
-        },
-      });
-      await this.redisPublisher.publish(
-        "ocr:submit",
-        JSON.stringify({
-          jobId: ocrJob.id,
-          sourceFileId: existing.id,
-          s3Key: existing.s3Key,
-          answerS3Key: meta?.answerS3Key ?? existing.answerS3Key ?? null,
-          filename: normalizedFilename,
-          documentType: docType,
-          bookTitle: meta?.bookTitle ?? null,
-          publisher: meta?.publisher ?? null,
-        }),
-      );
-      return {
-        id: existing.id,
-        filename: normalizeFilename(existing.filename) ?? existing.filename,
-        status: "pending",
-        jobId: ocrJob.id,
-      };
+    if (existingResult) {
+      return existingResult;
     }
 
     const s3Key = `uploads/${uploaderId}/${randomUUID()}.pdf`;
@@ -204,14 +254,30 @@ export class SourceFileIngestionService implements OnModuleDestroy {
       params.size,
     );
 
+    const fileHash = createHash("sha256")
+      .update(`${params.key}:${uploaded.etag ?? uploaded.sizeBytes}`)
+      .digest("hex");
+    const existing = await this.findExistingSourceFile(uploaderId, fileHash);
+    const existingResult = await this.reprocessExistingSourceFile({
+      existing,
+      filename: params.filename,
+      meta: {
+        documentType: params.documentType,
+        bookTitle: params.bookTitle ?? null,
+        publisher: params.publisher ?? null,
+        autoAnalyze: params.autoAnalyze ?? true,
+      },
+    });
+    if (existingResult) {
+      return existingResult;
+    }
+
     return this.createSourceFileAndQueueOcr({
       uploaderId,
       filename: params.filename,
       s3Key: params.key,
       sizeBytes: uploaded.sizeBytes,
-      fileHash: createHash("sha256")
-        .update(`${params.key}:${uploaded.etag ?? uploaded.sizeBytes}`)
-        .digest("hex"),
+      fileHash,
       meta: {
         documentType: params.documentType,
         bookTitle: params.bookTitle ?? null,
@@ -250,16 +316,33 @@ export class SourceFileIngestionService implements OnModuleDestroy {
       answerS3Key = params.answerKey;
     }
 
+    const fileHash = createHash("sha256")
+      .update(
+        `${params.problemKey}:${answerS3Key ?? ""}:${problemUpload.etag ?? problemUpload.sizeBytes}`,
+      )
+      .digest("hex");
+    const existing = await this.findExistingSourceFile(uploaderId, fileHash);
+    const existingResult = await this.reprocessExistingSourceFile({
+      existing,
+      filename: params.problemFilename,
+      meta: {
+        documentType: "textbook",
+        bookTitle: params.bookTitle,
+        publisher: params.publisher ?? null,
+        answerS3Key,
+        autoAnalyze: params.autoAnalyze ?? true,
+      },
+    });
+    if (existingResult) {
+      return existingResult;
+    }
+
     return this.createSourceFileAndQueueOcr({
       uploaderId,
       filename: params.problemFilename,
       s3Key: params.problemKey,
       sizeBytes: problemUpload.sizeBytes,
-      fileHash: createHash("sha256")
-        .update(
-          `${params.problemKey}:${answerS3Key ?? ""}:${problemUpload.etag ?? problemUpload.sizeBytes}`,
-        )
-        .digest("hex"),
+      fileHash,
       meta: {
         documentType: "textbook",
         bookTitle: params.bookTitle,
@@ -285,7 +368,7 @@ export class SourceFileIngestionService implements OnModuleDestroy {
     const combinedSize = problemFile.size + (answerFile?.size ?? 0);
     if (combinedSize > MAX_DIRECT_TEXTBOOK_COMBINED_BYTES) {
       throw new BadRequestException(
-        "Direct textbook uploads are limited to a combined 150MB. Please use multipart upload for larger files.",
+        "Direct textbook uploads are limited to a combined 25MB. Please use multipart upload for larger files.",
       );
     }
 

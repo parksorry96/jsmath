@@ -1,7 +1,6 @@
 """Integration test: EBS 수능특강 segmentation with section state machine."""
-import pytest
-from tests.conftest import make_line, make_page
 from app.workers.segment_textbook import _rule_based_segment
+from tests.conftest import make_line, make_page
 
 
 def _build_ebs_chapter_pages():

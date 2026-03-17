@@ -1,19 +1,18 @@
 import {
   Injectable,
   NotFoundException,
-  OnModuleDestroy,
-  OnModuleInit,
   Logger,
+  InternalServerErrorException,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReviewStatus, OcrJobStatus } from "@prisma/client";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
-import { Redis } from "ioredis";
+import { BrowseProblemsDto } from "./dto/browse-problems.dto";
 import { normalizeFilename } from "../common/filename";
 import { TwinProblemService } from "./twin-problem.service";
 import { EmbeddingService } from "./embedding.service";
 import { ProblemRevisionService } from "./problem-revision.service";
+import { RedisEventBusService } from "../common/redis-event-bus.service";
 import {
   getAccessibleOcrJobWhere,
   getAccessibleProblemWhere,
@@ -40,29 +39,84 @@ export interface ProblemsQuery {
   curriculumNodeId?: string;
   page?: number;
   limit?: number;
+  includeDetails?: boolean;
+}
+
+function buildProblemListSelect(includeDetails: boolean) {
+  return {
+    id: true,
+    stemLatex: true,
+    stemText: true,
+    problemNumber: true,
+    displayNumber: true,
+    problemType: true,
+    bbox: includeDetails,
+    reviewStatus: true,
+    gradeLevel: true,
+    subject: true,
+    unitMajor: true,
+    unitMinor: true,
+    classification2015: true,
+    classification2022: true,
+    difficulty: true,
+    classificationConfidence: true,
+    solutionConfidence: true,
+    reviewConfidence: true,
+    solutionTags: true,
+    analysisStatus: true,
+    ocrJobId: true,
+    startPage: true,
+    endPage: true,
+    bookSource: true,
+    examSource: true,
+    answerMatchStatus: true,
+    solutionLatex: includeDetails,
+    createdAt: true,
+    choices: includeDetails
+      ? {
+          select: {
+            label: true,
+            contentLatex: true,
+            contentText: true,
+            position: true,
+          },
+          orderBy: { position: "asc" as const },
+        }
+      : false,
+    assets: includeDetails
+      ? {
+          select: {
+            id: true,
+            kind: true,
+            subKind: true,
+            s3Key: true,
+            format: true,
+            widthPx: true,
+            heightPx: true,
+          },
+        }
+      : false,
+    ocrJob: {
+      select: {
+        sourceFile: {
+          select: { filename: true },
+        },
+      },
+    },
+  };
 }
 
 @Injectable()
-export class ProblemsService implements OnModuleInit, OnModuleDestroy {
+export class ProblemsService {
   private readonly logger = new Logger(ProblemsService.name);
-  private redisPublisher: Redis;
 
   constructor(
     private prisma: PrismaService,
-    private config: ConfigService,
+    private eventBus: RedisEventBusService,
     private twinProblemService: TwinProblemService,
     private embeddingService: EmbeddingService,
     private problemRevisionService: ProblemRevisionService,
   ) {}
-
-  onModuleInit() {
-    const redisUrl = this.config.getOrThrow<string>("REDIS_URL");
-    this.redisPublisher = new Redis(redisUrl);
-  }
-
-  async onModuleDestroy() {
-    await this.redisPublisher.quit();
-  }
 
   private getProblemScopeWhere(requesterId: string, requesterRole: string) {
     return getAccessibleProblemWhere(requesterId, requesterRole);
@@ -152,6 +206,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     const page = query.page ?? 1;
     const limit = Math.min(query.limit ?? 20, 100);
     const skip = (page - 1) * limit;
+    const includeDetails = query.includeDetails ?? true;
 
     // Route text searches through hybrid search (tsvector + pgvector RRF)
     if (query.q) {
@@ -231,62 +286,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         skip,
         take: limit,
         orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          stemLatex: true,
-          stemText: true,
-          problemNumber: true,
-          displayNumber: true,
-          problemType: true,
-          reviewStatus: true,
-          gradeLevel: true,
-          subject: true,
-          unitMajor: true,
-          unitMinor: true,
-          classification2015: true,
-          classification2022: true,
-          difficulty: true,
-          classificationConfidence: true,
-          solutionConfidence: true,
-          reviewConfidence: true,
-          solutionTags: true,
-          analysisStatus: true,
-          ocrJobId: true,
-          startPage: true,
-          endPage: true,
-          bookSource: true,
-          examSource: true,
-          answerMatchStatus: true,
-          solutionLatex: true,
-          createdAt: true,
-          choices: {
-            select: {
-              label: true,
-              contentLatex: true,
-              contentText: true,
-              position: true,
-            },
-            orderBy: { position: "asc" },
-          },
-          assets: {
-            select: {
-              id: true,
-              kind: true,
-              subKind: true,
-              s3Key: true,
-              format: true,
-              widthPx: true,
-              heightPx: true,
-            },
-          },
-          ocrJob: {
-            select: {
-              sourceFile: {
-                select: { filename: true },
-              },
-            },
-          },
-        },
+        select: buildProblemListSelect(includeDetails),
       }),
       this.prisma.problem.count({ where }),
     ]);
@@ -315,6 +315,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         problemNumber: true,
         displayNumber: true,
         problemType: true,
+        bbox: true,
         difficulty: true,
         subject: true,
         unitMajor: true,
@@ -523,6 +524,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         problemNumber: true,
         displayNumber: true,
         problemType: true,
+        bbox: true,
         reviewStatus: true,
         gradeLevel: true,
         subject: true,
@@ -659,6 +661,17 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     if (dto.unitMajor !== undefined) updateData.unitMajor = dto.unitMajor;
     if (dto.unitMinor !== undefined) updateData.unitMinor = dto.unitMinor;
     if (dto.difficulty !== undefined) updateData.difficulty = dto.difficulty;
+    if ((dto.stemLatex !== undefined || dto.stemText !== undefined) && problem.bbox) {
+      const bbox =
+        typeof problem.bbox === "object" && !Array.isArray(problem.bbox)
+          ? { ...(problem.bbox as Record<string, unknown>) }
+          : null;
+      if (bbox) {
+        delete bbox.boxed_blocks;
+        delete bbox.structured_stem;
+        updateData.bbox = bbox;
+      }
+    }
 
     return this.problemRevisionService.saveRevisionAndUpdate(
       id,
@@ -717,10 +730,20 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       data: { analysisStatus: "analyzing" },
     });
 
-    await this.redisPublisher.publish(
-      "analysis:request",
-      JSON.stringify({ ocrJobId, problemIds }),
-    );
+    try {
+      await this.eventBus.publishDurable("analysis:request", {
+        ocrJobId,
+        problemIds,
+      });
+    } catch (error) {
+      await this.prisma.problem.updateMany({
+        where: { id: { in: problemIds } },
+        data: { analysisStatus: "failed" },
+      });
+      throw new InternalServerErrorException(
+        error instanceof Error ? error.message : "Failed to queue analysis",
+      );
+    }
 
     return {
       ocrJobId,
@@ -768,6 +791,25 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     });
     if (!problem) throw new NotFoundException("Problem not found");
     return problem;
+  }
+
+  async getProblem(problemId: string, requesterId: string, requesterRole: string) {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id: problemId,
+        ...this.getProblemScopeWhere(requesterId, requesterRole),
+      },
+      select: buildProblemListSelect(true),
+    });
+    if (!problem) {
+      throw new NotFoundException("Problem not found");
+    }
+
+    return {
+      ...problem,
+      sourceFile: normalizeFilename(problem.ocrJob?.sourceFile?.filename) ?? null,
+      ocrJob: undefined,
+    };
   }
 
   async generateTwinProblem(
@@ -866,6 +908,82 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       count,
       difficultyTarget,
     );
+  }
+
+  async browse(dto: BrowseProblemsDto) {
+    const page = dto.page ?? 1;
+    const limit = Math.min(dto.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+
+    const where: Record<string, unknown> = {
+      reviewStatus: ReviewStatus.approved,
+    };
+
+    if (dto.subject) where.subject = dto.subject;
+    if (dto.unitMajor) where.unitMajor = dto.unitMajor;
+    if (dto.difficulty !== undefined) where.difficulty = dto.difficulty;
+    if (dto.curriculumYear === 2015) {
+      where.classification2015 = { not: null };
+    } else if (dto.curriculumYear === 2022) {
+      where.classification2022 = { not: null };
+    }
+    if (dto.search) {
+      where.OR = [
+        { stemText: { contains: dto.search, mode: "insensitive" } },
+        { stemLatex: { contains: dto.search, mode: "insensitive" } },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.problem.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          stemLatex: true,
+          stemText: true,
+          subject: true,
+          unitMajor: true,
+          unitMinor: true,
+          difficulty: true,
+          problemType: true,
+        },
+      }),
+      this.prisma.problem.count({ where }),
+    ]);
+
+    return { items, total, page };
+  }
+
+  async getStudentView(id: string) {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id,
+        reviewStatus: ReviewStatus.approved,
+      },
+      select: {
+        id: true,
+        stemLatex: true,
+        stemText: true,
+        subject: true,
+        unitMajor: true,
+        unitMinor: true,
+        difficulty: true,
+        problemType: true,
+        choices: {
+          select: {
+            id: true,
+            label: true,
+            contentText: true,
+          },
+          orderBy: { position: "asc" },
+        },
+      },
+    });
+    if (!problem) throw new NotFoundException("Problem not found");
+    return problem;
   }
 
   async review(

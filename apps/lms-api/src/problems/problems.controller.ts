@@ -16,6 +16,7 @@ import { ProblemQualityService } from "./problem-quality.service";
 import { ReviewProblemDto } from "./dto/review-problem.dto";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
 import { GenerateVariantsDto } from "./dto/generate-variants.dto";
+import { BrowseProblemsDto } from "./dto/browse-problems.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { RolesGuard } from "../auth/roles.guard";
 import { Roles } from "../auth/roles.decorator";
@@ -70,6 +71,7 @@ export class ProblemsController {
     @Query("curriculumNodeId") curriculumNodeId?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
+    @Query("includeDetails") includeDetails?: string,
   ) {
     const queryText = q ?? search;
     if (searchMode === "semantic" && queryText) {
@@ -103,7 +105,17 @@ export class ProblemsController {
       curriculumNodeId,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
+      includeDetails:
+        includeDetails === undefined
+          ? undefined
+          : !["false", "0", "no"].includes(includeDetails.toLowerCase()),
     });
+  }
+
+  @Get("browse")
+  @Roles("student", "teacher", "admin")
+  browse(@Query() dto: BrowseProblemsDto) {
+    return this.problems.browse(dto);
   }
 
   @Get("flagged")
@@ -164,6 +176,18 @@ export class ProblemsController {
       req.user.role,
       dto.difficultyTarget,
     );
+  }
+
+  @Get(":id")
+  @Roles("admin", "teacher")
+  getProblem(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.problems.getProblem(id, req.user.id, req.user.role);
+  }
+
+  @Get(":id/student-view")
+  @Roles("student", "teacher", "admin")
+  getStudentView(@Param("id") id: string) {
+    return this.problems.getStudentView(id);
   }
 
   @Get(":id/analysis")

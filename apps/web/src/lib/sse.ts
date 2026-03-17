@@ -6,7 +6,6 @@ export interface SseMessage {
 
 interface StreamSseOptions {
   url: string;
-  token: string;
   signal: AbortSignal;
   onMessage: (message: SseMessage) => void;
   onOpen?: () => void;
@@ -48,7 +47,6 @@ function parseEventChunk(chunk: string): SseMessage | null {
 
 export async function streamSse({
   url,
-  token,
   signal,
   onMessage,
   onOpen,
@@ -57,10 +55,10 @@ export async function streamSse({
     method: "GET",
     headers: {
       Accept: "text/event-stream",
-      Authorization: `Bearer ${token}`,
       Cache: "no-cache",
     },
     cache: "no-store",
+    credentials: "include",
     signal,
   });
 

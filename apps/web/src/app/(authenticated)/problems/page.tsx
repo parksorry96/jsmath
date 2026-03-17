@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { LatexRenderer } from "@/components/math/latex-renderer";
+import { ProblemLayoutMeta, ProblemStemDisplay } from "@/components/problems/problem-stem-display";
 import { ProblemSourcePreview } from "@/components/problems/problem-source-preview";
 import { toast } from "sonner";
 
@@ -48,6 +49,7 @@ interface Problem {
   stemText: string;
   stemLatex: string;
   problemType: string;
+  bbox?: ProblemLayoutMeta | null;
   reviewStatus: string;
   gradeLevel: string | null;
   subject: string | null;
@@ -799,8 +801,10 @@ export default function ProblemsPage() {
                       </p>
                     </div>
                     <div className="rounded-xl border border-border bg-brand-dark p-5">
-                      <LatexRenderer
-                        content={previewProblem.stemLatex || previewProblem.stemText || ""}
+                      <ProblemStemDisplay
+                        stemLatex={previewProblem.stemLatex}
+                        stemText={previewProblem.stemText}
+                        layout={previewProblem.bbox}
                         className="text-sm leading-relaxed text-foreground"
                       />
 

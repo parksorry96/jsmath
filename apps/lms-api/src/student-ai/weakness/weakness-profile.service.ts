@@ -4,6 +4,11 @@ import { Prisma } from "@prisma/client";
 import OpenAI from "openai";
 import { PrismaService } from "../../prisma/prisma.service";
 import { KnowledgeGraphService } from "./knowledge-graph.service";
+import {
+  extractTutorWeaknessSignal,
+  TutorWeaknessSignal,
+  tutorRootCauseKey,
+} from "../tutor/tutor-weakness-signal";
 
 interface ErrorPatterns {
   concept_gap: number;
@@ -18,6 +23,22 @@ interface UnitAccuracy {
   accuracy: number;
   attemptCount: number;
   topErrorType: string | null;
+}
+
+interface UpdateProfileOptions {
+  skipAiSummary?: boolean;
+}
+
+interface WrongAnswerAggregateRow {
+  errorType: string;
+  subject: string | null;
+  unitMajor: string | null;
+}
+
+interface SubmissionAccuracyRow {
+  isCorrect: boolean;
+  subject: string | null;
+  unitMajor: string | null;
 }
 
 @Injectable()
@@ -46,55 +67,50 @@ export class WeaknessProfileService {
     return this.client;
   }
 
-  async updateProfile(studentId: string) {
+  async updateProfile(studentId: string, options: UpdateProfileOptions = {}) {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    // 1. Query unresolved WrongAnswer records (last 30 days)
-    const wrongAnswers = await this.prisma.wrongAnswer.findMany({
+    const [wrongAnswers, submissionAnswers, tutorMessages] = await Promise.all([
+      this.prisma.$queryRaw<WrongAnswerAggregateRow[]>`
+        SELECT
+          wa.error_type::text AS "errorType",
+          p.subject AS subject,
+          p.unit_major AS "unitMajor"
+        FROM public.wrong_answers wa
+        LEFT JOIN ocr.problems p ON p.id = wa.problem_id
+        WHERE wa.student_id = ${studentId}
+          AND wa.resolved_at IS NULL
+          AND wa.created_at >= ${thirtyDaysAgo}
+      `,
+      this.prisma.$queryRaw<SubmissionAccuracyRow[]>`
+        SELECT
+          sa.is_correct AS "isCorrect",
+          p.subject AS subject,
+          p.unit_major AS "unitMajor"
+        FROM public.submission_answers sa
+        JOIN public.submissions s ON s.id = sa.submission_id
+        LEFT JOIN ocr.problems p ON p.id = sa.problem_id
+        WHERE s.student_id = ${studentId}
+          AND s.created_at >= ${thirtyDaysAgo}
+          AND sa.is_correct IS NOT NULL
+      `,
+      this.prisma.tutorMessage.findMany({
       where: {
-        studentId,
-        resolvedAt: null,
+        role: "student",
         createdAt: { gte: thirtyDaysAgo },
-      },
-    });
-
-    // Fetch associated problems for wrong answers
-    const wrongProblemIds = [
-      ...new Set(wrongAnswers.map((wa) => wa.problemId)),
-    ];
-    const wrongProblems =
-      wrongProblemIds.length > 0
-        ? await this.prisma.problem.findMany({
-            where: { id: { in: wrongProblemIds } },
-            select: { id: true, subject: true, unitMajor: true },
-          })
-        : [];
-    const wrongProblemMap = new Map(wrongProblems.map((p) => [p.id, p]));
-
-    // 2. Query SubmissionAnswer with Problem info for accuracy
-    const submissionAnswers = await this.prisma.submissionAnswer.findMany({
-      where: {
-        submission: { studentId, createdAt: { gte: thirtyDaysAgo } },
-        isCorrect: { not: null },
+        session: {
+          studentId,
+        },
       },
       select: {
-        problemId: true,
-        isCorrect: true,
+        metadata: true,
       },
-    });
-
-    const answerProblemIds = [
-      ...new Set(submissionAnswers.map((a) => a.problemId)),
-    ];
-    const answerProblems =
-      answerProblemIds.length > 0
-        ? await this.prisma.problem.findMany({
-            where: { id: { in: answerProblemIds } },
-            select: { id: true, subject: true, unitMajor: true },
-          })
-        : [];
-    const answerProblemMap = new Map(answerProblems.map((p) => [p.id, p]));
+      }),
+    ]);
+    const tutorSignals = tutorMessages
+      .map((message) => extractTutorWeaknessSignal(message.metadata))
+      .filter((signal): signal is TutorWeaknessSignal => signal !== null);
 
     // 3. Get knowledge graph root causes
     let rootCauses: string[] = [];
@@ -107,43 +123,89 @@ export class WeaknessProfileService {
     }
 
     // 4. Aggregate
-    const wrongAnswersWithProblem = wrongAnswers.map((wa) => ({
-      ...wa,
-      problem: wrongProblemMap.get(wa.problemId) ?? null,
-    }));
+    const errorPatterns = this.mergeErrorPatterns(
+      this.aggregateErrorPatterns(wrongAnswers),
+      this.aggregateTutorErrorPatterns(tutorSignals),
+    );
 
-    const errorPatterns = this.aggregateErrorPatterns(wrongAnswersWithProblem);
+    const unitAccuracies = this.mergeTutorSignalsIntoUnitAccuracies(
+      this.computeUnitAccuracy(submissionAnswers),
+      tutorSignals,
+    );
 
-    const answersWithProblem = submissionAnswers.map((a) => ({
-      ...a,
-      problem: answerProblemMap.get(a.problemId) ?? null,
-    }));
-    const unitAccuracies = this.computeUnitAccuracy(answersWithProblem);
+    rootCauses = [
+      ...new Set([
+        ...rootCauses,
+        ...tutorSignals
+          .map((signal) => tutorRootCauseKey(signal))
+          .filter((key): key is string => key !== null),
+      ]),
+    ];
+
+    const tutorUnitErrorCounts = this.groupTutorSignalErrorsByUnit(tutorSignals);
+    const wrongAnswerCountsByUnit = new Map<string, Map<string, number>>();
+    for (const wrongAnswer of wrongAnswers) {
+      if (!wrongAnswer.subject || !wrongAnswer.unitMajor) continue;
+      const key = `${wrongAnswer.subject}::${wrongAnswer.unitMajor}`;
+      const counts = wrongAnswerCountsByUnit.get(key) ?? new Map<string, number>();
+      counts.set(wrongAnswer.errorType, (counts.get(wrongAnswer.errorType) ?? 0) + 1);
+      wrongAnswerCountsByUnit.set(key, counts);
+    }
 
     // Populate topErrorType from wrong answers
     for (const unit of unitAccuracies) {
-      const unitWrongAnswers = wrongAnswersWithProblem.filter(
-        (wa) => wa.problem?.subject === unit.subject && wa.problem?.unitMajor === unit.unitMajor,
+      const key = `${unit.subject}::${unit.unitMajor}`;
+      const counts = new Map<string, number>(
+        tutorUnitErrorCounts.get(key) ?? [],
       );
-      if (unitWrongAnswers.length > 0) {
-        const counts: Record<string, number> = {};
-        for (const wa of unitWrongAnswers) {
-          const et = wa.errorType;
-          counts[et] = (counts[et] || 0) + 1;
+      const wrongCounts = wrongAnswerCountsByUnit.get(key);
+      if (wrongCounts) {
+        for (const [errorType, count] of wrongCounts.entries()) {
+          counts.set(errorType, (counts.get(errorType) ?? 0) + count);
         }
-        unit.topErrorType = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
       }
+      unit.topErrorType =
+        [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
     }
 
     // 5. Generate AI summary
-    const profileData = { errorPatterns, unitAccuracies, rootCauses };
+    const profileData = {
+      errorPatterns,
+      unitAccuracies,
+      rootCauses,
+      tutorSignals: {
+        count: tutorSignals.length,
+        unitsAffected: [
+          ...new Set(
+            tutorSignals
+              .map((signal) => tutorRootCauseKey(signal))
+              .filter((key): key is string => key !== null),
+          ),
+        ],
+      },
+    };
     let aiSummary: string | null = null;
     let aiSummaryModel: string | null = null;
-    try {
-      aiSummary = await this.generateAiSummary(profileData);
-      aiSummaryModel = this.config.get("AI_MODEL") ?? "gpt-5.4";
-    } catch (err) {
-      this.logger.error(`Failed to generate AI summary for ${studentId}`, err);
+    if (!options.skipAiSummary) {
+      try {
+        aiSummary = await this.generateAiSummary(profileData);
+        aiSummaryModel = this.config.get("AI_MODEL") ?? "gpt-5.4";
+      } catch (err) {
+        this.logger.error(`Failed to generate AI summary for ${studentId}`, err);
+      }
+    }
+
+    const existingProfile = await this.prisma.studentWeaknessProfile.findUnique({
+      where: { studentId },
+      select: {
+        aiSummary: true,
+        aiSummaryModel: true,
+      },
+    });
+
+    if (options.skipAiSummary) {
+      aiSummary = existingProfile?.aiSummary ?? null;
+      aiSummaryModel = existingProfile?.aiSummaryModel ?? null;
     }
 
     // 6. Upsert StudentWeaknessProfile + Units in a transaction
@@ -168,29 +230,20 @@ export class WeaknessProfileService {
         },
       });
 
-      // 7. Upsert StudentWeaknessUnit records
-      for (const unit of unitAccuracies) {
-        await tx.studentWeaknessUnit.upsert({
-          where: {
-            profileId_subject_unitMajor: {
-              profileId: upserted.id,
-              subject: unit.subject,
-              unitMajor: unit.unitMajor,
-            },
-          },
-          create: {
+      await tx.studentWeaknessUnit.deleteMany({
+        where: { profileId: upserted.id },
+      });
+
+      if (unitAccuracies.length > 0) {
+        await tx.studentWeaknessUnit.createMany({
+          data: unitAccuracies.map((unit) => ({
             profileId: upserted.id,
             subject: unit.subject,
             unitMajor: unit.unitMajor,
             accuracy: unit.accuracy,
             attemptCount: unit.attemptCount,
             topErrorType: unit.topErrorType,
-          },
-          update: {
-            accuracy: unit.accuracy,
-            attemptCount: unit.attemptCount,
-            topErrorType: unit.topErrorType,
-          },
+          })),
         });
       }
 
@@ -220,10 +273,36 @@ export class WeaknessProfileService {
     return patterns;
   }
 
+  aggregateTutorErrorPatterns(signals: TutorWeaknessSignal[]): ErrorPatterns {
+    const patterns: ErrorPatterns = {
+      concept_gap: 0,
+      calculation_error: 0,
+      careless_mistake: 0,
+      pattern_gap: 0,
+    };
+
+    for (const signal of signals) {
+      if (!signal.errorType) continue;
+      patterns[signal.errorType] += signal.confidence >= 0.7 ? 1 : 0.5;
+    }
+
+    return patterns;
+  }
+
+  mergeErrorPatterns(base: ErrorPatterns, extra: ErrorPatterns): ErrorPatterns {
+    return {
+      concept_gap: base.concept_gap + extra.concept_gap,
+      calculation_error: base.calculation_error + extra.calculation_error,
+      careless_mistake: base.careless_mistake + extra.careless_mistake,
+      pattern_gap: base.pattern_gap + extra.pattern_gap,
+    };
+  }
+
   computeUnitAccuracy(
     answers: Array<{
       isCorrect: boolean | null;
-      problem: { subject: string | null; unitMajor: string | null } | null;
+      subject: string | null;
+      unitMajor: string | null;
     }>,
   ): UnitAccuracy[] {
     const groups = new Map<
@@ -232,13 +311,13 @@ export class WeaknessProfileService {
     >();
 
     for (const ans of answers) {
-      if (!ans.problem?.subject || !ans.problem?.unitMajor) continue;
+      if (!ans.subject || !ans.unitMajor) continue;
       if (ans.isCorrect === null) continue;
 
-      const key = `${ans.problem.subject}::${ans.problem.unitMajor}`;
+      const key = `${ans.subject}::${ans.unitMajor}`;
       const group = groups.get(key) ?? {
-        subject: ans.problem.subject,
-        unitMajor: ans.problem.unitMajor,
+        subject: ans.subject,
+        unitMajor: ans.unitMajor,
         correct: 0,
         total: 0,
       };
@@ -254,6 +333,69 @@ export class WeaknessProfileService {
       attemptCount: g.total,
       topErrorType: null,
     }));
+  }
+
+  mergeTutorSignalsIntoUnitAccuracies(
+    units: UnitAccuracy[],
+    signals: TutorWeaknessSignal[],
+  ): UnitAccuracy[] {
+    const merged = new Map(
+      units.map((unit) => [
+        `${unit.subject}::${unit.unitMajor}`,
+        { ...unit },
+      ]),
+    );
+
+    for (const signal of signals) {
+      if (!signal.subject || !signal.unitMajor) continue;
+
+      const key = `${signal.subject}::${signal.unitMajor}`;
+      const existing = merged.get(key) ?? {
+        subject: signal.subject,
+        unitMajor: signal.unitMajor,
+        accuracy: 0.5,
+        attemptCount: 0,
+        topErrorType: signal.errorType,
+      };
+
+      const pseudoAttempts = signal.source === "worked_solution" ? 2 : 1;
+      const syntheticAccuracy =
+        signal.source === "worked_solution"
+          ? Math.max(0.15, 0.42 - signal.confidence * 0.2)
+          : Math.max(0.25, 0.58 - signal.confidence * 0.25);
+      const currentCorrect = existing.accuracy * existing.attemptCount;
+      const nextAttemptCount = existing.attemptCount + pseudoAttempts;
+      const nextCorrect = currentCorrect + syntheticAccuracy * pseudoAttempts;
+
+      merged.set(key, {
+        ...existing,
+        accuracy: nextAttemptCount > 0 ? nextCorrect / nextAttemptCount : 0,
+        attemptCount: nextAttemptCount,
+        topErrorType: existing.topErrorType ?? signal.errorType,
+      });
+    }
+
+    return [...merged.values()].sort((a, b) =>
+      `${a.subject}::${a.unitMajor}`.localeCompare(`${b.subject}::${b.unitMajor}`),
+    );
+  }
+
+  groupTutorSignalErrorsByUnit(signals: TutorWeaknessSignal[]) {
+    const groups = new Map<string, Map<string, number>>();
+
+    for (const signal of signals) {
+      if (!signal.subject || !signal.unitMajor || !signal.errorType) continue;
+
+      const key = `${signal.subject}::${signal.unitMajor}`;
+      const group = groups.get(key) ?? new Map<string, number>();
+      group.set(
+        signal.errorType,
+        (group.get(signal.errorType) ?? 0) + (signal.confidence >= 0.7 ? 1 : 0.5),
+      );
+      groups.set(key, group);
+    }
+
+    return groups;
   }
 
   mapErrorType(fineGrained: string): string {

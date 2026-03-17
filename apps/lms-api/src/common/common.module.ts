@@ -1,8 +1,9 @@
 import { Module } from "@nestjs/common";
+import { RedisEventBusService } from "./redis-event-bus.service";
 import { RedisStreamService } from "./redis-stream.service";
 
 @Module({
-  providers: [RedisStreamService],
-  exports: [RedisStreamService],
+  providers: [RedisStreamService, RedisEventBusService],
+  exports: [RedisStreamService, RedisEventBusService],
 })
 export class CommonModule {}

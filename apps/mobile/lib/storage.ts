@@ -7,7 +7,7 @@ function canUseWebStorage() {
 
 export async function getItemAsync(key: string) {
   if (canUseWebStorage()) {
-    return window.localStorage.getItem(key);
+    return window.sessionStorage.getItem(key);
   }
 
   return SecureStore.getItemAsync(key);
@@ -15,7 +15,7 @@ export async function getItemAsync(key: string) {
 
 export async function setItemAsync(key: string, value: string) {
   if (canUseWebStorage()) {
-    window.localStorage.setItem(key, value);
+    window.sessionStorage.setItem(key, value);
     return;
   }
 
@@ -24,7 +24,7 @@ export async function setItemAsync(key: string, value: string) {
 
 export async function deleteItemAsync(key: string) {
   if (canUseWebStorage()) {
-    window.localStorage.removeItem(key);
+    window.sessionStorage.removeItem(key);
     return;
   }
 

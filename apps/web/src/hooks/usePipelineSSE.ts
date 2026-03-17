@@ -54,18 +54,12 @@ export function usePipelineSSE(ocrJobId: string | null) {
 
       const apiUrl =
         process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/v1";
-      const token = localStorage.getItem("token");
-      if (!token) {
-        setConnected(false);
-        return;
-      }
 
       const controller = new AbortController();
       streamController.current = controller;
 
       void streamSse({
         url: `${apiUrl}/files/${ocrJobId}/events`,
-        token,
         signal: controller.signal,
         onOpen: () => {
           setConnected(true);

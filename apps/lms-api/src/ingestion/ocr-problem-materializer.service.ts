@@ -11,6 +11,7 @@ type ExistingProblemRecord = {
   endPage: number;
   stemLatex: string;
   stemText: string;
+  bbox: unknown;
   assets: Array<{ s3Key: string }>;
 };
 
@@ -91,11 +92,47 @@ export class OcrProblemMaterializerService {
     }
   }
 
+  private async syncLayoutMetadata(
+    problemId: string,
+    existingBbox: unknown,
+    payload: Record<string, unknown>,
+  ) {
+    if (!payload.bbox || typeof payload.bbox !== "object" || Array.isArray(payload.bbox)) {
+      return;
+    }
+
+    const nextBbox = payload.bbox as Record<string, unknown>;
+    const currentBbox =
+      existingBbox && typeof existingBbox === "object" && !Array.isArray(existingBbox)
+        ? (existingBbox as Record<string, unknown>)
+        : null;
+
+    const hasStructuredLayout =
+      Array.isArray(nextBbox.boxed_blocks) && nextBbox.boxed_blocks.length > 0;
+    const currentHasStructuredLayout =
+      currentBbox &&
+      Array.isArray(currentBbox.boxed_blocks) &&
+      currentBbox.boxed_blocks.length > 0;
+
+    if (!hasStructuredLayout && currentHasStructuredLayout) {
+      return;
+    }
+
+    if (JSON.stringify(currentBbox) === JSON.stringify(nextBbox)) {
+      return;
+    }
+
+    await this.prisma.problem.update({
+      where: { id: problemId },
+      data: { bbox: nextBbox as any },
+    });
+  }
+
   async materialize(
     ocrJobId: string,
     sourceFileId: string,
     problems: Array<Record<string, unknown>>,
-  ): Promise<string[]> {
+  ): Promise<{ createdIds: string[]; skippedCount: number; failedCount: number }> {
     const existingProblems = await this.prisma.problem.findMany({
       where: { ocrJobId },
       select: {
@@ -106,6 +143,7 @@ export class OcrProblemMaterializerService {
         endPage: true,
         stemLatex: true,
         stemText: true,
+        bbox: true,
         assets: {
           select: { s3Key: true },
         },
@@ -122,6 +160,8 @@ export class OcrProblemMaterializerService {
     );
 
     const createdIds: string[] = [];
+    let skippedCount = 0;
+    let failedCount = 0;
     for (const p of problems) {
       try {
         const normalizedProblem = normalizeOcrProblem(p);
@@ -137,6 +177,8 @@ export class OcrProblemMaterializerService {
         const existingProblem = existingByFingerprint.get(fingerprint);
 
         if (existingProblem) {
+          skippedCount++;
+          await this.syncLayoutMetadata(existingProblem.id, existingProblem.bbox, p);
           await this.ensureAssets(
             existingProblem.id,
             new Set(existingProblem.assets.map((asset) => asset.s3Key)),
@@ -161,6 +203,9 @@ export class OcrProblemMaterializerService {
             endPage: typeof p.endPage === "number" ? p.endPage : 0,
             stemLatex: normalizedProblem.stemLatex,
             stemText: normalizedProblem.stemText,
+            ...(p.bbox && typeof p.bbox === "object" && !Array.isArray(p.bbox)
+              ? { bbox: p.bbox as any }
+              : {}),
             gradeLevel:
               typeof p.gradeLevel === "string" ? p.gradeLevel : null,
             subject: typeof p.subject === "string" ? p.subject : null,
@@ -247,6 +292,10 @@ export class OcrProblemMaterializerService {
           endPage: typeof p.endPage === "number" ? p.endPage : 0,
           stemLatex: normalizedProblem.stemLatex,
           stemText: normalizedProblem.stemText,
+          bbox:
+            p.bbox && typeof p.bbox === "object" && !Array.isArray(p.bbox)
+              ? p.bbox
+              : null,
           assets: [
             ...(typeof p.pageImageS3Key === "string" && p.pageImageS3Key
               ? [{ s3Key: p.pageImageS3Key }]
@@ -257,6 +306,7 @@ export class OcrProblemMaterializerService {
           ],
         });
       } catch (error) {
+        failedCount++;
         this.logger.error(
           `Failed to create problem record for job ${ocrJobId}`,
           error instanceof Error ? error.stack : String(error),
@@ -267,6 +317,6 @@ export class OcrProblemMaterializerService {
     this.logger.log(
       `Created ${createdIds.length} problem records for OCR job ${ocrJobId}`,
     );
-    return createdIds;
+    return { createdIds, skippedCount, failedCount };
   }
 }

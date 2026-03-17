@@ -13,10 +13,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
-import { api } from "@/lib/api";
+import { API_URL, api } from "@/lib/api";
 import { getItemAsync } from "@/lib/storage";
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:3001/v1";
 
 interface Problem {
   id: string;

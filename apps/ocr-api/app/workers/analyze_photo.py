@@ -10,10 +10,10 @@ NestJS handles DB updates upon receiving the Redis event.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
+from typing import Any
 
 import boto3
 import openai
@@ -213,7 +213,7 @@ def _maybe_chain_rubric_grading(payload: dict, feedback: dict) -> None:
     retry_backoff=True,
     acks_late=True,
 )
-def analyze_submission_photo(self, payload: dict) -> dict:
+def analyze_submission_photo(self: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """Analyze a student's handwritten solution photo.
 
     payload: {

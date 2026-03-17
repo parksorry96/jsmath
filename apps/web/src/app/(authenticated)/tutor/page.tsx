@@ -9,8 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { LatexRenderer } from "@/components/math/latex-renderer";
 import { api } from "@/lib/api";
+import { buildProblemPreview } from "@/lib/problem-preview";
 
 interface Problem {
   id: string;
@@ -121,15 +121,9 @@ export default function TutorLandingPage() {
                       </Badge>
                     )}
                   </div>
-                  <div className="line-clamp-2 text-sm">
-                    <LatexRenderer
-                      content={
-                        problem.stemLatex?.slice(0, 200) ||
-                        problem.stemText?.slice(0, 200) ||
-                        ""
-                      }
-                    />
-                  </div>
+                  <p className="line-clamp-2 text-sm text-foreground">
+                    {buildProblemPreview(problem, 120)}
+                  </p>
                 </div>
                 <Button variant="outline" size="sm" className="shrink-0">
                   <MessageCircle className="mr-1.5 h-3.5 w-3.5" />

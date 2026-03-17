@@ -20,10 +20,10 @@ describe("AuthRateLimitGuard", () => {
     );
   }
 
-  it("does not trust spoofed x-forwarded-for headers", () => {
+  it("does not trust spoofed x-forwarded-for headers", async () => {
     const guard = createGuard();
 
-    expect(
+    await expect(
       guard.canActivate(
         createContext({
           ip: "10.0.0.1",
@@ -31,9 +31,9 @@ describe("AuthRateLimitGuard", () => {
           route: { path: "/auth/login" },
         }),
       ),
-    ).toBe(true);
+    ).resolves.toBe(true);
 
-    expect(() =>
+    await expect(
       guard.canActivate(
         createContext({
           ip: "10.0.0.1",
@@ -41,13 +41,13 @@ describe("AuthRateLimitGuard", () => {
           route: { path: "/auth/login" },
         }),
       ),
-    ).toThrow(HttpException);
+    ).rejects.toThrow(HttpException);
   });
 
-  it("rate limits repeated attempts for the same email across different IPs", () => {
+  it("rate limits repeated attempts for the same email across different IPs", async () => {
     const guard = createGuard();
 
-    expect(
+    await expect(
       guard.canActivate(
         createContext({
           ip: "10.0.0.1",
@@ -55,9 +55,9 @@ describe("AuthRateLimitGuard", () => {
           body: { email: "student@example.com" },
         }),
       ),
-    ).toBe(true);
+    ).resolves.toBe(true);
 
-    expect(() =>
+    await expect(
       guard.canActivate(
         createContext({
           ip: "10.0.0.2",
@@ -65,6 +65,6 @@ describe("AuthRateLimitGuard", () => {
           body: { email: "student@example.com" },
         }),
       ),
-    ).toThrow(HttpException);
+    ).rejects.toThrow(HttpException);
   });
 });

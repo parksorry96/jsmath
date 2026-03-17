@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from typing import Any
 
 import boto3
 import openai
@@ -160,7 +161,7 @@ def _parse_rubric_response(text: str) -> dict:
     retry_backoff=True,
     acks_late=True,
 )
-def rubric_grade_photo(self, payload: dict) -> dict:
+def rubric_grade_photo(self: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """Grade a student's handwritten solution using rubric-based partial credit.
 
     payload: {
