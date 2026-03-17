@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { api } from "@/lib/api";
 import { streamTutorMessage } from "@/lib/tutor-stream";
+import { normalizeTutorMessage } from "@/lib/parse-step-tag";
 
 interface Message {
   id: string;
@@ -38,11 +39,16 @@ export function useTutorChat(sessionId: string) {
         if (session.problem) setProblem(session.problem);
         if (session.messages?.length > 0) {
           setMessages(
-            session.messages.map((m, i) => ({
-              id: `init-${i}`,
-              role: m.role as "student" | "tutor",
-              content: m.content,
-            })),
+            session.messages.map((m, i) => {
+              const normalized =
+                m.role === 'tutor' ? normalizeTutorMessage(m.content) : { content: m.content };
+
+              return {
+                id: `init-${i}`,
+                role: m.role as "student" | "tutor",
+                content: normalized.content,
+              };
+            }),
           );
         }
       } catch {
@@ -81,10 +87,11 @@ export function useTutorChat(sessionId: string) {
         signal: abortRef.current.signal,
         onChunk: (nextContent) => {
           tutorContent = nextContent;
+          const normalized = normalizeTutorMessage(nextContent);
           setMessages((prev) =>
             prev.map((message) =>
               message.id === tutorMsgId
-                ? { ...message, content: nextContent }
+                ? { ...message, content: normalized.content }
                 : message,
             ),
           );
