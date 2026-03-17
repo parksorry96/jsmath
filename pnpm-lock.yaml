@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  multer: 2.0.2
-
 importers:
 
   .:
@@ -90,7 +87,7 @@ importers:
         specifier: ^6.1.3
         version: 6.1.3
       multer:
-        specifier: 2.0.2
+        specifier: ^2.0.2
         version: 2.0.2
       openai:
         specifier: ^6.27.0
