@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Callable
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -19,7 +19,8 @@ from app.celery_app import celery
 from app.database import worker_session
 from app.models.job import JobStatus, OcrJobTracking
 from app.models.ocr import OcrLine, OcrPage
-from app.schemas.problem import BBox, PROBLEM_NUMBER_PATTERNS, SegmentedProblem
+from app.schemas.problem import PROBLEM_NUMBER_PATTERNS, BBox, SegmentedProblem
+from app.workers.boxed_blocks import build_boxed_layout
 from app.workers.choice_parser import resolve_stem_and_choices
 
 logger = logging.getLogger(__name__)
@@ -149,11 +150,11 @@ def _detect_problem_type(lines: list[OcrLine]) -> str:
     acks_late=True,
 )
 def segment_problems(
-    self,
-    parse_result: dict | None = None,
+    self: Any,
+    parse_result: dict[str, Any] | None = None,
     *,
     ocr_job_id: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Segment OCR lines into individual problems."""
     if parse_result:
         ocr_job_id = parse_result["ocr_job_id"]
@@ -163,7 +164,7 @@ def segment_problems(
     return asyncio.run(_segment(self, ocr_job_id))
 
 
-async def _segment(task, ocr_job_id: str) -> dict:
+async def _segment(task: Any, ocr_job_id: str) -> dict[str, Any]:
     async with worker_session() as session:
         # Idempotency: skip if job already past segmenting stage
         job_result = await session.execute(
@@ -328,7 +329,10 @@ def _build_segment(
     raw_stem_text = "\n".join(line.text for line in content_lines)
     stem_latex, stem_text, choices = resolve_stem_and_choices(raw_stem_latex, raw_stem_text)
     problem_type = "multiple_choice" if choices else _detect_problem_type(content_lines)
-    bbox = _compute_bbox(content_lines)
+    bbox = build_boxed_layout(
+        source_lines=content_lines,
+        display_lines=content_lines,
+    )
 
     return SegmentedProblem(
         problem_number=problem_number,

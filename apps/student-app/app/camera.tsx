@@ -63,10 +63,13 @@ export default function CameraScreen() {
   }
 
   async function startTutor() {
-    const session = await api.post<{ id: string }>("/student-ai/tutor/sessions", {
-      problemText: editedText,
+    const search = editedText.replace(/\s+/g, " ").trim().slice(0, 120);
+    if (!search) return;
+
+    router.replace({
+      pathname: "/(tabs)/explore",
+      params: { search },
     });
-    router.replace(`/tutor/${session.id}`);
   }
 
   // Pre-capture state
@@ -138,7 +141,7 @@ export default function CameraScreen() {
             }}
           >
             <MessageCircle color="#fff" size={20} />
-            <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>AI 튜터에게 질문</Text>
+            <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>비슷한 문제 찾기</Text>
           </Pressable>
         </View>
       ) : (

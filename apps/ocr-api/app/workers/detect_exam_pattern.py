@@ -9,57 +9,61 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from sqlalchemy import select
 
 from app.celery_app import celery
 from app.config import settings
-from app.services.openai_client import get_openai_client
 from app.database import worker_session
-from app.models.problem import AnalysisStatus, Problem
+from app.models.problem import AnalysisStatus, PositionType, Problem, QuestionFormat
+from app.services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
 
 # ─── Deterministic CSAT rules by question number ───
 
 # Common section (Q1-22)
-_COMMON_RULES: dict[int, tuple[str, int, str]] = {}
+_COMMON_RULES: dict[int, tuple[PositionType, int, QuestionFormat]] = {}
 # Q1-2: 2pt, multiple choice, normal
 for _q in range(1, 3):
-    _COMMON_RULES[_q] = ("normal", 2, "multiple_choice_5")
+    _COMMON_RULES[_q] = (PositionType.normal, 2, QuestionFormat.multiple_choice_5)
 # Q3-8: 3pt, multiple choice, normal
 for _q in range(3, 9):
-    _COMMON_RULES[_q] = ("normal", 3, "multiple_choice_5")
+    _COMMON_RULES[_q] = (PositionType.normal, 3, QuestionFormat.multiple_choice_5)
 # Q9-14: 4pt, multiple choice, normal
 for _q in range(9, 15):
-    _COMMON_RULES[_q] = ("normal", 4, "multiple_choice_5")
+    _COMMON_RULES[_q] = (PositionType.normal, 4, QuestionFormat.multiple_choice_5)
 # Q15: 4pt, multiple choice, semi_killer
-_COMMON_RULES[15] = ("semi_killer", 4, "multiple_choice_5")
+_COMMON_RULES[15] = (PositionType.semi_killer, 4, QuestionFormat.multiple_choice_5)
 # Q16-19: 3pt, short answer, normal
 for _q in range(16, 20):
-    _COMMON_RULES[_q] = ("normal", 3, "short_answer")
+    _COMMON_RULES[_q] = (PositionType.normal, 3, QuestionFormat.short_answer)
 # Q20: 4pt, short answer, semi_killer
-_COMMON_RULES[20] = ("semi_killer", 4, "short_answer")
+_COMMON_RULES[20] = (PositionType.semi_killer, 4, QuestionFormat.short_answer)
 # Q21: 4pt, short answer, killer (common killer)
-_COMMON_RULES[21] = ("killer", 4, "short_answer")
+_COMMON_RULES[21] = (PositionType.killer, 4, QuestionFormat.short_answer)
 # Q22: 4pt, short answer, semi_killer
-_COMMON_RULES[22] = ("semi_killer", 4, "short_answer")
+_COMMON_RULES[22] = (PositionType.semi_killer, 4, QuestionFormat.short_answer)
 
 # Elective section (Q23-30)
-_ELECTIVE_RULES: dict[int, tuple[str, int, str]] = {}
+_ELECTIVE_RULES: dict[int, tuple[PositionType, int, QuestionFormat]] = {}
 # Q23: 2pt, multiple choice, normal
-_ELECTIVE_RULES[23] = ("normal", 2, "multiple_choice_5")
+_ELECTIVE_RULES[23] = (PositionType.normal, 2, QuestionFormat.multiple_choice_5)
 # Q24-27: 3pt, multiple choice, normal
 for _q in range(24, 28):
-    _ELECTIVE_RULES[_q] = ("normal", 3, "multiple_choice_5")
+    _ELECTIVE_RULES[_q] = (PositionType.normal, 3, QuestionFormat.multiple_choice_5)
 # Q28: 4pt, multiple choice, semi_killer
-_ELECTIVE_RULES[28] = ("semi_killer", 4, "multiple_choice_5")
+_ELECTIVE_RULES[28] = (PositionType.semi_killer, 4, QuestionFormat.multiple_choice_5)
 # Q29-30: 4pt, short answer, killer (elective killers)
-_ELECTIVE_RULES[29] = ("killer", 4, "short_answer")
-_ELECTIVE_RULES[30] = ("killer", 4, "short_answer")
+_ELECTIVE_RULES[29] = (PositionType.killer, 4, QuestionFormat.short_answer)
+_ELECTIVE_RULES[30] = (PositionType.killer, 4, QuestionFormat.short_answer)
 
-_ALL_RULES = {**_COMMON_RULES, **_ELECTIVE_RULES}
+_ALL_RULES: dict[int, tuple[PositionType, int, QuestionFormat]] = {
+    **_COMMON_RULES,
+    **_ELECTIVE_RULES,
+}
 
 # Difficulty-based point value fallback (when question number is unknown)
 _DIFFICULTY_TO_POINT: dict[int, int] = {
@@ -119,7 +123,9 @@ def _parse_question_number(raw: str | None) -> int | None:
         return None
 
 
-def _rules_from_number(qnum: int | None) -> tuple[str, int, str] | None:
+def _rules_from_number(
+    qnum: int | None,
+) -> tuple[PositionType, int, QuestionFormat] | None:
     """Look up deterministic CSAT rules by question number."""
     if qnum is None or qnum not in _ALL_RULES:
         return None
@@ -133,15 +139,15 @@ def _point_from_difficulty(difficulty: float | None) -> int:
     return _DIFFICULTY_TO_POINT.get(round(difficulty), 3)
 
 
-def _position_from_difficulty(difficulty: float | None) -> str:
+def _position_from_difficulty(difficulty: float | None) -> PositionType:
     """Estimate position type from difficulty when question number is unknown."""
     if difficulty is None:
-        return "normal"
+        return PositionType.normal
     if difficulty >= 4.5:
-        return "killer"
+        return PositionType.killer
     if difficulty >= 3.5:
-        return "semi_killer"
-    return "normal"
+        return PositionType.semi_killer
+    return PositionType.normal
 
 
 @celery.task(
@@ -152,7 +158,12 @@ def _position_from_difficulty(difficulty: float | None) -> str:
     retry_backoff=True,
     acks_late=True,
 )
-def detect_exam_pattern(self, previous_result=None, *, problem_id: str | None = None) -> dict:
+def detect_exam_pattern(
+    self: Any,
+    previous_result: dict[str, Any] | None = None,
+    *,
+    problem_id: str | None = None,
+) -> dict[str, Any]:
     """Detect CSAT exam patterns for a single problem."""
     if previous_result and isinstance(previous_result, dict):
         problem_id = problem_id or previous_result.get("problem_id")
@@ -162,7 +173,7 @@ def detect_exam_pattern(self, previous_result=None, *, problem_id: str | None = 
     return asyncio.run(_detect(self, problem_id))
 
 
-async def _detect(task, problem_id: str) -> dict:
+async def _detect(task: Any, problem_id: str) -> dict[str, Any]:
     async with worker_session() as session:
         result = await session.execute(
             select(Problem).where(Problem.id == problem_id)
@@ -184,16 +195,17 @@ async def _detect(task, problem_id: str) -> dict:
         position_type, point_value, question_format = rules
         # Override question_format if problem_type provides explicit info
         if problem_type_val == "short_answer":
-            question_format = "short_answer"
+            question_format = QuestionFormat.short_answer
         elif problem_type_val == "multiple_choice":
-            question_format = "multiple_choice_5"
+            question_format = QuestionFormat.multiple_choice_5
     else:
         # Fallback: estimate from difficulty
         position_type = _position_from_difficulty(difficulty)
         point_value = _point_from_difficulty(difficulty)
         question_format = (
-            "short_answer" if problem_type_val == "short_answer"
-            else "multiple_choice_5"
+            QuestionFormat.short_answer
+            if problem_type_val == "short_answer"
+            else QuestionFormat.multiple_choice_5
         )
 
     # Use GPT only for exam_source identification
@@ -223,7 +235,12 @@ async def _detect(task, problem_id: str) -> dict:
     name="task.analysis.apply_exam_rules",
     acks_late=True,
 )
-def apply_deterministic_rules(self, prev_result: dict | None = None, *, problem_id: str | None = None) -> dict:
+def apply_deterministic_rules(
+    self: Any,
+    prev_result: dict[str, Any] | None = None,
+    *,
+    problem_id: str | None = None,
+) -> dict[str, Any]:
     """Apply deterministic CSAT exam rules and save analysis results to DB.
 
     Runs after unified_analysis or legacy merge. Reads problem_number from DB,
@@ -237,7 +254,10 @@ def apply_deterministic_rules(self, prev_result: dict | None = None, *, problem_
     return asyncio.run(_apply_rules(problem_id, prev_result or {}))
 
 
-async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
+async def _apply_rules(
+    problem_id: str,
+    prev_result: dict[str, Any],
+) -> dict[str, Any]:
     async with worker_session() as session:
         result = await session.execute(
             select(Problem).where(Problem.id == problem_id)
@@ -353,8 +373,12 @@ async def _apply_rules(problem_id: str, prev_result: dict) -> dict:
 
 
 async def _identify_exam_source(
-    task, problem_id: str, stem_latex: str, stem_text: str, problem_number: str,
-) -> dict | None:
+    task: Any,
+    problem_id: str,
+    stem_latex: str,
+    stem_text: str,
+    problem_number: str,
+) -> dict[str, Any] | None:
     """Call GPT to identify exam source only."""
     client = get_openai_client()
 

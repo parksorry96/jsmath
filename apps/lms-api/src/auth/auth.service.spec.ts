@@ -11,6 +11,7 @@ describe("AuthService", () => {
     user: {
       findUnique: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
     },
   };
   const jwt = {
@@ -46,6 +47,40 @@ describe("AuthService", () => {
         name: "Student",
         passwordHash: "hashed-password",
         role: "student",
+      }),
+    });
+  });
+
+  it("does not auto-link existing accounts for unverified social email claims", async () => {
+    prisma.user.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "user-1", email: "student@example.com", role: "student" });
+    prisma.user.create.mockResolvedValue({
+      id: "new-user",
+      email: "google_google-user-1@social.jsmath.local",
+      role: "student",
+    });
+
+    const service = new AuthService(prisma as never, jwt as never, config as never);
+    jest.spyOn(service as any, "verifySocialToken").mockResolvedValue({
+      provider: "google",
+      providerAccountId: "google-user-1",
+      email: "student@example.com",
+      emailVerified: false,
+      name: "Student",
+    });
+
+    await service.socialLogin({
+      provider: "google",
+      accessToken: "provider-access-token",
+    });
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        email: "google_google-user-1@social.jsmath.local",
+        provider: "google",
+        providerAccountId: "google-user-1",
       }),
     });
   });

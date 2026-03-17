@@ -1,8 +1,50 @@
+import Constants from "expo-constants";
+import { Platform } from "react-native";
 import { getItemAsync } from "./storage";
 
-// iOS simulator cannot reach localhost — use LAN IP for dev
-const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://192.168.0.78:3001/v1";
-const OCR_URL = process.env.EXPO_PUBLIC_OCR_URL || "http://192.168.0.78:8000";
+function inferExpoHost() {
+  const candidates = [
+    Constants.expoConfig?.hostUri,
+    (Constants as { manifest2?: { extra?: { expoClient?: { hostUri?: string } } } }).manifest2
+      ?.extra?.expoClient?.hostUri,
+    (Constants as { manifest?: { debuggerHost?: string } }).manifest?.debuggerHost,
+    (Constants as { expoGoConfig?: { debuggerHost?: string } }).expoGoConfig?.debuggerHost,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.length > 0) {
+      return candidate.split(":")[0];
+    }
+  }
+
+  return null;
+}
+
+function resolvePublicUrl(
+  envValue: string | undefined,
+  port: number,
+  suffix: string,
+) {
+  if (envValue) {
+    return envValue;
+  }
+
+  if (Platform.OS === "web") {
+    return `http://localhost:${port}${suffix}`;
+  }
+
+  const host = inferExpoHost();
+  if (!host) {
+    throw new Error(
+      "Missing Expo public URL configuration. Set EXPO_PUBLIC_API_URL/EXPO_PUBLIC_OCR_URL or run from Expo with a reachable dev host.",
+    );
+  }
+
+  return `http://${host}:${port}${suffix}`;
+}
+
+export const API_URL = resolvePublicUrl(process.env.EXPO_PUBLIC_API_URL, 3001, "/v1");
+export const OCR_URL = resolvePublicUrl(process.env.EXPO_PUBLIC_OCR_URL, 8000, "");
 
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown) {
@@ -15,14 +57,18 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}, baseUrl = API_URL): Promise<T> {
-  const token = await getItemAsync("auth_token");
+  const token = Platform.OS === "web" ? null : await getItemAsync("auth_token");
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...((options.headers as Record<string, string>) ?? {}),
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(`${baseUrl}${path}`, { ...options, headers });
+  const res = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    credentials: Platform.OS === "web" ? "include" : undefined,
+    headers,
+  });
   if (!res.ok) {
     let body: unknown;
     try { body = await res.json(); } catch { body = { message: res.statusText }; }
@@ -41,7 +87,7 @@ export const api = {
   delete: (path: string) => request<void>(path, { method: "DELETE" }),
 
   uploadImage: async <T>(path: string, imageUri: string, baseUrl = OCR_URL): Promise<T> => {
-    const token = await getItemAsync("auth_token");
+    const token = Platform.OS === "web" ? null : await getItemAsync("auth_token");
     const formData = new FormData();
     const filename = imageUri.split("/").pop() ?? "photo.jpg";
     const ext = filename.split(".").pop()?.toLowerCase();
@@ -51,7 +97,12 @@ export const api = {
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const res = await fetch(`${baseUrl}${path}`, { method: "POST", body: formData, headers });
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      body: formData,
+      credentials: Platform.OS === "web" ? "include" : undefined,
+      headers,
+    });
     if (!res.ok) {
       let body: unknown;
       try { body = await res.json(); } catch { body = { message: res.statusText }; }

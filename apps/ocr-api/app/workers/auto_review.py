@@ -15,8 +15,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.celery_app import celery
 from app.database import worker_session
@@ -207,7 +209,9 @@ def _compute_difficulty_time_correlation(
 
 
 async def _compute_similar_agreement(
-    session, problem_id: str, subject: str | None,
+    session: AsyncSession,
+    problem_id: str,
+    subject: str | None,
 ) -> float:
     """Factor 4: Do top similar problems share the same subject?
 
@@ -263,7 +267,12 @@ async def _compute_similar_agreement(
     default_retry_delay=5,
     acks_late=True,
 )
-def auto_review(self, previous_result=None, *, problem_id: str | None = None) -> dict:
+def auto_review(
+    self: Any,
+    previous_result: dict[str, Any] | None = None,
+    *,
+    problem_id: str | None = None,
+) -> dict[str, Any]:
     """Auto-review a problem after all analysis stages complete."""
     if previous_result and isinstance(previous_result, dict):
         problem_id = problem_id or previous_result.get("problem_id")
@@ -273,7 +282,7 @@ def auto_review(self, previous_result=None, *, problem_id: str | None = None) ->
     return asyncio.run(_review(problem_id))
 
 
-async def _review(problem_id: str) -> dict:
+async def _review(problem_id: str) -> dict[str, Any]:
     checks = []
     factors = {}
 

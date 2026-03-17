@@ -1,6 +1,7 @@
 import { View, Text } from "react-native";
 import { Bot } from "lucide-react-native";
 import { useTheme } from "@/lib/theme";
+import { LatexText } from "@/components/math/latex-text";
 
 interface ChatBubbleProps {
   role: "student" | "tutor";
@@ -33,12 +34,18 @@ export function ChatBubble({ role, content }: ChatBubbleProps) {
         borderTopRightRadius: isStudent ? 4 : 16,
         padding: 14,
       }}>
-        <Text style={{
-          fontSize: 15, lineHeight: 22,
-          color: isStudent ? "#fff" : colors.textPrimary,
-        }}>
-          {content}
-        </Text>
+        {isStudent ? (
+          <Text style={{
+            fontSize: 15, lineHeight: 22,
+            color: "#fff",
+          }}>
+            {content}
+          </Text>
+        ) : (
+          <LatexText style={{ fontSize: 15, lineHeight: 22 }}>
+            {content}
+          </LatexText>
+        )}
       </View>
     </View>
   );

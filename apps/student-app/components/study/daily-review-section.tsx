@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { LatexText } from "@/components/math/latex-text";
 
 interface ReviewProblem {
-  id: string;
+  reviewScheduleId: string;
   wrongAnswerId: string;
   problem: {
     stemText: string;
@@ -134,13 +134,13 @@ export function DailyReviewSection() {
           ) : (
             <View style={{ borderTopWidth: 1, borderTopColor: colors.border, padding: 20 }}>
               <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 4 }}>정답</Text>
-              <Text style={{ color: colors.success, fontSize: 14, lineHeight: 20, marginBottom: 12 }}>
+              <LatexText style={{ color: colors.success, fontSize: 14, lineHeight: 20, marginBottom: 12 }}>
                 {current.problem.answerText || current.problem.answerLatex || "등록된 정답 없음"}
-              </Text>
+              </LatexText>
               <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 4 }}>풀이</Text>
-              <Text style={{ color: colors.textPrimary, fontSize: 14, lineHeight: 20 }}>
+              <LatexText style={{ color: colors.textPrimary, fontSize: 14, lineHeight: 20 }}>
                 {current.problem.solutionText || "등록된 풀이 없음"}
-              </Text>
+              </LatexText>
             </View>
           )}
         </View>
@@ -156,7 +156,12 @@ export function DailyReviewSection() {
             {QUALITY_BUTTONS.map((btn) => (
               <Pressable
                 key={btn.value}
-                onPress={() => gradeMutation.mutate({ id: current.id, quality: btn.value })}
+                onPress={() =>
+                  gradeMutation.mutate({
+                    id: current.reviewScheduleId,
+                    quality: btn.value,
+                  })
+                }
                 disabled={gradeMutation.isPending}
                 style={{
                   flex: 1, minWidth: "30%", backgroundColor: btn.color + "22",

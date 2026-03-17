@@ -1,4 +1,12 @@
-import { View, Text, ScrollView, Pressable, useWindowDimensions, Platform } from "react-native";
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  useWindowDimensions,
+  Platform,
+  ActivityIndicator,
+} from "react-native";
 import { useLocalSearchParams, useRouter, Stack } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { MessageCircle, PenTool } from "lucide-react-native";
@@ -24,7 +32,11 @@ export default function ProblemDetailScreen() {
   const { width } = useWindowDimensions();
   const isTablet = width > 768;
 
-  const { data: problem } = useQuery({
+  const {
+    data: problem,
+    isLoading,
+    isError,
+  } = useQuery({
     queryKey: ["problem", id],
     queryFn: () => api.get<ProblemDetail>(`/problems/${id}/student-view`),
     enabled: !!id,
@@ -35,7 +47,26 @@ export default function ProblemDetailScreen() {
     router.push(`/tutor/${session.id}`);
   }
 
-  if (!problem) return null;
+  if (isLoading) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: "center", alignItems: "center" }}>
+        <ActivityIndicator color={colors.accent} />
+      </View>
+    );
+  }
+
+  if (isError || !problem) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: "center", alignItems: "center", padding: 24 }}>
+        <Text style={{ color: colors.textPrimary, fontSize: 16, fontWeight: "700" }}>
+          문제를 불러오지 못했어요
+        </Text>
+        <Text style={{ color: colors.textMuted, fontSize: 13, marginTop: 6, textAlign: "center" }}>
+          잠시 후 다시 시도해 주세요
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: isTablet ? 32 : 20, ...(isTablet && { maxWidth: 800, alignSelf: "center", width: "100%" }) }}>

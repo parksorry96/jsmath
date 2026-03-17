@@ -1,6 +1,6 @@
 """OCR domain models — re-export all models for Alembic and app usage."""
 
-from .base import Base, OCR_SCHEMA, TimestampMixin  # noqa: F401
+from .base import OCR_SCHEMA, Base, TimestampMixin  # noqa: F401
 from .checkpoint import PipelineCheckpoint  # noqa: F401
 from .curriculum_node import CurriculumNode, find_curriculum_node  # noqa: F401
 from .job import JobStatus, OcrJobTracking  # noqa: F401

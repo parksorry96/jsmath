@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
 
@@ -24,12 +25,12 @@ logger = logging.getLogger(__name__)
     acks_late=True,
 )
 def finalize_pipeline(
-    self,
-    prev_result: dict | None = None,
+    self: Any,
+    prev_result: dict[str, Any] | None = None,
     *,
     ocr_job_id: str | None = None,
-    segments: list[dict] | None = None,
-) -> dict:
+    segments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Mark job as completed, build problem payloads, and notify NestJS."""
     if prev_result:
         ocr_job_id = prev_result["ocr_job_id"]
@@ -43,7 +44,10 @@ def finalize_pipeline(
     return asyncio.run(_finalize(ocr_job_id, segments))
 
 
-async def _finalize(ocr_job_id: str, segments: list[dict]) -> dict:
+async def _finalize(
+    ocr_job_id: str,
+    segments: list[dict[str, Any]],
+) -> dict[str, Any]:
     # Idempotency: skip if job already completed
     async with worker_session() as session:
         job_result = await session.execute(
@@ -80,6 +84,7 @@ async def _finalize(ocr_job_id: str, segments: list[dict]) -> dict:
             "endPage": segment.get("end_page", 0),
             "stemLatex": segment.get("stem_latex", ""),
             "stemText": segment.get("stem_text", ""),
+            "bbox": segment.get("bbox"),
             "pageImageS3Key": page_image_map.get(segment.get("start_page", 0)),
             "problemImageS3Key": segment.get("problem_image_s3_key"),
         }

@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, Alert } from "react-native";
 import { useRouter } from "expo-router";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 
 const GRADES = ["중1", "중2", "중3", "고1", "고2", "고3"];
@@ -10,13 +11,31 @@ export default function OnboardingScreen() {
   const [grade, setGrade] = useState<string | null>(null);
   const [curriculum, setCurriculum] = useState<number | null>(null);
   const [step, setStep] = useState(0);
+  const [isSaving, setIsSaving] = useState(false);
   const router = useRouter();
+  const { completeOnboarding } = useAuth();
   const { colors } = useTheme();
 
   async function finish() {
-    if (!grade || !curriculum) return;
-    await api.patch("/auth/me/preferences", { gradeLevel: grade, curriculumYear: curriculum });
-    router.replace("/(tabs)");
+    if (!grade || !curriculum || isSaving) return;
+
+    setIsSaving(true);
+    try {
+      await api.patch("/auth/me/preferences", {
+        gradeLevel: grade,
+        curriculumYear: curriculum,
+      });
+      completeOnboarding();
+      router.replace("/(tabs)");
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "설정을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.";
+      Alert.alert("저장 실패", message);
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   if (step === 0) {
@@ -73,13 +92,15 @@ export default function OnboardingScreen() {
       ))}
       <Pressable
         onPress={finish}
-        disabled={!curriculum}
+        disabled={!curriculum || isSaving}
         style={{
-          backgroundColor: curriculum ? colors.accent : colors.border,
+          backgroundColor: curriculum && !isSaving ? colors.accent : colors.border,
           borderRadius: 28, paddingVertical: 16, alignItems: "center", marginTop: 24,
         }}
       >
-        <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>시작하기</Text>
+        <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>
+          {isSaving ? "저장 중..." : "시작하기"}
+        </Text>
       </Pressable>
     </View>
   );

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Text, View, type TextStyle } from "react-native";
-import MathView from "react-native-math-view";
+import { MathFragment } from "@/components/math/math-fragment";
 import { useTheme } from "@/lib/theme";
 
 interface LatexTextProps {
@@ -8,9 +8,42 @@ interface LatexTextProps {
   style?: TextStyle;
 }
 
+interface Segment {
+  type: "text" | "inline" | "display";
+  content: string;
+}
+
+const LATEX_SEGMENT_PATTERN =
+  /\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|\\\(([\s\S]+?)\\\)|\$([^\n$]+?)\$/g;
+const DISPLAY_MATH_ENVIRONMENT_PATTERN =
+  /\\begin\{(?:array|aligned|alignedat|gathered|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix|cases|subarray|split)\}/;
+
+function tokenizeTextForInlineLayout(text: string): Array<
+  | { type: "text"; content: string }
+  | { type: "line-break" }
+> {
+  const tokens: Array<{ type: "text"; content: string } | { type: "line-break" }> = [];
+  const lines = text.split("\n");
+
+  lines.forEach((line, lineIndex) => {
+    const lineTokens = line.match(/\S+\s*|\s+/g) ?? (line ? [line] : []);
+    lineTokens.forEach((token) => {
+      if (token.length > 0) {
+        tokens.push({ type: "text", content: token });
+      }
+    });
+
+    if (lineIndex < lines.length - 1) {
+      tokens.push({ type: "line-break" });
+    }
+  });
+
+  return tokens;
+}
+
 /**
- * Renders a string that may contain inline LaTeX ($...$) and display LaTeX ($$...$$).
- * Plain text segments render as Text; math segments render via MathView (MathJax SVG fallback on iOS).
+ * Renders a string that may contain inline LaTeX ($...$, \(...\))
+ * and display LaTeX ($$...$$, \[...\]).
  */
 export function LatexText({ children, style }: LatexTextProps) {
   const { colors } = useTheme();
@@ -22,8 +55,7 @@ export function LatexText({ children, style }: LatexTextProps) {
 
   if (segments.length === 0) return null;
 
-  // If only plain text, render simple Text
-  if (segments.every((s) => s.type === "text")) {
+  if (segments.every((segment) => segment.type === "text")) {
     return (
       <Text style={[{ color: colors.textPrimary, fontSize: 15, lineHeight: 24 }, style]}>
         {children}
@@ -33,84 +65,88 @@ export function LatexText({ children, style }: LatexTextProps) {
 
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center" }}>
-      {segments.map((seg, i) => {
-        if (seg.type === "text") {
-          return (
-            <Text key={i} style={[{ color: colors.textPrimary, fontSize: 15, lineHeight: 24 }, style]}>
-              {seg.content}
-            </Text>
-          );
+      {segments.map((segment, index) => {
+        if (segment.type === "text") {
+          return tokenizeTextForInlineLayout(segment.content).map((token, tokenIndex) => {
+            if (token.type === "line-break") {
+              return <View key={`${index}-br-${tokenIndex}`} style={{ width: "100%", height: 0 }} />;
+            }
+
+            return (
+              <Text
+                key={`${index}-text-${tokenIndex}`}
+                style={[{ color: colors.textPrimary, fontSize: 15, lineHeight: 24 }, style]}
+              >
+                {token.content}
+              </Text>
+            );
+          });
         }
-        if (seg.type === "display") {
+
+        if (segment.type === "display") {
           return (
-            <View key={i} style={{ width: "100%", alignItems: "center", marginVertical: 8 }}>
-              <MathViewSafe math={seg.content} color={colors.textPrimary} />
+            <View
+              key={index}
+              style={{ width: "100%", alignItems: "center", marginVertical: 8 }}
+            >
+              <MathFragment
+                math={segment.content}
+                color={colors.textPrimary}
+                inline={false}
+              />
             </View>
           );
         }
-        // inline math
-        return <MathViewSafe key={i} math={seg.content} color={colors.textPrimary} />;
+
+        return (
+          <View
+            key={index}
+            style={{ alignSelf: "center", justifyContent: "center", marginHorizontal: 1 }}
+          >
+            <MathFragment
+              math={segment.content}
+              color={colors.textPrimary}
+              inline
+            />
+          </View>
+        );
       })}
     </View>
   );
 }
 
-/**
- * Wraps MathView in a try/catch boundary.
- * If MathJax/SVG rendering fails, falls back to raw LaTeX text.
- */
-function MathViewSafe({ math, color }: { math: string; color: string }) {
-  try {
-    return <MathView math={`\\(${math}\\)`} color={color} resizeMode="contain" />;
-  } catch {
-    return (
-      <Text style={{ color, fontSize: 14, fontStyle: "italic" }}>{math}</Text>
-    );
-  }
-}
-
-interface Segment {
-  type: "text" | "inline" | "display";
-  content: string;
-}
-
 function parseLatex(input: string): Segment[] {
   const segments: Segment[] = [];
-  let remaining = input;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
 
-  while (remaining.length > 0) {
-    // Check for display math $$...$$
-    const displayIdx = remaining.indexOf("$$");
-    // Check for inline math $...$
-    const inlineIdx = remaining.indexOf("$");
-
-    if (displayIdx !== -1 && (displayIdx <= inlineIdx || inlineIdx === -1)) {
-      if (displayIdx > 0) {
-        segments.push({ type: "text", content: remaining.slice(0, displayIdx) });
-      }
-      const endIdx = remaining.indexOf("$$", displayIdx + 2);
-      if (endIdx === -1) {
-        segments.push({ type: "text", content: remaining.slice(displayIdx) });
-        break;
-      }
-      segments.push({ type: "display", content: remaining.slice(displayIdx + 2, endIdx) });
-      remaining = remaining.slice(endIdx + 2);
-    } else if (inlineIdx !== -1) {
-      if (inlineIdx > 0) {
-        segments.push({ type: "text", content: remaining.slice(0, inlineIdx) });
-      }
-      const endIdx = remaining.indexOf("$", inlineIdx + 1);
-      if (endIdx === -1) {
-        segments.push({ type: "text", content: remaining.slice(inlineIdx) });
-        break;
-      }
-      segments.push({ type: "inline", content: remaining.slice(inlineIdx + 1, endIdx) });
-      remaining = remaining.slice(endIdx + 1);
-    } else {
-      segments.push({ type: "text", content: remaining });
-      break;
+  while ((match = LATEX_SEGMENT_PATTERN.exec(input)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ type: "text", content: input.slice(lastIndex, match.index) });
     }
+
+    if (match[1] !== undefined || match[2] !== undefined) {
+      segments.push({
+        type: "display",
+        content: String(match[1] ?? match[2]).trim(),
+      });
+    } else if (match[3] !== undefined || match[4] !== undefined) {
+      const content = String(match[3] ?? match[4]).trim();
+      segments.push({
+        type:
+          DISPLAY_MATH_ENVIRONMENT_PATTERN.test(content) || /\\\\/.test(content)
+            ? "display"
+            : "inline",
+        content,
+      });
+    }
+
+    lastIndex = match.index + match[0].length;
   }
 
-  return segments.filter((s) => s.content.length > 0);
+  if (lastIndex < input.length) {
+    segments.push({ type: "text", content: input.slice(lastIndex) });
+  }
+
+  return segments.filter((segment) => segment.content.length > 0);
 }

@@ -7,12 +7,14 @@ import { api } from "@/lib/api";
 interface SubjectPrediction {
   subject: string;
   predictedScore: number;
-  maxScore: number;
-  grade: number; // 1-9
+  predictedGrade: number;
   confidence: number;
+  totalAnswered: number;
+  totalCorrect: number;
 }
 
 interface GradePredictionResponse {
+  studentId: string;
   predictions: SubjectPrediction[];
 }
 
@@ -55,8 +57,12 @@ export function GradePredictionSection() {
   return (
     <View style={{ padding: 16, gap: 12 }}>
       {predictions.map((pred) => {
-        const gc = gradeColor(pred.grade);
+        const gc = gradeColor(pred.predictedGrade);
         const confidencePct = Math.round(pred.confidence * 100);
+        const accuracyPct =
+          pred.totalAnswered > 0
+            ? Math.round((pred.totalCorrect / pred.totalAnswered) * 100)
+            : 0;
         return (
           <View
             key={pred.subject}
@@ -77,7 +83,9 @@ export function GradePredictionSection() {
                   marginRight: 14,
                 }}
               >
-                <Text style={{ color: gc, fontSize: 24, fontWeight: "800" }}>{pred.grade}</Text>
+                <Text style={{ color: gc, fontSize: 24, fontWeight: "800" }}>
+                  {pred.predictedGrade}
+                </Text>
                 <Text style={{ color: gc, fontSize: 9, marginTop: -2 }}>등급</Text>
               </View>
 
@@ -86,7 +94,7 @@ export function GradePredictionSection() {
                 <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: "700" }}>{pred.subject}</Text>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 6 }}>
                   <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                    예상 점수 {pred.predictedScore}/{pred.maxScore}
+                    예상 점수 {pred.predictedScore}점 · 정답률 {accuracyPct}%
                   </Text>
                   <Text style={{ color: colors.textMuted, fontSize: 12 }}>
                     신뢰도 {confidencePct}%

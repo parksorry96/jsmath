@@ -26,8 +26,8 @@ interface AuthRequest {
   user: { id: string; email: string; role: string };
 }
 
-const MAX_DIRECT_PDF_UPLOAD_BYTES = 100 * 1024 * 1024;
-const MAX_DIRECT_TEXTBOOK_FILE_BYTES = 100 * 1024 * 1024;
+const MAX_DIRECT_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_DIRECT_TEXTBOOK_FILE_BYTES = 20 * 1024 * 1024;
 
 function parseBooleanInput(value: unknown, defaultValue = true): boolean {
   if (typeof value === "boolean") return value;

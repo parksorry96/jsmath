@@ -25,10 +25,11 @@ export default function TutorHistoryScreen() {
   const { user } = useAuth();
   const router = useRouter();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["tutor-sessions"],
     queryFn: () => api.get<TutorSession[]>("/student-ai/tutor/sessions"),
     enabled: !!user,
+    retry: false,
   });
 
   const sessions = data ?? [];
@@ -61,6 +62,16 @@ export default function TutorHistoryScreen() {
       {isLoading ? (
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
           <ActivityIndicator color={colors.accent} />
+        </View>
+      ) : isError ? (
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
+          <MessageCircle color={colors.textMuted} size={48} strokeWidth={1} />
+          <Text style={{ color: colors.textMuted, fontSize: 16, marginTop: 16 }}>
+            대화 기록을 아직 불러올 수 없어요
+          </Text>
+          <Text style={{ color: colors.textMuted, fontSize: 13, marginTop: 4, textAlign: "center" }}>
+            문제 화면에서 바로 AI 튜터를 시작해 주세요
+          </Text>
         </View>
       ) : sessions.length === 0 ? (
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>

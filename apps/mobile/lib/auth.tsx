@@ -42,7 +42,30 @@ interface JwtPayload {
 
 function decodeJwtPayload(token: string): JwtPayload {
   const base64 = token.split(".")[1];
-  const json = atob(base64);
+  const normalized = base64.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "=",
+  );
+  const decoder = globalThis.atob
+    ? () => globalThis.atob(padded)
+    : () => {
+        const buffer = (globalThis as {
+          Buffer?: {
+            from: (
+              input: string,
+              encoding: string,
+            ) => { toString: (encoding: string) => string };
+          };
+        }).Buffer;
+
+        if (!buffer) {
+          throw new Error("Base64 decoder is not available");
+        }
+
+        return buffer.from(padded, "base64").toString("utf8");
+      };
+  const json = decoder();
   return JSON.parse(json);
 }
 

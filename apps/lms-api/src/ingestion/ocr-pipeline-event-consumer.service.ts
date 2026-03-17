@@ -49,8 +49,9 @@ export class OcrPipelineEventConsumerService
         "analysis:failed",
       ];
       if (durable.includes(channel)) {
-        void this.handler.handle(channel, message);
+        return this.handler.handle(channel, message);
       }
+      return undefined;
     });
 
     this.logger.log("OCR pipeline event consumer initialized");

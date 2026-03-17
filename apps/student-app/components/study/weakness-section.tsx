@@ -5,14 +5,16 @@ import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 
 interface UnitAccuracy {
+  subject: string;
   unitMajor: string;
   accuracy: number;
-  attempts: number;
+  attemptCount: number;
+  topErrorType: string | null;
 }
 
 interface WeaknessResponse {
-  summary: string;
-  unitAccuracies: UnitAccuracy[];
+  aiSummary: string | null;
+  units: UnitAccuracy[];
 }
 
 export function WeaknessSection() {
@@ -53,17 +55,19 @@ export function WeaknessSection() {
       {/* AI Summary */}
       <View style={{ backgroundColor: colors.surface, borderRadius: 16, padding: 16 }}>
         <Text style={{ color: colors.textMuted, fontSize: 12, fontWeight: "600", marginBottom: 8 }}>AI 분석 요약</Text>
-        <Text style={{ color: colors.textPrimary, fontSize: 14, lineHeight: 22 }}>{data.summary}</Text>
+        <Text style={{ color: colors.textPrimary, fontSize: 14, lineHeight: 22 }}>
+          {data.aiSummary ?? "아직 AI 분석 요약이 없습니다. 문제를 더 풀면 약점 분석이 정리됩니다."}
+        </Text>
       </View>
 
       {/* Unit accuracy list */}
-      {data.unitAccuracies.length > 0 && (
+      {data.units.length > 0 && (
         <View>
           <Text style={{ color: colors.textPrimary, fontSize: 16, fontWeight: "700", marginBottom: 10 }}>
             단원별 정답률
           </Text>
           <View style={{ gap: 8 }}>
-            {data.unitAccuracies.map((unit) => {
+            {data.units.map((unit) => {
               const pct = Math.round(unit.accuracy * 100);
               const barColor = pct >= 70 ? colors.success : pct >= 50 ? "#fbbf24" : colors.destructive;
               return (
@@ -79,7 +83,7 @@ export function WeaknessSection() {
                 >
                   <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 6 }}>
                     <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: "500", flex: 1, marginRight: 8 }}>
-                      {unit.unitMajor}
+                      {unit.subject} · {unit.unitMajor}
                     </Text>
                     <Text style={{ color: barColor, fontSize: 14, fontWeight: "700" }}>{pct}%</Text>
                   </View>
@@ -87,7 +91,7 @@ export function WeaknessSection() {
                     <View style={{ height: 4, backgroundColor: barColor, borderRadius: 2, width: `${pct}%` }} />
                   </View>
                   <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 6 }}>
-                    {unit.attempts}문제 풀이
+                    {unit.attemptCount}문제 풀이
                   </Text>
                 </View>
               );

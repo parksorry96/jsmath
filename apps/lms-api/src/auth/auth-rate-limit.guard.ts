@@ -4,8 +4,11 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
+  OnModuleDestroy,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Redis } from "ioredis";
 
 interface RequestLike {
   headers?: Record<string, string | string[] | undefined>;
@@ -23,10 +26,12 @@ interface RateLimitBucket {
 }
 
 @Injectable()
-export class AuthRateLimitGuard implements CanActivate {
+export class AuthRateLimitGuard implements CanActivate, OnModuleDestroy {
+  private readonly logger = new Logger(AuthRateLimitGuard.name);
   private readonly attempts = new Map<string, RateLimitBucket>();
   private readonly maxAttempts: number;
   private readonly windowMs: number;
+  private readonly redis?: Redis;
 
   constructor(config: ConfigService) {
     const configuredMaxAttempts = Number.parseInt(
@@ -44,22 +49,41 @@ export class AuthRateLimitGuard implements CanActivate {
     this.windowMs = Number.isFinite(configuredWindowMs) && configuredWindowMs > 0
       ? configuredWindowMs
       : 60_000;
+
+    const redisUrl = config.get<string>("REDIS_URL");
+    if (redisUrl) {
+      this.redis = new Redis(redisUrl, { lazyConnect: true });
+    }
   }
 
-  canActivate(context: ExecutionContext): boolean {
-    const request = context.switchToHttp().getRequest<RequestLike>();
-    const now = Date.now();
+  async onModuleDestroy() {
+    await this.redis?.quit();
+  }
 
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<RequestLike>();
+    const keys = this.getRateLimitKeys(request);
+    const limited = this.redis
+      ? await this.isRedisRateLimited(keys)
+      : this.isMemoryRateLimited(keys, Date.now());
+
+    if (limited) {
+      throw new HttpException(
+        "Too many authentication attempts. Please try again later.",
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    return true;
+  }
+
+  private isMemoryRateLimited(keys: string[], now: number) {
     this.pruneExpiredBuckets(now);
 
-    const keys = this.getRateLimitKeys(request);
     for (const key of keys) {
       const current = this.attempts.get(key);
       if (current && current.resetAt > now && current.count >= this.maxAttempts) {
-        throw new HttpException(
-          "Too many authentication attempts. Please try again later.",
-          HttpStatus.TOO_MANY_REQUESTS,
-        );
+        return true;
       }
     }
 
@@ -73,7 +97,33 @@ export class AuthRateLimitGuard implements CanActivate {
       current.count += 1;
     }
 
-    return true;
+    return false;
+  }
+
+  private async isRedisRateLimited(keys: string[]) {
+    try {
+      if (this.redis!.status === "wait") {
+        await this.redis!.connect();
+      }
+      const counts = await Promise.all(
+        keys.map(async (key) => {
+          const namespaced = `auth-rate-limit:${key}`;
+          const count = await this.redis!.incr(namespaced);
+          if (count === 1) {
+            await this.redis!.pexpire(namespaced, this.windowMs);
+          }
+          return count;
+        }),
+      );
+
+      return counts.some((count) => count > this.maxAttempts);
+    } catch (error) {
+      this.logger.warn(
+        "Redis rate limit failed; falling back to in-memory buckets",
+        error instanceof Error ? error.message : String(error),
+      );
+      return this.isMemoryRateLimited(keys, Date.now());
+    }
   }
 
   private getRateLimitKeys(request: RequestLike): string[] {

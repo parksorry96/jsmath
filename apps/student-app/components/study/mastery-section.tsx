@@ -6,19 +6,29 @@ import { api } from "@/lib/api";
 
 type MasteryState = "mastered" | "practicing" | "learning" | "not_started";
 
-interface MasteryUnit {
-  unitMajor: string;
-  state: MasteryState;
-  accuracy: number;
-  attempts: number;
+interface MasteryNode {
+  id: string;
+  label: string;
+  level: number;
+  children: MasteryNode[];
+  mastery: {
+    state: MasteryState;
+    totalAttempts: number;
+    totalCorrect: number;
+  } | null;
 }
 
 interface MasteryGroup {
   subject: string;
-  units: MasteryUnit[];
+  units: Array<{
+    unitMajor: string;
+    state: MasteryState;
+    accuracy: number;
+    attempts: number;
+  }>;
 }
 
-type MasteryTreeResponse = MasteryGroup[];
+type MasteryTreeResponse = MasteryNode[];
 
 const STATE_CONFIG: Record<MasteryState, { label: string; color: string }> = {
   mastered: { label: "완성", color: "#4ade80" },
@@ -45,7 +55,24 @@ export function MasterySection() {
     );
   }
 
-  const groups = data ?? [];
+  const groups: MasteryGroup[] = (data ?? [])
+    .filter((node) => node.level === 1)
+    .map((subjectNode) => ({
+      subject: subjectNode.label,
+      units: subjectNode.children
+        .filter((child) => child.level === 2)
+        .map((unitNode) => {
+          const attempts = unitNode.mastery?.totalAttempts ?? 0;
+          const totalCorrect = unitNode.mastery?.totalCorrect ?? 0;
+          return {
+            unitMajor: unitNode.label,
+            state: unitNode.mastery?.state ?? "not_started",
+            accuracy: attempts > 0 ? totalCorrect / attempts : 0,
+            attempts,
+          };
+        }),
+    }))
+    .filter((group) => group.units.length > 0);
 
   if (groups.length === 0) {
     return (

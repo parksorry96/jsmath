@@ -7,7 +7,10 @@ declare module "react-native-math-view" {
     style?: StyleProp<ViewStyle>;
     color?: string;
     resizeMode?: "contain" | "cover";
-    config?: { inline?: boolean };
+    config?: {
+      inline?: boolean;
+      displayAlign?: "auto" | "center" | "left" | "right";
+    };
     debug?: boolean;
     renderError?: ComponentType;
   }

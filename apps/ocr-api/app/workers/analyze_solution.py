@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from typing import Any
 
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from sqlalchemy import select
@@ -17,9 +17,9 @@ from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.config import settings
-from app.services.openai_client import get_openai_client
 from app.database import worker_session
-from app.models.problem import AnalysisStatus, Problem, ProblemChoice
+from app.models.problem import Problem
+from app.services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,12 @@ SOLUTION_ANALYSIS_USER_PROMPT = """# Problem
     retry_backoff=True,
     acks_late=True,
 )
-def analyze_solution(self, previous_result=None, *, problem_id: str | None = None) -> dict:
+def analyze_solution(
+    self: Any,
+    previous_result: dict[str, Any] | None = None,
+    *,
+    problem_id: str | None = None,
+) -> dict[str, Any]:
     """Analyze a single problem's solution strategy using GPT-4o."""
     if previous_result and isinstance(previous_result, dict):
         problem_id = problem_id or previous_result.get("problem_id")
@@ -100,7 +105,7 @@ def analyze_solution(self, previous_result=None, *, problem_id: str | None = Non
     return asyncio.run(_analyze(self, problem_id))
 
 
-async def _analyze(task, problem_id: str) -> dict:
+async def _analyze(task: Any, problem_id: str) -> dict[str, Any]:
     async with worker_session() as session:
         result = await session.execute(
             select(Problem)

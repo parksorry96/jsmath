@@ -1,13 +1,15 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from app.config import settings
 
 engine = create_async_engine(settings.async_database_url, echo=False, pool_size=10, max_overflow=20)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-async def get_db() -> AsyncSession:  # type: ignore[misc]
+async def get_db() -> AsyncIterator[AsyncSession]:
     async with async_session() as session:
         yield session
 
@@ -18,7 +20,7 @@ _worker_engines: dict[int, object] = {}
 
 
 @asynccontextmanager
-async def worker_session():
+async def worker_session() -> AsyncIterator[AsyncSession]:
     """Create an async session for Celery workers.
 
     Each event loop gets its own engine with a bounded pool (pool_size=5,

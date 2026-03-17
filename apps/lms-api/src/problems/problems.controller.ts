@@ -71,6 +71,7 @@ export class ProblemsController {
     @Query("curriculumNodeId") curriculumNodeId?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
+    @Query("includeDetails") includeDetails?: string,
   ) {
     const queryText = q ?? search;
     if (searchMode === "semantic" && queryText) {
@@ -104,6 +105,10 @@ export class ProblemsController {
       curriculumNodeId,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
+      includeDetails:
+        includeDetails === undefined
+          ? undefined
+          : !["false", "0", "no"].includes(includeDetails.toLowerCase()),
     });
   }
 
@@ -171,6 +176,12 @@ export class ProblemsController {
       req.user.role,
       dto.difficultyTarget,
     );
+  }
+
+  @Get(":id")
+  @Roles("admin", "teacher")
+  getProblem(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.problems.getProblem(id, req.user.id, req.user.role);
   }
 
   @Get(":id/student-view")

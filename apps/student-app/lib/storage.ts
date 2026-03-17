@@ -6,16 +6,16 @@ function canUseWebStorage() {
 }
 
 export async function getItemAsync(key: string) {
-  if (canUseWebStorage()) return window.localStorage.getItem(key);
+  if (canUseWebStorage()) return window.sessionStorage.getItem(key);
   return SecureStore.getItemAsync(key);
 }
 
 export async function setItemAsync(key: string, value: string) {
-  if (canUseWebStorage()) { window.localStorage.setItem(key, value); return; }
+  if (canUseWebStorage()) { window.sessionStorage.setItem(key, value); return; }
   await SecureStore.setItemAsync(key, value);
 }
 
 export async function deleteItemAsync(key: string) {
-  if (canUseWebStorage()) { window.localStorage.removeItem(key); return; }
+  if (canUseWebStorage()) { window.sessionStorage.removeItem(key); return; }
   await SecureStore.deleteItemAsync(key);
 }

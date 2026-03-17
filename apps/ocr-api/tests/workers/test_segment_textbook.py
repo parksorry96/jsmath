@@ -1,17 +1,16 @@
 """Tests for EBS textbook segmentation patterns."""
-import pytest
 
-from tests.conftest import make_line, make_page
 from app.workers.segment_textbook import (
     _extract_exam_header_metadata,
-    _match_item_code,
-    _match_section_transition,
-    _match_example_start,
-    _match_past_exam_year,
     _is_inline_block,
+    _match_example_start,
+    _match_item_code,
+    _match_past_exam_year,
     _match_problem_start,
+    _match_section_transition,
     _rule_based_segment,
 )
+from tests.conftest import make_line, make_page
 
 
 class TestItemCodePattern:

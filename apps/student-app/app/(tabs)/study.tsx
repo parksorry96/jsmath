@@ -1,5 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { View, Text, ScrollView, Pressable, RefreshControl, useWindowDimensions } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/lib/theme";
 import { WrongAnswersSection } from "@/components/study/wrong-answers-section";
@@ -18,13 +19,28 @@ const SECTIONS: { key: StudySection; label: string }[] = [
   { key: "prediction", label: "성적예측" },
 ];
 
+function isStudySection(value: string): value is StudySection {
+  return SECTIONS.some((section) => section.key === value);
+}
+
 export default function StudyScreen() {
   const { colors } = useTheme();
   const queryClient = useQueryClient();
   const { width } = useWindowDimensions();
+  const params = useLocalSearchParams<{ section?: string | string[] }>();
   const isTablet = width > 768;
   const [activeSection, setActiveSection] = useState<StudySection>("wrong");
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  useEffect(() => {
+    const rawSection = Array.isArray(params.section)
+      ? params.section[0]
+      : params.section;
+
+    if (rawSection && isStudySection(rawSection)) {
+      setActiveSection(rawSection);
+    }
+  }, [params.section]);
 
   const onRefresh = useCallback(async () => {
     setIsRefreshing(true);

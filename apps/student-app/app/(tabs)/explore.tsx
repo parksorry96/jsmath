@@ -1,12 +1,21 @@
-import { useState } from "react";
-import { View, Text, TextInput, FlatList, Pressable, useWindowDimensions } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  FlatList,
+  Pressable,
+  useWindowDimensions,
+  ActivityIndicator,
+} from "react-native";
 import { Camera, Search as SearchIcon } from "lucide-react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useTheme } from "@/lib/theme";
 import { useProblems } from "@/hooks/useProblems";
 import { LatexText } from "@/components/math/latex-text";
 
 export default function ExploreScreen() {
+  const params = useLocalSearchParams<{ search?: string | string[] }>();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const router = useRouter();
@@ -15,6 +24,17 @@ export default function ExploreScreen() {
   const isTablet = width > 768;
   const hPad = isTablet ? 32 : 16;
   const { data, isLoading } = useProblems({ search: search || undefined, page });
+
+  useEffect(() => {
+    const rawSearch = Array.isArray(params.search)
+      ? params.search[0]
+      : params.search;
+
+    if (typeof rawSearch === "string") {
+      setSearch(rawSearch);
+      setPage(1);
+    }
+  }, [params.search]);
 
   const difficultyColor = (d: number) => {
     if (d <= 2) return colors.success;
@@ -59,6 +79,17 @@ export default function ExploreScreen() {
         data={data?.items ?? []}
         keyExtractor={(item) => item.id}
         contentContainerStyle={{ paddingHorizontal: hPad, gap: 10, paddingBottom: 20, ...(isTablet && { maxWidth: 800, alignSelf: "center", width: "100%" }) }}
+        ListEmptyComponent={
+          <View style={{ paddingVertical: 48, alignItems: "center" }}>
+            {isLoading ? (
+              <ActivityIndicator color={colors.accent} />
+            ) : (
+              <Text style={{ color: colors.textMuted, fontSize: 14 }}>
+                {search ? "검색 결과가 없습니다" : "표시할 문제가 없습니다"}
+              </Text>
+            )}
+          </View>
+        }
         renderItem={({ item }) => (
           <Pressable
             onPress={() => router.push(`/problem/${item.id}`)}

@@ -17,6 +17,7 @@ interface SocialProfile {
   provider: "kakao" | "apple" | "google";
   providerAccountId: string;
   email: string | null;
+  emailVerified: boolean;
   name: string | null;
 }
 
@@ -78,7 +79,7 @@ export class AuthService {
     }
 
     // If email matches an existing account, link the social provider
-    if (profile.email) {
+    if (profile.email && profile.emailVerified) {
       const emailUser = await this.prisma.user.findUnique({
         where: { email: profile.email },
       });
@@ -95,9 +96,9 @@ export class AuthService {
     }
 
     // Create new user
-    const email =
-      profile.email ??
-      `${profile.provider}_${profile.providerAccountId}@social.jsmath.local`;
+    const email = profile.email && profile.emailVerified
+      ? profile.email
+      : `${profile.provider}_${profile.providerAccountId}@social.jsmath.local`;
     const user = await this.prisma.user.create({
       data: {
         email,
@@ -155,12 +156,21 @@ export class AuthService {
 
     const data = (await res.json()) as {
       id: number;
-      kakao_account?: { email?: string; profile?: { nickname?: string } };
+      kakao_account?: {
+        email?: string;
+        is_email_valid?: boolean;
+        is_email_verified?: boolean;
+        profile?: { nickname?: string };
+      };
     };
+    const emailVerified =
+      data.kakao_account?.is_email_valid === true &&
+      data.kakao_account?.is_email_verified === true;
     return {
       provider: "kakao",
       providerAccountId: String(data.id),
-      email: data.kakao_account?.email ?? null,
+      email: emailVerified ? (data.kakao_account?.email ?? null) : null,
+      emailVerified,
       name: data.kakao_account?.profile?.nickname ?? null,
     };
   }
@@ -180,6 +190,8 @@ export class AuthService {
       provider: "apple",
       providerAccountId: payload.sub!,
       email: (payload.email as string) ?? null,
+      emailVerified:
+        payload.email_verified === true || payload.email_verified === "true",
       name: null,
     };
   }
@@ -194,12 +206,14 @@ export class AuthService {
     const data = (await res.json()) as {
       sub: string;
       email?: string;
+      email_verified?: boolean;
       name?: string;
     };
     return {
       provider: "google",
       providerAccountId: data.sub,
       email: data.email ?? null,
+      emailVerified: data.email_verified === true,
       name: data.name ?? null,
     };
   }

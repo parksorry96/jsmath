@@ -1,20 +1,18 @@
 import {
   Injectable,
   NotFoundException,
-  OnModuleDestroy,
-  OnModuleInit,
   Logger,
+  InternalServerErrorException,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReviewStatus, OcrJobStatus } from "@prisma/client";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
 import { BrowseProblemsDto } from "./dto/browse-problems.dto";
-import { Redis } from "ioredis";
 import { normalizeFilename } from "../common/filename";
 import { TwinProblemService } from "./twin-problem.service";
 import { EmbeddingService } from "./embedding.service";
 import { ProblemRevisionService } from "./problem-revision.service";
+import { RedisEventBusService } from "../common/redis-event-bus.service";
 import {
   getAccessibleOcrJobWhere,
   getAccessibleProblemWhere,
@@ -41,29 +39,84 @@ export interface ProblemsQuery {
   curriculumNodeId?: string;
   page?: number;
   limit?: number;
+  includeDetails?: boolean;
+}
+
+function buildProblemListSelect(includeDetails: boolean) {
+  return {
+    id: true,
+    stemLatex: true,
+    stemText: true,
+    problemNumber: true,
+    displayNumber: true,
+    problemType: true,
+    bbox: includeDetails,
+    reviewStatus: true,
+    gradeLevel: true,
+    subject: true,
+    unitMajor: true,
+    unitMinor: true,
+    classification2015: true,
+    classification2022: true,
+    difficulty: true,
+    classificationConfidence: true,
+    solutionConfidence: true,
+    reviewConfidence: true,
+    solutionTags: true,
+    analysisStatus: true,
+    ocrJobId: true,
+    startPage: true,
+    endPage: true,
+    bookSource: true,
+    examSource: true,
+    answerMatchStatus: true,
+    solutionLatex: includeDetails,
+    createdAt: true,
+    choices: includeDetails
+      ? {
+          select: {
+            label: true,
+            contentLatex: true,
+            contentText: true,
+            position: true,
+          },
+          orderBy: { position: "asc" as const },
+        }
+      : false,
+    assets: includeDetails
+      ? {
+          select: {
+            id: true,
+            kind: true,
+            subKind: true,
+            s3Key: true,
+            format: true,
+            widthPx: true,
+            heightPx: true,
+          },
+        }
+      : false,
+    ocrJob: {
+      select: {
+        sourceFile: {
+          select: { filename: true },
+        },
+      },
+    },
+  };
 }
 
 @Injectable()
-export class ProblemsService implements OnModuleInit, OnModuleDestroy {
+export class ProblemsService {
   private readonly logger = new Logger(ProblemsService.name);
-  private redisPublisher: Redis;
 
   constructor(
     private prisma: PrismaService,
-    private config: ConfigService,
+    private eventBus: RedisEventBusService,
     private twinProblemService: TwinProblemService,
     private embeddingService: EmbeddingService,
     private problemRevisionService: ProblemRevisionService,
   ) {}
-
-  onModuleInit() {
-    const redisUrl = this.config.getOrThrow<string>("REDIS_URL");
-    this.redisPublisher = new Redis(redisUrl);
-  }
-
-  async onModuleDestroy() {
-    await this.redisPublisher.quit();
-  }
 
   private getProblemScopeWhere(requesterId: string, requesterRole: string) {
     return getAccessibleProblemWhere(requesterId, requesterRole);
@@ -153,6 +206,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     const page = query.page ?? 1;
     const limit = Math.min(query.limit ?? 20, 100);
     const skip = (page - 1) * limit;
+    const includeDetails = query.includeDetails ?? true;
 
     // Route text searches through hybrid search (tsvector + pgvector RRF)
     if (query.q) {
@@ -232,63 +286,7 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
         skip,
         take: limit,
         orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          stemLatex: true,
-          stemText: true,
-          problemNumber: true,
-          displayNumber: true,
-          problemType: true,
-          bbox: true,
-          reviewStatus: true,
-          gradeLevel: true,
-          subject: true,
-          unitMajor: true,
-          unitMinor: true,
-          classification2015: true,
-          classification2022: true,
-          difficulty: true,
-          classificationConfidence: true,
-          solutionConfidence: true,
-          reviewConfidence: true,
-          solutionTags: true,
-          analysisStatus: true,
-          ocrJobId: true,
-          startPage: true,
-          endPage: true,
-          bookSource: true,
-          examSource: true,
-          answerMatchStatus: true,
-          solutionLatex: true,
-          createdAt: true,
-          choices: {
-            select: {
-              label: true,
-              contentLatex: true,
-              contentText: true,
-              position: true,
-            },
-            orderBy: { position: "asc" },
-          },
-          assets: {
-            select: {
-              id: true,
-              kind: true,
-              subKind: true,
-              s3Key: true,
-              format: true,
-              widthPx: true,
-              heightPx: true,
-            },
-          },
-          ocrJob: {
-            select: {
-              sourceFile: {
-                select: { filename: true },
-              },
-            },
-          },
-        },
+        select: buildProblemListSelect(includeDetails),
       }),
       this.prisma.problem.count({ where }),
     ]);
@@ -732,10 +730,20 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
       data: { analysisStatus: "analyzing" },
     });
 
-    await this.redisPublisher.publish(
-      "analysis:request",
-      JSON.stringify({ ocrJobId, problemIds }),
-    );
+    try {
+      await this.eventBus.publishDurable("analysis:request", {
+        ocrJobId,
+        problemIds,
+      });
+    } catch (error) {
+      await this.prisma.problem.updateMany({
+        where: { id: { in: problemIds } },
+        data: { analysisStatus: "failed" },
+      });
+      throw new InternalServerErrorException(
+        error instanceof Error ? error.message : "Failed to queue analysis",
+      );
+    }
 
     return {
       ocrJobId,
@@ -783,6 +791,25 @@ export class ProblemsService implements OnModuleInit, OnModuleDestroy {
     });
     if (!problem) throw new NotFoundException("Problem not found");
     return problem;
+  }
+
+  async getProblem(problemId: string, requesterId: string, requesterRole: string) {
+    const problem = await this.prisma.problem.findFirst({
+      where: {
+        id: problemId,
+        ...this.getProblemScopeWhere(requesterId, requesterRole),
+      },
+      select: buildProblemListSelect(true),
+    });
+    if (!problem) {
+      throw new NotFoundException("Problem not found");
+    }
+
+    return {
+      ...problem,
+      sourceFile: normalizeFilename(problem.ocrJob?.sourceFile?.filename) ?? null,
+      ocrJob: undefined,
+    };
   }
 
   async generateTwinProblem(

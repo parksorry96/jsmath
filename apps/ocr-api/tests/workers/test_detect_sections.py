@@ -1,11 +1,11 @@
 """Tests for EBS section detection — quick answer page."""
 
-from tests.conftest import make_line, make_page
 from app.workers.detect_sections import (
     _find_content_start,
     _find_quick_answer_page,
     _looks_like_answer_table_page,
 )
+from tests.conftest import make_line, make_page
 
 
 class TestQuickAnswerDetection:

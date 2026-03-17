@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import enum
+from datetime import datetime
 
 from sqlalchemy import DateTime, Enum, Index, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TimestampMixin
 
@@ -62,7 +63,7 @@ class OcrJobTracking(Base, TimestampMixin):
     # Textbook identification
     textbook_id: Mapped[str | None] = mapped_column(String(30))
 
-    completed_at: Mapped[str | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         Index("ix_job_tracking_status_created", "status", "created_at"),

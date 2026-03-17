@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any
 
+from pydantic import BaseModel, Field
 
 # ─── Classification Taxonomy Constants ───
 
@@ -153,6 +154,15 @@ class BBox(BaseModel):
     h: float
 
 
+class ProblemLayout(BaseModel):
+    x: float
+    y: float
+    w: float
+    h: float
+    boxed_blocks: list[dict[str, Any]] | None = None
+    structured_stem: list[dict[str, Any]] | None = None
+
+
 class SegmentedProblem(BaseModel):
     """Output of the problem segmentation step."""
 
@@ -165,7 +175,7 @@ class SegmentedProblem(BaseModel):
     end_line: int
     stem_latex: str
     stem_text: str
-    bbox: BBox | None = None
+    bbox: ProblemLayout | None = None
     choices: list[ChoiceItem] | None = None
     sub_problems: list[SegmentedProblem] | None = None
     shared_stem_latex: str | None = None

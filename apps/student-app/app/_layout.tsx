@@ -2,6 +2,7 @@ import "../global.css";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { ThemeProvider } from "@/lib/theme";
 
@@ -15,15 +16,19 @@ function RootNavigator() {
   useEffect(() => {
     if (isLoading) return;
     const inAuth = segments[0] === "(auth)";
+    const authScreen = (segments as string[])[1];
+    const isOnboardingScreen = inAuth && authScreen === "onboarding";
 
     if (!user && !inAuth) {
       router.replace("/(auth)/welcome");
-    } else if (user && inAuth && !isNewUser) {
-      router.replace("/(tabs)");
-    } else if (user && isNewUser) {
+    } else if (!user && isOnboardingScreen) {
+      router.replace("/(auth)/welcome");
+    } else if (user && isNewUser && !isOnboardingScreen) {
       router.replace("/(auth)/onboarding");
+    } else if (user && inAuth && !isOnboardingScreen) {
+      router.replace("/(tabs)");
     }
-  }, [user, isLoading, isNewUser, segments]);
+  }, [isLoading, isNewUser, router, segments, user]);
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
@@ -40,12 +45,14 @@ function RootNavigator() {
 
 export default function RootLayout() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <ThemeProvider>
-          <RootNavigator />
-        </ThemeProvider>
-      </AuthProvider>
-    </QueryClientProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <ThemeProvider>
+            <RootNavigator />
+          </ThemeProvider>
+        </AuthProvider>
+      </QueryClientProvider>
+    </GestureHandlerRootView>
   );
 }

@@ -1,7 +1,8 @@
 import httpx
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app.api.security import rate_limit_single_problem_ocr
 from app.config import settings
 
 router = APIRouter(prefix="/ocr", tags=["single-ocr"])
@@ -18,8 +19,12 @@ class SingleOcrResponse(BaseModel):
     raw_blocks: list[OcrBlock]
 
 
-@router.post("/single-problem", response_model=SingleOcrResponse)
-async def ocr_single_problem(image: UploadFile = File(...)):
+@router.post(
+    "/single-problem",
+    response_model=SingleOcrResponse,
+    dependencies=[Depends(rate_limit_single_problem_ocr)],
+)
+async def ocr_single_problem(image: UploadFile = File(...)) -> SingleOcrResponse:
     if image.content_type not in ("image/jpeg", "image/png", "image/webp"):
         raise HTTPException(400, "Only JPEG, PNG, WebP images are supported")
 

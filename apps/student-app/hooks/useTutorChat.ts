@@ -1,8 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { api } from "@/lib/api";
-import { getItemAsync } from "@/lib/storage";
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://192.168.0.78:3001/v1";
+import { streamTutorMessage } from "@/lib/tutor-stream";
 
 interface Message {
   id: string;
@@ -53,94 +51,80 @@ export function useTutorChat(sessionId: string) {
         setIsLoading(false);
       }
     })();
+
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [sessionId]);
 
   const sendMessage = useCallback(async (content: string, imageS3Key?: string) => {
     const studentMsg: Message = { id: Date.now().toString(), role: "student", content };
     setMessages((prev) => [...prev, studentMsg]);
     setIsStreaming(true);
+    let tutorMsgId: string | null = null;
 
     try {
-      const token = await getItemAsync("auth_token");
       abortRef.current = new AbortController();
 
-      const res = await fetch(
-        `${API_URL}/student-ai/tutor/sessions/${sessionId}/message`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ content, imageS3Key }),
-          signal: abortRef.current.signal,
-        },
-      );
-
-      if (!res.ok) throw new Error("Stream failed");
-
       let tutorContent = "";
-      const tutorMsgId = `tutor-${Date.now()}`;
-      setMessages((prev) => [...prev, { id: tutorMsgId, role: "tutor", content: "" }]);
+      const createdTutorMsgId = `tutor-${Date.now()}`;
+      tutorMsgId = createdTutorMsgId;
+      setMessages((prev) => [
+        ...prev,
+        { id: createdTutorMsgId, role: "tutor", content: "" },
+      ]);
 
-      // Try streaming via ReadableStream (works in some RN environments)
-      if (res.body && typeof res.body.getReader === "function") {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          for (const line of chunk.split("\n")) {
-            if (line.startsWith("event: done")) break;
-            if (line.startsWith("data: ")) {
-              const data = line.slice(6);
-              if (data === "[DONE]" || data === "{}") continue;
-              try {
-                const parsed = JSON.parse(data);
-                const text = parsed.chunk ?? parsed.content;
-                if (text) {
-                  tutorContent += text;
-                  setMessages((prev) =>
-                    prev.map((m) => m.id === tutorMsgId ? { ...m, content: tutorContent } : m),
-                  );
-                }
-              } catch { /* non-JSON SSE line */ }
-            }
-          }
-        }
-      } else {
-        // Fallback: read entire response as text, parse SSE lines
-        const text = await res.text();
-        for (const line of text.split("\n")) {
-          if (line.startsWith("event: done")) break;
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (data === "[DONE]" || data === "{}") continue;
-            try {
-              const parsed = JSON.parse(data);
-              const chunk = parsed.chunk ?? parsed.content;
-              if (chunk) tutorContent += chunk;
-            } catch { /* skip */ }
-          }
-        }
-        if (tutorContent) {
+      await streamTutorMessage({
+        sessionId,
+        content,
+        imageS3Key,
+        signal: abortRef.current.signal,
+        onChunk: (nextContent) => {
+          tutorContent = nextContent;
           setMessages((prev) =>
-            prev.map((m) => m.id === tutorMsgId ? { ...m, content: tutorContent } : m),
+            prev.map((message) =>
+              message.id === tutorMsgId
+                ? { ...message, content: nextContent }
+                : message,
+            ),
           );
-        }
-      }
+        },
+      });
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
-        setMessages((prev) => [
-          ...prev,
-          { id: `error-${Date.now()}`, role: "tutor", content: "응답을 받지 못했어요. 다시 시도해주세요." },
-        ]);
+        const errorMessage =
+          e instanceof Error && e.message
+            ? e.message
+            : "응답을 받지 못했어요. 다시 시도해주세요.";
+
+        setMessages((prev) => {
+          const placeholderId = tutorMsgId;
+
+          if (!placeholderId) {
+            return [
+              ...prev,
+              { id: `error-${Date.now()}`, role: "tutor", content: errorMessage },
+            ];
+          }
+
+          let replaced = false;
+          const next = prev.map((message) => {
+            if (message.id === placeholderId) {
+              replaced = true;
+              return { ...message, content: errorMessage };
+            }
+
+            return message;
+          });
+
+          return replaced
+            ? next
+            : [...next, { id: `error-${Date.now()}`, role: "tutor", content: errorMessage }];
+        });
       }
     } finally {
       setIsStreaming(false);
+      abortRef.current = null;
     }
   }, [sessionId]);
 

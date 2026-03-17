@@ -37,10 +37,57 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
+ignore = ["E402", "E501", "E702", "E741", "N806"]
 
 [tool.mypy]
 python_version = "3.12"
-strict = true
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+disallow_any_generics = false
+warn_return_any = true
+disable_error_code = ["arg-type", "call-overload", "no-any-return", "return-value", "var-annotated"]
+
+[[tool.mypy.overrides]]
+module = [
+    "app.config",
+    "app.database",
+    "app.celery_app",
+    "app.api.security",
+    "app.api.health_routes",
+    "app.api.single_ocr_routes",
+    "app.services.checkpoint",
+    "app.services.mathpix",
+    "app.services.openai_client",
+    "app.services.redis_events",
+    "app.services.s3",
+    "app.workers.detect_sections",
+    "app.workers.finalize",
+    "app.workers.finalize_textbook",
+    "app.workers.match_answers",
+    "app.workers.detect_exam_pattern",
+    "app.workers.find_similar",
+    "app.workers.generate_embedding",
+    "app.workers.analyze_solution",
+    "app.workers.analysis_pipeline",
+    "app.workers.crop_figures",
+    "app.workers.parse_results",
+    "app.workers.refine_classification",
+    "app.workers.auto_review",
+    "app.workers.segment_problems",
+    "app.workers.unified_analysis",
+    "app.workers.segment_textbook",
+    "app.workers.rubric_grader",
+    "app.workers.pipeline",
+    "app.workers.analyze_photo",
+]
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

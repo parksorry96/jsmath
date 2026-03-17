@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import { useTheme } from "@/lib/theme";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
+import { LatexText } from "@/components/math/latex-text";
 
 interface WrongAnswer {
   id: string;
@@ -55,6 +56,14 @@ export function WrongAnswersSection() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["wrong-answers"] }),
   });
 
+  const startTutorMutation = useMutation({
+    mutationFn: (problemId: string) =>
+      api.post<{ id: string }>("/student-ai/tutor/sessions", { problemId }),
+    onSuccess: (session) => {
+      router.push(`/tutor/${session.id}`);
+    },
+  });
+
   if (isLoading) {
     return (
       <View style={{ paddingVertical: 48, alignItems: "center" }}>
@@ -92,14 +101,20 @@ export function WrongAnswersSection() {
               overflow: "hidden",
             }}
           >
-            <View style={{ padding: 16 }}>
+              <View style={{ padding: 16 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text
-                  numberOfLines={isExpanded ? undefined : 2}
-                  style={{ flex: 1, fontSize: 14, color: colors.textPrimary, lineHeight: 20, marginRight: 8 }}
+                <View
+                  style={{
+                    flex: 1,
+                    marginRight: 8,
+                    maxHeight: isExpanded ? undefined : 44,
+                    overflow: "hidden",
+                  }}
                 >
-                  {item.problemContent}
-                </Text>
+                  <LatexText style={{ fontSize: 14, lineHeight: 20 }}>
+                    {item.problemContent}
+                  </LatexText>
+                </View>
                 <View style={{ backgroundColor: errorColor + "22", borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 }}>
                   <Text style={{ color: errorColor, fontSize: 11, fontWeight: "600" }}>{errorLabel}</Text>
                 </View>
@@ -118,13 +133,17 @@ export function WrongAnswersSection() {
               <View style={{ borderTopWidth: 1, borderTopColor: colors.border, padding: 16, gap: 10 }}>
                 <View style={{ flexDirection: "row", gap: 10 }}>
                   <Pressable
-                    onPress={() => router.push(`/tutor/new?problemId=${item.problemId}`)}
+                    onPress={() => startTutorMutation.mutate(item.problemId)}
+                    disabled={startTutorMutation.isPending}
                     style={{
                       flex: 1, backgroundColor: colors.accent, borderRadius: 12,
                       paddingVertical: 12, alignItems: "center",
+                      opacity: startTutorMutation.isPending ? 0.7 : 1,
                     }}
                   >
-                    <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>AI 튜터</Text>
+                    <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>
+                      {startTutorMutation.isPending ? "시작 중..." : "AI 튜터"}
+                    </Text>
                   </Pressable>
                   {!item.resolved && (
                     <Pressable

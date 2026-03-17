@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { api, ApiError } from "./api";
+import { api } from "./api";
 
 export interface User {
   id: string;
@@ -47,28 +47,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Fetch current user from token on mount
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      setIsLoading(false);
-      return;
-    }
-
     api
       .get<User>("/users/me")
       .then(setUser)
-      .catch(() => {
-        localStorage.removeItem("token");
-      })
+      .catch(() => undefined)
       .finally(() => setIsLoading(false));
   }, []);
 
   const login = useCallback(
     async (email: string, password: string) => {
-      const { accessToken } = await api.post<{ accessToken: string }>(
+      await api.post<{ accessToken: string }>(
         "/auth/login",
         { email, password },
       );
-      localStorage.setItem("token", accessToken);
 
       const me = await api.get<User>("/users/me");
       setUser(me);
@@ -83,11 +74,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       name: string,
       password: string,
     ) => {
-      const { accessToken } = await api.post<{ accessToken: string }>(
+      await api.post<{ accessToken: string }>(
         "/auth/register",
         { email, name, password, role: "student" },
       );
-      localStorage.setItem("token", accessToken);
 
       const me = await api.get<User>("/users/me");
       setUser(me);
@@ -97,7 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(() => {
-    localStorage.removeItem("token");
+    void api.post("/auth/logout").catch(() => undefined);
     setUser(null);
     router.push("/login");
   }, [router]);

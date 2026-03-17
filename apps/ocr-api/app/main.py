@@ -2,6 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+import redis.asyncio as aioredis
 from fastapi import FastAPI
 
 from app.api.health_routes import router as health_router
@@ -17,17 +18,29 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Start Redis event listeners on startup, clean up on shutdown."""
-    pubsub_task = asyncio.create_task(listen_for_events())
+    app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    pubsub_task = (
+        asyncio.create_task(listen_for_events())
+        if settings.enable_legacy_pubsub
+        else None
+    )
     stream_task = asyncio.create_task(listen_for_events_stream())
-    logger.info("OCR event listeners started (Pub/Sub + Streams)")
+    logger.info(
+        "OCR event listeners started (%s + Streams)",
+        "Pub/Sub" if pubsub_task else "no Pub/Sub",
+    )
     yield
-    pubsub_task.cancel()
+    if pubsub_task:
+        pubsub_task.cancel()
     stream_task.cancel()
     for task in (pubsub_task, stream_task):
+        if task is None:
+            continue
         try:
             await task
         except asyncio.CancelledError:
             pass
+    await app.state.redis.aclose()
 
 
 app = FastAPI(
