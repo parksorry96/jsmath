@@ -37,6 +37,12 @@ export interface ProblemsQuery {
   examMonth?: string;
   examType?: string;
   curriculumNodeId?: string;
+  position?: string;        // "killer" | "semi_killer" | "normal"
+  correctRateMin?: number;  // 0-100 percentage
+  correctRateMax?: number;  // 0-100 percentage
+  pointValue?: number;      // 2, 3, 4
+  examYearMin?: number;     // minimum exam year (inclusive)
+  sortBy?: string;          // "newest" | "correct_rate_asc" | "correct_rate_desc" | "point_value_desc"
   page?: number;
   limit?: number;
   includeDetails?: boolean;
@@ -203,100 +209,348 @@ export class ProblemsService {
   }
 
   async findAll(query: ProblemsQuery) {
-    const page = query.page ?? 1;
-    const limit = Math.min(query.limit ?? 20, 100);
-    const skip = (page - 1) * limit;
-    const includeDetails = query.includeDetails ?? true;
+    return this.findAllWithExamMeta(query);
+  }
 
-    // Route text searches through hybrid search (tsvector + pgvector RRF)
-    if (query.q) {
-      try {
-        return await this.hybridSearch(query);
-      } catch (err) {
-        this.logger.warn("Hybrid search failed, falling back to ILIKE", err);
-      }
+  // Old findAll implementation (Prisma-based, kept as fallback reference)
+  // async findAll_legacy(query: ProblemsQuery) {
+  //   const page = query.page ?? 1;
+  //   const limit = Math.min(query.limit ?? 20, 100);
+  //   const skip = (page - 1) * limit;
+  //   const includeDetails = query.includeDetails ?? true;
+  //
+  //   if (query.q) {
+  //     try {
+  //       return await this.hybridSearch(query);
+  //     } catch (err) {
+  //       this.logger.warn("Hybrid search failed, falling back to ILIKE", err);
+  //     }
+  //   }
+  //
+  //   const where: Record<string, unknown> = {
+  //     ...this.getProblemScopeWhere(query.requesterId, query.requesterRole),
+  //   };
+  //
+  //   if (query.ocrJobId) where.ocrJobId = query.ocrJobId;
+  //   if (query.reviewStatus) where.reviewStatus = query.reviewStatus;
+  //   if (query.gradeLevel) where.gradeLevel = query.gradeLevel;
+  //   if (query.subject) where.subject = query.subject;
+  //   if (query.unitMajor) where.unitMajor = query.unitMajor;
+  //   if (query.problemType) where.problemType = query.problemType;
+  //   if (query.analysisStatus) where.analysisStatus = query.analysisStatus;
+  //   if (query.bookTitle) {
+  //     where.bookSource = { path: ["title"], string_contains: query.bookTitle };
+  //   }
+  //   if (query.solutionTag) {
+  //     where.solutionTags = { array_contains: [query.solutionTag] };
+  //   }
+  //   if (query.difficulty !== undefined) {
+  //     const parsed = parseInt(query.difficulty, 10);
+  //     if (!isNaN(parsed)) where.difficulty = parsed;
+  //   }
+  //
+  //   const examSourceFilters: Record<string, unknown>[] = [];
+  //   if (query.examYear) {
+  //     examSourceFilters.push({
+  //       examSource: { path: ["year"], equals: parseInt(query.examYear, 10) },
+  //     });
+  //   }
+  //   if (query.examMonth) {
+  //     examSourceFilters.push({
+  //       examSource: { path: ["month"], equals: parseInt(query.examMonth, 10) },
+  //     });
+  //   }
+  //   if (query.examType) {
+  //     examSourceFilters.push({
+  //       examSource: { path: ["type"], string_contains: query.examType },
+  //     });
+  //   }
+  //   if (examSourceFilters.length > 0) {
+  //     where.AND = examSourceFilters;
+  //   }
+  //
+  //   if (query.curriculumNodeId) {
+  //     const descendants = await this.prisma.$queryRaw<{ id: string }[]>`
+  //       WITH RECURSIVE tree AS (
+  //         SELECT id FROM ocr.curriculum_nodes WHERE id = ${query.curriculumNodeId}::uuid
+  //         UNION ALL
+  //         SELECT cn.id FROM ocr.curriculum_nodes cn
+  //         JOIN tree t ON cn.parent_id = t.id
+  //       )
+  //       SELECT id FROM tree
+  //     `;
+  //     const nodeIds = descendants.map((d) => d.id);
+  //     where.curriculumNodeId = { in: nodeIds };
+  //   }
+  //
+  //   if (query.q) {
+  //     where.stemText = { contains: query.q, mode: "insensitive" };
+  //   }
+  //
+  //   const [items, total] = await Promise.all([
+  //     this.prisma.problem.findMany({
+  //       where,
+  //       skip,
+  //       take: limit,
+  //       orderBy: { createdAt: "desc" },
+  //       select: buildProblemListSelect(includeDetails),
+  //     }),
+  //     this.prisma.problem.count({ where }),
+  //   ]);
+  //
+  //   return {
+  //     data: items.map((item) => ({
+  //       ...item,
+  //       sourceFile: normalizeFilename(item.ocrJob?.sourceFile?.filename) ?? null,
+  //       ocrJob: undefined,
+  //     })),
+  //     total,
+  //     page,
+  //     limit,
+  //     totalPages: Math.ceil(total / limit),
+  //   };
+  // }
+
+  private async findAllWithExamMeta(query: ProblemsQuery) {
+    const { page = 1, limit: rawLimit = 20, requesterId, requesterRole } = query;
+    const limit = Math.min(rawLimit, 100);
+    const offset = (page - 1) * limit;
+
+    const conditions: string[] = ['p.retired_at IS NULL'];
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    // Access control (ocr_jobs -> source_files -> uploader_id)
+    if (requesterRole !== 'admin') {
+      conditions.push(`p.ocr_job_id IN (
+        SELECT oj.id FROM ocr.ocr_jobs oj
+        JOIN ocr.source_files sf ON sf.id = oj.source_file_id
+        WHERE sf.uploader_id = $${paramIndex}
+      )`);
+      params.push(requesterId);
+      paramIndex++;
     }
 
-    const where: Record<string, unknown> = {
-      ...this.getProblemScopeWhere(query.requesterId, query.requesterRole),
-    };
-
-    if (query.ocrJobId) where.ocrJobId = query.ocrJobId;
-    if (query.reviewStatus) where.reviewStatus = query.reviewStatus;
-    if (query.gradeLevel) where.gradeLevel = query.gradeLevel;
-    if (query.subject) where.subject = query.subject;
-    if (query.unitMajor) where.unitMajor = query.unitMajor;
-    if (query.problemType) where.problemType = query.problemType;
-    if (query.analysisStatus) where.analysisStatus = query.analysisStatus;
+    // Existing filters (preserved from current findAll)
+    if (query.ocrJobId) {
+      conditions.push(`p.ocr_job_id = $${paramIndex}`);
+      params.push(query.ocrJobId);
+      paramIndex++;
+    }
+    if (query.analysisStatus) {
+      conditions.push(`p.analysis_status = $${paramIndex}`);
+      params.push(query.analysisStatus);
+      paramIndex++;
+    }
+    if (query.unitMajor) {
+      conditions.push(`p.unit_major = $${paramIndex}`);
+      params.push(query.unitMajor);
+      paramIndex++;
+    }
+    if (query.reviewStatus) {
+      conditions.push(`p.review_status = $${paramIndex}`);
+      params.push(query.reviewStatus);
+      paramIndex++;
+    }
+    if (query.subject) {
+      conditions.push(`p.subject = $${paramIndex}`);
+      params.push(query.subject);
+      paramIndex++;
+    }
+    if (query.gradeLevel) {
+      conditions.push(`p.grade_level = $${paramIndex}`);
+      params.push(query.gradeLevel);
+      paramIndex++;
+    }
+    if (query.difficulty) {
+      conditions.push(`p.difficulty = $${paramIndex}`);
+      params.push(parseInt(String(query.difficulty)));
+      paramIndex++;
+    }
+    if (query.problemType) {
+      conditions.push(`p.problem_type = $${paramIndex}`);
+      params.push(query.problemType);
+      paramIndex++;
+    }
     if (query.bookTitle) {
-      where.bookSource = { path: ["title"], string_contains: query.bookTitle };
+      conditions.push(`p.book_source->>'title' = $${paramIndex}`);
+      params.push(query.bookTitle);
+      paramIndex++;
     }
     if (query.solutionTag) {
-      where.solutionTags = { array_contains: [query.solutionTag] };
+      conditions.push(`p.solution_tags @> $${paramIndex}::jsonb`);
+      params.push(JSON.stringify([query.solutionTag]));
+      paramIndex++;
     }
-    if (query.difficulty !== undefined) {
-      const parsed = parseInt(query.difficulty, 10);
-      if (!isNaN(parsed)) where.difficulty = parsed;
+    if (query.q) {
+      conditions.push(`p.stem_text ILIKE $${paramIndex}`);
+      params.push(`%${query.q}%`);
+      paramIndex++;
     }
 
-    // Exam source JSON filters — use AND for multiple path conditions on same field
-    const examSourceFilters: Record<string, unknown>[] = [];
+    // Exam source filters (from problem's exam_source JSON)
     if (query.examYear) {
-      examSourceFilters.push({
-        examSource: { path: ["year"], equals: parseInt(query.examYear, 10) },
-      });
-    }
-    if (query.examMonth) {
-      examSourceFilters.push({
-        examSource: { path: ["month"], equals: parseInt(query.examMonth, 10) },
-      });
+      conditions.push(`(p.exam_source->>'year')::int = $${paramIndex}`);
+      params.push(parseInt(String(query.examYear)));
+      paramIndex++;
     }
     if (query.examType) {
-      examSourceFilters.push({
-        examSource: { path: ["type"], string_contains: query.examType },
-      });
-    }
-    if (examSourceFilters.length > 0) {
-      where.AND = examSourceFilters;
+      conditions.push(`p.exam_source->>'type' = $${paramIndex}`);
+      params.push(query.examType);
+      paramIndex++;
     }
 
-    // Curriculum node filter — includes all descendant nodes via recursive CTE
+    // Exam year minimum (e.g., examYearMin=2023 for "최근 3년")
+    if (query.examYearMin) {
+      conditions.push(`(p.exam_source->>'year')::int >= $${paramIndex}`);
+      params.push(query.examYearMin);
+      paramIndex++;
+    }
+
+    // Exam month filter (from exam_question_meta or exam_source)
+    if (query.examMonth) {
+      const month = parseInt(String(query.examMonth));
+      conditions.push(`(eqm.exam_month = $${paramIndex} OR (p.exam_source->>'month')::int = $${paramIndex})`);
+      params.push(month);
+      paramIndex++;
+    }
+
+    // Position filter (maps to correct_rate ranges)
+    if (query.position === 'killer') {
+      conditions.push(`eqm.correct_rate < 0.10`);
+    } else if (query.position === 'semi_killer') {
+      conditions.push(`eqm.correct_rate >= 0.10 AND eqm.correct_rate <= 0.30`);
+    } else if (query.position === 'normal') {
+      conditions.push(`eqm.correct_rate > 0.30`);
+    }
+
+    // Correct rate range filter
+    if (query.correctRateMin !== undefined) {
+      conditions.push(`eqm.correct_rate >= $${paramIndex}`);
+      params.push(query.correctRateMin / 100);
+      paramIndex++;
+    }
+    if (query.correctRateMax !== undefined) {
+      conditions.push(`eqm.correct_rate < $${paramIndex}`);
+      params.push(query.correctRateMax / 100);
+      paramIndex++;
+    }
+
+    // Point value filter
+    if (query.pointValue) {
+      conditions.push(`eqm.point_value = $${paramIndex}`);
+      params.push(query.pointValue);
+      paramIndex++;
+    }
+
+    // Curriculum node filter (recursive CTE)
+    let ctePart = '';
     if (query.curriculumNodeId) {
-      const descendants = await this.prisma.$queryRaw<{ id: string }[]>`
-        WITH RECURSIVE tree AS (
-          SELECT id FROM ocr.curriculum_nodes WHERE id = ${query.curriculumNodeId}::uuid
-          UNION ALL
-          SELECT cn.id FROM ocr.curriculum_nodes cn
-          JOIN tree t ON cn.parent_id = t.id
-        )
-        SELECT id FROM tree
-      `;
-      const nodeIds = descendants.map((d) => d.id);
-      where.curriculumNodeId = { in: nodeIds };
+      ctePart = `WITH RECURSIVE curriculum_tree AS (
+        SELECT id FROM ocr.curriculum_nodes WHERE id = $${paramIndex}::uuid
+        UNION ALL
+        SELECT cn.id FROM ocr.curriculum_nodes cn
+        INNER JOIN curriculum_tree ct ON cn.parent_id = ct.id
+      )`;
+      conditions.push(`p.curriculum_node_id IN (SELECT id FROM curriculum_tree)`);
+      params.push(query.curriculumNodeId);
+      paramIndex++;
     }
 
-    // ILIKE fallback when hybrid search is unavailable
-    if (query.q) {
-      where.stemText = { contains: query.q, mode: "insensitive" };
-    }
+    // Sort
+    let orderBy = 'p.created_at DESC';
+    if (query.sortBy === 'correct_rate_asc') orderBy = 'eqm.correct_rate ASC NULLS LAST';
+    else if (query.sortBy === 'correct_rate_desc') orderBy = 'eqm.correct_rate DESC NULLS LAST';
+    else if (query.sortBy === 'point_value_desc') orderBy = 'eqm.point_value DESC NULLS LAST, p.created_at DESC';
 
-    const [items, total] = await Promise.all([
-      this.prisma.problem.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: "desc" },
-        select: buildProblemListSelect(includeDetails),
-      }),
-      this.prisma.problem.count({ where }),
-    ]);
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Count query
+    const countSql = `${ctePart}
+      SELECT COUNT(DISTINCT p.id) as total
+      FROM ocr.problems p
+      LEFT JOIN LATERAL (
+        SELECT * FROM ocr.exam_question_meta eqm2
+        WHERE eqm2.problem_id = p.id
+        ORDER BY eqm2.created_at DESC
+        LIMIT 1
+      ) eqm ON true
+      ${whereClause}`;
+
+    const countResult = await this.prisma.$queryRawUnsafe<[{ total: bigint }]>(countSql, ...params);
+    const total = Number(countResult[0]?.total ?? 0);
+
+    // Data query
+    const dataSql = `${ctePart}
+      SELECT
+        p.id, p.stem_latex, p.stem_text, p.problem_number, p.display_number,
+        p.problem_type, p.review_status, p.grade_level, p.subject,
+        p.unit_major, p.unit_minor, p.difficulty, p.classification_confidence,
+        p.solution_confidence, p.review_confidence, p.solution_tags,
+        p.analysis_status, p.ocr_job_id, p.start_page, p.end_page,
+        p.book_source, p.exam_source, p.answer_match_status, p.created_at,
+        p.bbox, p.point_value AS p_point_value, p.position_type AS p_position_type,
+        p.is_common AS p_is_common,
+        sf.filename as source_filename,
+        eqm.exam_year AS meta_exam_year, eqm.exam_month AS meta_exam_month,
+        eqm.exam_type AS meta_exam_type, eqm.subject AS meta_subject,
+        eqm.question_number AS meta_question_number,
+        eqm.correct_answer AS meta_correct_answer,
+        eqm.correct_rate AS meta_correct_rate,
+        eqm.point_value AS meta_point_value,
+        eqm.choice_rates AS meta_choice_rates,
+        eqm.is_common AS meta_is_common
+      FROM ocr.problems p
+      LEFT JOIN LATERAL (
+        SELECT * FROM ocr.exam_question_meta eqm2
+        WHERE eqm2.problem_id = p.id
+        ORDER BY eqm2.created_at DESC
+        LIMIT 1
+      ) eqm ON true
+      LEFT JOIN ocr.ocr_jobs oj ON p.ocr_job_id = oj.id
+      LEFT JOIN ocr.source_files sf ON oj.source_file_id = sf.id
+      ${whereClause}
+      ORDER BY ${orderBy}
+      LIMIT ${limit} OFFSET ${offset}`;
+
+    const rows = await this.prisma.$queryRawUnsafe<any[]>(dataSql, ...params);
+
+    const problems = rows.map(row => ({
+      id: row.id,
+      stemLatex: row.stem_latex,
+      stemText: row.stem_text,
+      problemNumber: row.problem_number,
+      displayNumber: row.display_number,
+      problemType: row.problem_type,
+      reviewStatus: row.review_status,
+      gradeLevel: row.grade_level,
+      subject: row.subject,
+      unitMajor: row.unit_major,
+      unitMinor: row.unit_minor,
+      difficulty: row.difficulty,
+      classificationConfidence: row.classification_confidence,
+      startPage: row.start_page,
+      bookSource: row.book_source,
+      examSource: row.exam_source,
+      createdAt: row.created_at,
+      sourceFile: row.source_filename,
+      bbox: row.bbox,
+      examMeta: row.meta_exam_year ? {
+        examYear: row.meta_exam_year,
+        examMonth: row.meta_exam_month,
+        examType: row.meta_exam_type,
+        subject: row.meta_subject,
+        questionNumber: row.meta_question_number,
+        correctAnswer: row.meta_correct_answer,
+        correctRate: row.meta_correct_rate,
+        pointValue: row.meta_point_value,
+        choiceRates: row.meta_choice_rates,
+        isCommon: row.meta_is_common,
+      } : null,
+    }));
 
     return {
-      data: items.map((item) => ({
-        ...item,
-        sourceFile: normalizeFilename(item.ocrJob?.sourceFile?.filename) ?? null,
-        ocrJob: undefined,
-      })),
+      data: problems,
       total,
       page,
       limit,
@@ -343,6 +597,7 @@ export class ProblemsService {
     const conditions = [
       `p.embedding IS NOT NULL`,
       `p.review_status IN ('approved', 'auto_approved')`,
+      `p.retired_at IS NULL`,
     ];
     const joins: string[] = [];
     const params: unknown[] = [];
@@ -460,7 +715,8 @@ export class ProblemsService {
           FROM ocr.problems p
           JOIN ocr.ocr_jobs oj ON oj.id = p.ocr_job_id
           JOIN ocr.source_files sf ON sf.id = oj.source_file_id
-          WHERE (${isAdmin}::boolean OR sf.uploader_id = ${requesterId})
+          WHERE p.retired_at IS NULL
+            AND (${isAdmin}::boolean OR sf.uploader_id = ${requesterId})
             AND (${ocrJobId}::uuid IS NULL OR p.ocr_job_id = ${ocrJobId}::uuid)
             AND (${reviewStatus}::text IS NULL OR p.review_status::text = ${reviewStatus})
             AND (${gradeLevel}::text IS NULL OR p.grade_level = ${gradeLevel})
