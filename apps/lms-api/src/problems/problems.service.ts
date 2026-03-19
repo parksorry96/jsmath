@@ -1,6 +1,8 @@
 import {
   Injectable,
   NotFoundException,
+  ForbiddenException,
+  ConflictException,
   Logger,
   InternalServerErrorException,
 } from "@nestjs/common";
@@ -1262,5 +1264,83 @@ export class ProblemsService {
       reviewerId,
       requesterRole,
     );
+  }
+
+  private async retireProblemChecked(id: string, userId: string, userRole: string) {
+    const problem = await this.prisma.problem.findUnique({
+      where: { id },
+      select: { id: true, ocrJobId: true, retiredAt: true },
+    });
+
+    if (!problem) return { success: false, reason: 'Problem not found' };
+    if (problem.retiredAt) return { success: false, reason: 'Already retired' };
+
+    // Access control: teacher can only retire own uploads
+    if (userRole !== 'admin') {
+      const ocrJob = await this.prisma.ocrJob.findUnique({
+        where: { id: problem.ocrJobId },
+        select: { sourceFile: { select: { uploaderId: true } } },
+      });
+      if (ocrJob?.sourceFile?.uploaderId !== userId) {
+        return { success: false, reason: 'Access denied' };
+      }
+    }
+
+    // Active assignment guard: block if problem is in a future/active assignment
+    const activeAssignments = await this.prisma.assignmentProblem.findMany({
+      where: {
+        problemId: id,
+        assignment: {
+          OR: [
+            { dueAt: null },
+            { dueAt: { gt: new Date() } },
+          ],
+        },
+      },
+      select: { assignment: { select: { id: true, title: true } } },
+      take: 3,
+    });
+
+    if (activeAssignments.length > 0) {
+      const names = activeAssignments.map(a => a.assignment.title).join(', ');
+      return { success: false, reason: `활성 과제에 포함됨: ${names}` };
+    }
+
+    await this.prisma.problem.update({
+      where: { id },
+      data: {
+        reviewStatus: 'retired',
+        retiredAt: new Date(),
+        retiredBy: userId,
+      },
+    });
+
+    return { success: true };
+  }
+
+  async retireProblem(id: string, userId: string, userRole: string) {
+    const result = await this.retireProblemChecked(id, userId, userRole);
+    if (!result.success) {
+      if (result.reason === 'Problem not found') throw new NotFoundException(result.reason);
+      if (result.reason === 'Access denied') throw new ForbiddenException(result.reason);
+      throw new ConflictException(result.reason);
+    }
+    return { problemId: id, status: 'retired' };
+  }
+
+  async batchRetire(ids: string[], userId: string, userRole: string) {
+    const retired: string[] = [];
+    const blocked: Array<{ id: string; reason: string }> = [];
+
+    for (const id of ids) {
+      const result = await this.retireProblemChecked(id, userId, userRole);
+      if (result.success) {
+        retired.push(id);
+      } else {
+        blocked.push({ id, reason: result.reason! });
+      }
+    }
+
+    return { retired: retired.length, blocked };
   }
 }

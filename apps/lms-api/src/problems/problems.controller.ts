@@ -14,6 +14,7 @@ import { ProblemRevisionService } from "./problem-revision.service";
 import { ProblemStatisticsService } from "./problem-statistics.service";
 import { ProblemQualityService } from "./problem-quality.service";
 import { ReviewProblemDto } from "./dto/review-problem.dto";
+import { BatchRetireDto } from "./dto/batch-retire.dto";
 import { UpdateProblemDto } from "./dto/update-problem.dto";
 import { GenerateVariantsDto } from "./dto/generate-variants.dto";
 import { BrowseProblemsDto } from "./dto/browse-problems.dto";
@@ -168,6 +169,12 @@ export class ProblemsController {
     );
   }
 
+  @Post("batch-retire")
+  @Roles("admin", "teacher")
+  batchRetire(@Body() dto: BatchRetireDto, @Request() req: AuthRequest) {
+    return this.problems.batchRetire(dto.ids, req.user.id, req.user.role);
+  }
+
   @Post(":id/generate-twin")
   @Roles("admin", "teacher")
   generateTwin(@Param("id") id: string, @Request() req: AuthRequest) {
@@ -265,9 +272,9 @@ export class ProblemsController {
   }
 
   @Post(":id/retire")
-  @Roles("admin")
+  @Roles("admin", "teacher")
   retire(@Param("id") id: string, @Request() req: AuthRequest) {
-    return this.quality.retireProblem(id, req.user.id);
+    return this.problems.retireProblem(id, req.user.id, req.user.role);
   }
 
   @Post("statistics/recompute")
