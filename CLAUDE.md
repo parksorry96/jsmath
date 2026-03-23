@@ -158,3 +158,39 @@ git checkout -b feat/my-feature
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## gstack
+
+Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
+
+### Available Skills
+
+- `/office-hours` - Brainstorm and discuss ideas
+- `/plan-ceo-review` - Review a plan (strategy perspective)
+- `/plan-eng-review` - Review a plan (architecture perspective)
+- `/plan-design-review` - Review a plan (design perspective)
+- `/design-consultation` - Create or refine a design system
+- `/review` - Code review before merge
+- `/ship` - Create PR / deploy
+- `/land-and-deploy` - Land and deploy changes
+- `/canary` - Canary deployment
+- `/benchmark` - Run benchmarks
+- `/browse` - Browse the web (use this for all web browsing)
+- `/qa` - Test the app
+- `/qa-only` - Run QA tests only
+- `/design-review` - Visual design audit
+- `/setup-browser-cookies` - Set up browser cookies
+- `/setup-deploy` - Set up deployment
+- `/retro` - Weekly retrospective
+- `/investigate` - Debug errors
+- `/document-release` - Post-ship documentation
+- `/codex` - Second opinion / adversarial code review
+- `/cso` - Chief Strategy Officer perspective
+- `/autoplan` - Auto-review a plan (all reviews at once)
+- `/careful` - Work carefully with production systems
+- `/freeze` - Scope edits to one module/directory
+- `/guard` - Maximum safety mode
+- `/unfreeze` - Remove edit restrictions
+- `/gstack-upgrade` - Upgrade gstack to latest version
