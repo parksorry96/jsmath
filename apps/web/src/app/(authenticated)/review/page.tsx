@@ -31,6 +31,14 @@ import {
 import { LatexRenderer } from "@/components/math/latex-renderer";
 import { ProblemLayoutMeta, ProblemStemDisplay } from "@/components/problems/problem-stem-display";
 import { ProblemSourcePreview } from "@/components/problems/problem-source-preview";
+import {
+  formatProblemNumberLabel,
+  PROBLEM_TYPE_LABELS,
+  REVIEW_STATUS_STYLES,
+  POSITION_LABELS,
+  difficultyBadgeClass,
+  QUESTION_FORMAT_LABELS,
+} from "@/components/problems/constants";
 import { api } from "@/lib/api";
 import {
   DropdownMenu,
@@ -210,12 +218,6 @@ function formatCurriculumPath(classification?: CurriculumClassification | null):
   return parts.length > 0 ? parts.join(" > ") : "매핑 없음";
 }
 
-function difficultyBadgeClass(d: number): string {
-  if (d <= 2) return "bg-green-500/20 text-green-400 border-green-500/30";
-  if (d <= 3) return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
-  return "bg-red-500/20 text-red-400 border-red-500/30";
-}
-
 const STATUS_LABELS: Record<string, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
   completed: { label: "완료", variant: "default" },
   processing: { label: "처리중", variant: "secondary" },
@@ -223,31 +225,6 @@ const STATUS_LABELS: Record<string, { label: string; variant: "default" | "secon
   failed: { label: "실패", variant: "destructive" },
 };
 
-const POSITION_TYPE_LABELS: Record<string, string> = {
-  normal: "일반",
-  semi_killer: "준킬러",
-  killer: "킬러",
-};
-
-const QUESTION_FORMAT_LABELS: Record<string, string> = {
-  multiple_choice_5: "5지선다",
-  short_answer: "주관식",
-};
-
-const PROBLEM_TYPE_LABELS: Record<string, string> = {
-  multiple_choice: "객관식",
-  short_answer: "주관식",
-  written_solution: "서술형",
-  essay: "서술형",
-  true_false: "O/X",
-};
-
-const REVIEW_STATUS_LABELS: Record<string, string> = {
-  approved: "승인",
-  rejected: "반려",
-  pending_review: "검수대기",
-  auto_approved: "자동승인",
-};
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr);
@@ -263,6 +240,32 @@ type StatusFilter = "all" | "pending_review" | "auto_approved" | "approved" | "r
 
 const REVIEW_FETCH_LIMIT = 100;
 
+function parseProblemOrder(value?: string | null): number | null {
+  if (!value) return null;
+  const match = value.match(/\d+/);
+  if (!match) return null;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sortProblemsForReview(problems: Problem[]): Problem[] {
+  return [...problems].sort((a, b) => {
+    const aOrder = parseProblemOrder(a.problemNumber ?? a.displayNumber);
+    const bOrder = parseProblemOrder(b.problemNumber ?? b.displayNumber);
+
+    if (aOrder != null && bOrder != null && aOrder !== bOrder) {
+      return aOrder - bOrder;
+    }
+    if (aOrder != null) return -1;
+    if (bOrder != null) return 1;
+
+    return (a.displayNumber ?? a.problemNumber ?? "").localeCompare(
+      b.displayNumber ?? b.problemNumber ?? "",
+      "ko",
+    );
+  });
+}
+
 async function fetchAllProblemsForReview(
   ocrJobId: string,
 ): Promise<PaginatedResponse> {
@@ -271,7 +274,10 @@ async function fetchAllProblemsForReview(
   );
 
   if (firstPage.totalPages <= 1) {
-    return firstPage;
+    return {
+      ...firstPage,
+      data: sortProblemsForReview(firstPage.data),
+    };
   }
 
   const restPages: PaginatedResponse[] = [];
@@ -284,7 +290,7 @@ async function fetchAllProblemsForReview(
 
   return {
     ...firstPage,
-    data: [firstPage, ...restPages].flatMap((page) => page.data),
+    data: sortProblemsForReview([firstPage, ...restPages].flatMap((page) => page.data)),
     page: 1,
     totalPages: 1,
     limit: firstPage.total,
@@ -717,7 +723,7 @@ function AnalysisSection({
                     <Badge variant="outline" className="text-xs">{analysis.pointValue}점</Badge>
                   )}
                   {analysis.positionType && (
-                    <Badge variant="outline" className="text-xs">{POSITION_TYPE_LABELS[analysis.positionType] ?? analysis.positionType}</Badge>
+                    <Badge variant="outline" className="text-xs">{POSITION_LABELS[analysis.positionType] ?? analysis.positionType}</Badge>
                   )}
                   {analysis.questionFormat && (
                     <Badge variant="outline" className="text-xs">{QUESTION_FORMAT_LABELS[analysis.questionFormat] ?? analysis.questionFormat}</Badge>
@@ -918,7 +924,7 @@ function ProblemReviewView({
   const [actionFeedback, setActionFeedback] = useState<"approved" | "rejected" | null>(null);
   const [editingLatex, setEditingLatex] = useState<string | null>(null);
   const [confidenceFilter, setConfidenceFilter] = useState<ConfidenceFilter>("all");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending_review");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
   const {
     data: response,
@@ -1245,7 +1251,7 @@ function ProblemReviewView({
               className="mt-2"
               onClick={() => {
                 setConfidenceFilter("all");
-                setStatusFilter("pending_review");
+                setStatusFilter(queueCompleted ? "pending_review" : "all");
               }}
             >
               {queueCompleted ? "미검수 기준으로 보기" : "필터 초기화"}
@@ -1298,40 +1304,65 @@ function ProblemReviewView({
 
       <ProblemSourcePreview assets={currentProblem?.assets} />
 
-      {/* Metadata chips */}
-      <div className="flex flex-wrap items-center gap-2">
-        {(currentProblem!.displayNumber || currentProblem!.bookSource?.displayNumber) && (
-          <Badge variant="outline" className="text-xs">
-            {currentProblem!.displayNumber || currentProblem!.bookSource?.displayNumber}
-          </Badge>
-        )}
-        <Badge variant="secondary" className="text-xs">
+      {/* Metadata badges — problem bank style */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {/* Number badge */}
+        <div className="flex min-h-8 min-w-10 shrink-0 items-center justify-center rounded-lg bg-brand-dark px-2 text-xs font-bold text-brand-beige">
+          {formatProblemNumberLabel(
+            currentProblem!.problemNumber,
+            currentProblem!.displayNumber ?? currentProblem!.bookSource?.displayNumber,
+            null,
+          )}
+        </div>
+
+        {/* Problem type */}
+        <Badge variant="outline" className="text-[10px]">
           {PROBLEM_TYPE_LABELS[currentProblem!.problemType] ?? currentProblem!.problemType}
         </Badge>
+
+        {/* Book source */}
         {currentProblem!.bookSource?.chapter && (
-          <Badge variant="outline" className="text-xs">
+          <Badge variant="outline" className="text-[10px]">
             {currentProblem!.bookSource.chapter}
             {currentProblem!.bookSource.section && ` ${currentProblem!.bookSource.section}`}
           </Badge>
         )}
         {currentProblem!.bookSource?.itemCode && (
-          <Badge variant="outline" className="text-xs">
+          <Badge variant="outline" className="text-[10px]">
             {currentProblem!.bookSource.itemCode}
           </Badge>
         )}
+
+        {/* Review status */}
+        {(() => {
+          const reviewInfo = REVIEW_STATUS_STYLES[currentProblem!.reviewStatus] ?? {
+            label: currentProblem!.reviewStatus,
+            className: "bg-muted text-muted-foreground",
+          };
+          return (
+            <Badge variant="outline" className={`text-[10px] ${reviewInfo.className}`}>
+              {reviewInfo.label}
+            </Badge>
+          );
+        })()}
+
+        {/* Answer match status */}
         {currentProblem!.answerMatchStatus && currentProblem!.answerMatchStatus !== "no_answer_key" && (
-          <span
-            className={`text-xs px-2 py-0.5 rounded-full border ${
+          <Badge
+            variant="outline"
+            className={`text-[10px] ${
               currentProblem!.answerMatchStatus === "matched"
-                ? "bg-green-500/20 text-green-400 border-green-500/30"
-                : "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                ? "bg-green-900/30 text-green-400 border-green-400/30"
+                : "bg-yellow-900/30 text-yellow-400 border-yellow-400/30"
             }`}
           >
             {currentProblem!.answerMatchStatus === "matched" ? "해설 매칭" : "매칭 안됨"}
-          </span>
+          </Badge>
         )}
+
+        {/* Source file */}
         {currentProblem!.sourceFile && (
-          <span className="text-xs text-muted-foreground">
+          <span className="text-[10px] text-muted-foreground">
             {currentProblem!.sourceFile}
             {currentProblem!.startPage != null &&
               ` p.${currentProblem!.startPage}${
@@ -1341,8 +1372,10 @@ function ProblemReviewView({
               }`}
           </span>
         )}
+
+        {/* Confidence — pushed right */}
         <div
-          className={`ml-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${confidenceBg(getConfidence(currentProblem!))}`}
+          className={`ml-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-medium ${confidenceBg(getConfidence(currentProblem!))}`}
         >
           <span className={confidenceColor(getConfidence(currentProblem!))}>
             검수 신뢰도 {Math.round(getConfidence(currentProblem!) * 100)}%

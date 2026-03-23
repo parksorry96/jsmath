@@ -87,6 +87,14 @@ async def _finalize(
             "bbox": segment.get("bbox"),
             "pageImageS3Key": page_image_map.get(segment.get("start_page", 0)),
             "problemImageS3Key": segment.get("problem_image_s3_key"),
+            "subject": segment.get("subject"),
+            "isCommon": segment.get("is_common"),
+            "examSource": segment.get("exam_source"),
+            "answerText": segment.get("answer_text"),
+            "solutionLatex": segment.get("solution_latex"),
+            "solutionText": segment.get("solution_text"),
+            "answerMatchStatus": segment.get("answer_match_status"),
+            "matchConfidence": segment.get("match_confidence"),
         }
         choices = segment.get("choices")
         if choices:

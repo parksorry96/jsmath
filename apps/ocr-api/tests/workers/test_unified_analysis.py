@@ -3,6 +3,7 @@
 from app.workers.unified_analysis import (
     BatchItemResult,
     CurriculumClassificationResult,
+    _build_exam_context_hint,
     _normalize_curriculum_classification,
     _postprocess_batch_item,
 )
@@ -73,3 +74,21 @@ def test_postprocess_batch_item_keeps_2015_and_2022_classifications_separate() -
     assert result["classification_2015"]["subject"] == "수학I"
     assert result["classification_2022"]["subject"] == "대수"
     assert result["classification_2022"]["confidence"] == 0.88
+
+
+def test_build_exam_context_hint_marks_common_csat_questions() -> None:
+    class ProblemStub:
+        exam_source = {
+            "type": "suneung",
+            "number": 14,
+            "isCommon": True,
+            "academicYear": 2026,
+            "year": 2025,
+            "month": 11,
+        }
+
+    hint = _build_exam_context_hint(ProblemStub())
+
+    assert "수능 공통 문항" in hint
+    assert "수학I 또는 수학II" in hint
+    assert "기하는 선택과목" in hint

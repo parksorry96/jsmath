@@ -268,6 +268,7 @@ async def _apply_rules(
             return {**prev_result, "problem_id": problem_id}
 
         is_textbook = bool(problem.book_source)
+        analysis_mode = prev_result.get("analysis_mode")
 
         if is_textbook:
             # Textbook mode: skip CSAT-specific rules entirely
@@ -311,10 +312,16 @@ async def _apply_rules(
             "exam_source": "exam_source",
         }
         if is_textbook:
-            # For textbooks: save AI answer to answer_latex (answer_text has book answer)
+            # For textbooks: keep answer_text from the matched file; AI answer is optional.
             field_map["answer"] = "answer_latex"
         else:
             field_map["answer"] = "answer_text"
+
+        if analysis_mode in {"textbook_metadata_v1", "exam_reference_metadata_v1"}:
+            if is_textbook:
+                problem.answer_latex = None
+            problem.solution_strategy = None
+            problem.solution_confidence = None
 
         for key, attr in field_map.items():
             val = prev_result.get(key)
@@ -355,13 +362,41 @@ async def _apply_rules(
             classification_2022["curriculumNodeId"] = node_2022.id if node_2022 else None
             problem.classification_2022 = classification_2022
 
+        primary_classification = None
+        primary_curriculum_year = 2015
+        if isinstance(classification_2015, dict) and classification_2015.get("subject"):
+            primary_classification = classification_2015
+        elif isinstance(classification_2022, dict) and classification_2022.get("subject"):
+            primary_classification = classification_2022
+            primary_curriculum_year = 2022
+
+        if primary_classification:
+            if not problem.subject:
+                problem.subject = primary_classification.get("subject")
+            if not problem.unit_major:
+                problem.unit_major = primary_classification.get("unitMajor")
+            if not problem.unit_minor:
+                problem.unit_minor = primary_classification.get("unitMinor")
+            if not problem.unit_sub:
+                problem.unit_sub = primary_classification.get("unitSub")
+            if problem.classification_confidence is None:
+                problem.classification_confidence = primary_classification.get("confidence")
+
         # Link to curriculum node based on classification labels
         _subject = prev_result.get("subject") or problem.subject
         _unit_major = prev_result.get("unit_major") or problem.unit_major
         _unit_minor = prev_result.get("unit_minor") or problem.unit_minor
         if _subject:
+            curriculum_year = prev_result.get("primary_curriculum_year")
+            if curriculum_year not in {2015, 2022}:
+                if isinstance(classification_2015, dict) and classification_2015.get("subject") == _subject:
+                    curriculum_year = 2015
+                elif isinstance(classification_2022, dict) and classification_2022.get("subject") == _subject:
+                    curriculum_year = 2022
+                else:
+                    curriculum_year = primary_curriculum_year
             node = await find_curriculum_node(
-                session, _subject, _unit_major, _unit_minor, curriculum_year=2015,
+                session, _subject, _unit_major, _unit_minor, curriculum_year=curriculum_year,
             )
             problem.curriculum_node_id = node.id if node else None
 

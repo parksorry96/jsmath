@@ -16,6 +16,7 @@ import { Roles } from "../auth/roles.decorator";
 import { GradePredictionService } from "./grade-prediction.service";
 import { canAccessStudentData } from "../common/access-control";
 import { PrismaService } from "../prisma/prisma.service";
+import { PredictMockCutoffsDto } from "./dto/predict-mock-cutoffs.dto";
 
 interface AuthRequest {
   user: { id: string; email: string; role: string };
@@ -52,6 +53,12 @@ export class GradePredictionController {
     @Query("subject") subject?: string,
   ) {
     return this.gradePrediction.getCutoffs(year, month, subject);
+  }
+
+  @Post("mock-cutoffs")
+  @Roles("admin", "teacher")
+  predictMockCutoffs(@Body() body: PredictMockCutoffsDto) {
+    return this.gradePrediction.predictMockCutoffs(body);
   }
 
   @Get("student/:studentId")

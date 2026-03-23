@@ -25,6 +25,15 @@ EXAM_STAGES = [
     "finalize",
 ]
 
+EXAM_WITH_ANS_STAGES = [
+    "ocr_submit",
+    "ocr_poll",
+    "parse_results",
+    "segment_problems",
+    "match_answers",
+    "finalize",
+]
+
 TEXTBOOK_STAGES = [
     "ocr_submit",
     "ocr_poll",
@@ -45,6 +54,8 @@ def _generate_id() -> str:
 def get_stage_order(document_type: str) -> list[str]:
     if document_type == "textbook":
         return TEXTBOOK_STAGES
+    if document_type == "exam_with_answers":
+        return EXAM_WITH_ANS_STAGES
     return EXAM_STAGES
 
 

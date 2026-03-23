@@ -4,61 +4,16 @@ import { Eye, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  formatExamSource,
-  getPosition,
-  getCorrectRateColor,
-  POSITION_LABELS,
-  POSITION_COLORS,
+  PROBLEM_TYPE_LABELS,
 } from "./constants";
-
-interface ProblemExamMeta {
-  examYear: number;
-  examMonth: number;
-  examType: string;
-  subject: string;
-  questionNumber: number;
-  correctAnswer: string | null;
-  correctRate: number | null;
-  pointValue: number | null;
-  choiceRates: Record<string, number> | null;
-  isCommon: boolean | null;
-}
-
-interface Problem {
-  id: string;
-  displayNumber: string | null;
-  problemNumber: string | null;
-  stemText: string;
-  stemLatex: string;
-  problemType: string;
-  reviewStatus: string;
-  gradeLevel: string | null;
-  subject: string | null;
-  unitMajor: string | null;
-  unitMinor: string | null;
-  difficulty: number | null;
-  classificationConfidence: number | null;
-  sourceFile: string | null;
-  startPage: number | null;
-  createdAt: string;
-  similarity?: number;
-  choices?: Array<{
-    label?: string;
-    contentText?: string;
-    contentLatex?: string;
-  }>;
-  assets?: Array<{
-    id: string;
-    kind: string;
-    s3Key: string;
-  }>;
-  bookSource?: {
-    title?: string;
-    chapter?: string;
-    section?: string;
-  } | null;
-  examMeta?: ProblemExamMeta | null;
-}
+import {
+  getProblemCorrectRatePresentation,
+  getProblemNumberLabel,
+  getProblemReviewPresentation,
+  getProblemSourcePresentation,
+  getProblemUnitPath,
+} from "./problem-presenters";
+import type { Problem } from "./problem-types";
 
 interface ProblemTableViewProps {
   problems: Problem[];
@@ -66,39 +21,6 @@ interface ProblemTableViewProps {
   onSelectionChange: (ids: Set<string>) => void;
   onPreview: (problem: Problem) => void;
   onDelete: (id: string) => void;
-}
-
-const PROBLEM_TYPE_LABELS: Record<string, string> = {
-  multiple_choice: "객관식",
-  short_answer: "주관식",
-  essay: "서술형",
-};
-
-const REVIEW_STATUS_STYLES: Record<string, { label: string; className: string }> = {
-  approved: {
-    label: "승인",
-    className: "bg-green-900/30 text-green-400 border-green-400/30",
-  },
-  pending_review: {
-    label: "검수대기",
-    className: "bg-yellow-900/30 text-yellow-400 border-yellow-400/30",
-  },
-  rejected: {
-    label: "반려",
-    className: "bg-red-900/30 text-red-400 border-red-400/30",
-  },
-  auto_approved: {
-    label: "자동승인",
-    className: "bg-green-900/30 text-green-400 border-green-400/30",
-  },
-};
-
-function getCorrectRateBarColor(rate: number): string {
-  if (rate < 0.10) return "bg-red-500";
-  if (rate <= 0.30) return "bg-orange-500";
-  if (rate <= 0.60) return "bg-yellow-500";
-  if (rate <= 0.80) return "bg-green-500";
-  return "bg-emerald-400";
 }
 
 export function ProblemTableView({
@@ -155,27 +77,11 @@ export function ProblemTableView({
         </thead>
         <tbody>
           {problems.map((p, index) => {
-            const examSource = p.examMeta
-              ? formatExamSource(
-                  p.examMeta.examYear,
-                  p.examMeta.examMonth,
-                  p.examMeta.examType,
-                  p.examMeta.questionNumber,
-                  p.examMeta.subject,
-                )
-              : null;
-
-            const unitParts = [p.subject, p.unitMajor, p.unitMinor].filter(
-              Boolean,
-            );
-
-            const correctRate = p.examMeta?.correctRate ?? null;
-            const position = getPosition(correctRate);
-
-            const reviewInfo = REVIEW_STATUS_STYLES[p.reviewStatus] ?? {
-              label: p.reviewStatus,
-              className: "bg-muted text-muted-foreground",
-            };
+            const source = getProblemSourcePresentation(p);
+            const numberLabel = getProblemNumberLabel(p);
+            const unitPath = getProblemUnitPath(p);
+            const correctRateInfo = getProblemCorrectRatePresentation(p);
+            const reviewInfo = getProblemReviewPresentation(p);
 
             return (
               <tr
@@ -196,32 +102,32 @@ export function ProblemTableView({
 
                 {/* 번호 */}
                 <td className="p-3 font-bold">
-                  {p.displayNumber || p.problemNumber || index + 1}
+                  {numberLabel === "?" ? index + 1 : numberLabel}
                 </td>
 
                 {/* 출처 */}
                 <td className="p-3">
-                  {examSource ? (
+                  {source.line1 ? (
                     <div>
-                      <div className="text-sm">{examSource.line1}</div>
-                      {examSource.line2 && (
+                      <div className="text-sm">{source.line1}</div>
+                      {source.line2 && (
                         <div className="text-xs text-muted-foreground">
-                          {examSource.line2}
+                          {source.line2}
                         </div>
                       )}
                     </div>
                   ) : (
                     <span className="text-sm">
-                      {p.bookSource?.title || p.sourceFile || "\u2014"}
+                      {source.shortLabel || "\u2014"}
                     </span>
                   )}
                 </td>
 
                 {/* 단원 */}
                 <td className="p-3">
-                  {unitParts.length > 0 ? (
+                  {unitPath ? (
                     <span className="text-xs text-muted-foreground">
-                      {unitParts.join(" > ")}
+                      {unitPath}
                     </span>
                   ) : (
                     <span className="text-muted-foreground">{"\u2014"}</span>
@@ -244,18 +150,18 @@ export function ProblemTableView({
 
                 {/* 정답률 */}
                 <td className="p-3">
-                  {correctRate !== null ? (
+                  {correctRateInfo.correctRate !== null ? (
                     <div className="flex items-center gap-2">
                       <div className="w-16 h-1 rounded-full bg-muted overflow-hidden">
                         <div
-                          className={`h-full rounded-full ${getCorrectRateBarColor(correctRate)}`}
-                          style={{ width: `${correctRate * 100}%` }}
+                          className={`h-full rounded-full ${correctRateInfo.barClassName ?? ""}`}
+                          style={{ width: `${correctRateInfo.correctRate * 100}%` }}
                         />
                       </div>
                       <span
-                        className={`text-xs ${getCorrectRateColor(correctRate)}`}
+                        className={`text-xs ${correctRateInfo.textClassName ?? ""}`}
                       >
-                        {(correctRate * 100).toFixed(0)}%
+                        {(correctRateInfo.correctRate * 100).toFixed(0)}%
                       </span>
                     </div>
                   ) : (
@@ -265,12 +171,12 @@ export function ProblemTableView({
 
                 {/* 포지션 */}
                 <td className="p-3">
-                  {position ? (
+                  {correctRateInfo.position ? (
                     <Badge
                       variant="outline"
-                      className={`text-xs ${POSITION_COLORS[position]}`}
+                      className={`text-xs ${correctRateInfo.positionClassName ?? ""}`}
                     >
-                      {POSITION_LABELS[position]}
+                      {correctRateInfo.positionLabel}
                     </Badge>
                   ) : (
                     <span className="text-muted-foreground">{"\u2014"}</span>

@@ -216,10 +216,11 @@ export default function CanvasScreen() {
         imageS3Key,
         signal: abortRef.current.signal,
         onChunk: (nextContent) => {
+          const { content: cleaned } = normalizeTutorMessage(nextContent);
           setTutorMessages((prev) =>
             prev.map((message) =>
               message.id === tutorMessageId
-                ? { ...message, content: nextContent }
+                ? { ...message, content: cleaned }
                 : message,
             ),
           );

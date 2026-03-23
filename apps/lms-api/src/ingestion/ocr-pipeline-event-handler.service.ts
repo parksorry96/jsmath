@@ -161,6 +161,7 @@ export class OcrPipelineEventHandlerService {
             where: { id: { in: ids }, analysisStatus: { not: "completed" } },
             data: { analysisStatus: "completed", analyzedAt: new Date() },
           });
+          await this.materializer.syncExamMetadata(ids);
           this.logger.log(
             `analysis:completed for ${ids.length} problems`,
           );

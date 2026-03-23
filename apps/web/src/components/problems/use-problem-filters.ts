@@ -13,6 +13,7 @@ export interface ProblemFilters {
   examYearMin: string;
   examMonth: string;
   examType: string;
+  electiveSubject: string;
   position: string;
   correctRateMin: string;
   correctRateMax: string;
@@ -31,7 +32,7 @@ export interface ProblemFilters {
 }
 
 const FILTER_KEYS: (keyof ProblemFilters)[] = [
-  'q', 'searchMode', 'reviewStatus', 'examYear', 'examYearMin', 'examMonth', 'examType',
+  'q', 'searchMode', 'reviewStatus', 'examYear', 'examYearMin', 'examMonth', 'examType', 'electiveSubject',
   'position', 'correctRateMin', 'correctRateMax', 'pointValue',
   'curriculumYear', 'subject', 'gradeLevel', 'difficulty', 'problemType',
   'bookTitle', 'solutionTag', 'curriculumNodeId', 'sortBy', 'page', 'viewMode',
@@ -106,7 +107,7 @@ export function useProblemFilters() {
   const apiQueryString = useMemo(() => {
     const params = new URLSearchParams();
     const apiKeys: (keyof ProblemFilters)[] = [
-      'q', 'searchMode', 'reviewStatus', 'examYear', 'examYearMin', 'examMonth', 'examType',
+      'q', 'searchMode', 'reviewStatus', 'examYear', 'examYearMin', 'examMonth', 'examType', 'electiveSubject',
       'position', 'correctRateMin', 'correctRateMax', 'pointValue',
       'subject', 'gradeLevel', 'difficulty', 'problemType',
       'bookTitle', 'solutionTag', 'curriculumNodeId', 'sortBy',

@@ -1,3 +1,11 @@
+import {
+  resolveProblemForPrint,
+  stripChoicePrefix,
+} from "./print-choice.helpers";
+
+export { resolveProblemForPrint, stripChoicePrefix } from "./print-choice.helpers";
+export type { PrintableChoice, PrintableProblem } from "./print-choice.helpers";
+
 const LATEX_CONTROL_CHAR_REPAIR_MAP: Record<string, string> = {
   "\u0008": "\\b",
   "\u0009": "\\t",
@@ -60,21 +68,6 @@ export interface ResolvedPrintPage<T> {
   index: number;
 }
 
-export interface PrintableChoice {
-  contentLatex: string;
-  contentText: string;
-  label: string;
-  position: number;
-}
-
-export interface PrintableProblem<T> {
-  baseProblem: T;
-  choiceLayout: "spread" | "stacked";
-  choices: PrintableChoice[];
-  stemLatex: string;
-  stemText: string;
-}
-
 function normalizeLineEndings(value: string): string {
   return repairLatexControlChars(value).replace(/\r\n?/g, "\n");
 }
@@ -101,18 +94,6 @@ function hasExplicitMathDelimiters(value: string): boolean {
 function splitByMathDelimiters(value: string): string[] {
   return value.split(
     /(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])/g,
-  );
-}
-
-function splitInlineChoiceMarkers(value: string) {
-  return Array.from(value.matchAll(/\(\s*([1-5])\s*\)|([①②③④⑤])/gu)).map(
-    (match) => ({
-      index: match.index ?? 0,
-      marker: match[0],
-      position: match[1]
-        ? Number(match[1])
-        : { "①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5 }[match[2] ?? ""] ?? 0,
-    }),
   );
 }
 
@@ -504,77 +485,6 @@ function renderNarrativeSegmentWithBareMath(value: string): string {
     .join("\n\\par\n");
 }
 
-export function stripChoicePrefix(value: unknown): string {
-  const normalized = normalizeLineEndings(toText(value)).trim();
-  if (!normalized) {
-    return "";
-  }
-
-  const stripped = normalized.replace(
-    /^\s*(?:\(\d+\)|\d+[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s*/u,
-    "",
-  );
-
-  return stripped.trim().length > 0 ? stripped.trim() : normalized;
-}
-
-function parseInlineChoices(value: unknown): {
-  choices: Array<{ content: string; position: number }>;
-  stem: string;
-} | null {
-  const normalized = normalizeLineEndings(toText(value)).trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const matches = splitInlineChoiceMarkers(normalized);
-  if (matches.length < 4) {
-    return null;
-  }
-
-  for (let start = 0; start < matches.length; start += 1) {
-    if (matches[start].position !== 1) {
-      continue;
-    }
-
-    const sequence = matches.slice(start);
-    if (sequence.length < 4 || sequence.length > 5) {
-      continue;
-    }
-
-    const isSequential = sequence.every(
-      (match, index) => match.position === index + 1,
-    );
-    if (!isSequential) {
-      continue;
-    }
-
-    const stem = normalized.slice(0, sequence[0].index).trim();
-    if (!stem) {
-      continue;
-    }
-
-    const choices = sequence.map((match, index) => {
-      const nextIndex =
-        index + 1 < sequence.length ? sequence[index + 1].index : normalized.length;
-      return {
-        content: normalized
-          .slice(match.index + match.marker.length, nextIndex)
-          .trim(),
-        position: match.position,
-      };
-    });
-
-    if (choices.some((choice) => !choice.content)) {
-      continue;
-    }
-
-    return { choices, stem };
-  }
-
-  return null;
-}
-
 function wrapBareMathEnvironments(value: string): string {
   return splitByMathDelimiters(value)
     .map((segment) => {
@@ -617,130 +527,6 @@ export function renderLatexOrText(latex: unknown, text: unknown): string {
 
 export function renderChoiceLatexOrText(latex: unknown, text: unknown): string {
   return renderLatexOrText(stripChoicePrefix(latex), stripChoicePrefix(text));
-}
-
-function isSpreadChoiceCandidate(value: string): boolean {
-  const normalized = stripChoicePrefix(value).replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return true;
-  }
-
-  if (normalized.includes("\n")) {
-    return false;
-  }
-
-  if (/\\begin\{/.test(normalized)) {
-    return false;
-  }
-
-  return normalized.length <= 12 || (!/\s/.test(normalized) && normalized.length <= 24);
-}
-
-function resolveChoiceLayout(choices: PrintableChoice[]): "spread" | "stacked" {
-  if (choices.length < 4 || choices.length > 5) {
-    return "stacked";
-  }
-
-  return choices.every((choice) =>
-    isSpreadChoiceCandidate(choice.contentLatex || choice.contentText),
-  )
-    ? "spread"
-    : "stacked";
-}
-
-function buildPrintableChoices(
-  choices: unknown,
-): PrintableChoice[] {
-  if (!Array.isArray(choices) || choices.length === 0) {
-    return [];
-  }
-
-  return [...choices]
-    .filter((choice): choice is Record<string, unknown> => Boolean(toRecord(choice)))
-    .sort(
-      (a, b) =>
-        (toFiniteNumber(a.position) ?? 0) - (toFiniteNumber(b.position) ?? 0),
-    )
-    .map((choice, index) => {
-      const position = Math.max(
-        1,
-        Math.floor(toFiniteNumber(choice.position) ?? index + 1),
-      );
-      const contentLatex = stripChoicePrefix(choice.contentLatex);
-      const contentText = stripChoicePrefix(choice.contentText);
-
-      return {
-        contentLatex,
-        contentText,
-        label:
-          toText(choice.label).trim() ||
-          ["", "①", "②", "③", "④", "⑤"][position] ||
-          `(${position})`,
-        position,
-      };
-    });
-}
-
-export function resolveProblemForPrint<T extends Record<string, unknown>>(
-  problem: T,
-): PrintableProblem<T> {
-  const existingChoices = buildPrintableChoices(problem.choices);
-  const stemLatex = normalizeLineEndings(toText(problem.stemLatex)).trim();
-  const stemText = normalizeLineEndings(toText(problem.stemText)).trim();
-
-  if (existingChoices.length > 0) {
-    return {
-      baseProblem: problem,
-      choiceLayout: resolveChoiceLayout(existingChoices),
-      choices: existingChoices,
-      stemLatex,
-      stemText,
-    };
-  }
-
-  const latexSplit = parseInlineChoices(problem.stemLatex);
-  const textSplit = parseInlineChoices(problem.stemText);
-  const derivedCount =
-    latexSplit?.choices.length ?? textSplit?.choices.length ?? 0;
-
-  if (derivedCount >= 4) {
-    const choices: PrintableChoice[] = Array.from(
-      { length: derivedCount },
-      (_, index) => {
-        const position =
-          latexSplit?.choices[index]?.position ??
-          textSplit?.choices[index]?.position ??
-          index + 1;
-        const contentLatex = stripChoicePrefix(latexSplit?.choices[index]?.content);
-        const contentText = stripChoicePrefix(textSplit?.choices[index]?.content);
-
-        return {
-          contentLatex,
-          contentText,
-          label: ["", "①", "②", "③", "④", "⑤"][position] || `(${position})`,
-          position,
-        };
-      },
-    ).filter((choice) => Boolean(choice.contentLatex || choice.contentText));
-
-    if (choices.length >= 4) {
-      return {
-        baseProblem: problem,
-        choiceLayout: resolveChoiceLayout(choices),
-        choices,
-        stemLatex: latexSplit?.stem ?? stemLatex,
-        stemText: textSplit?.stem ?? stemText,
-      };
-    }
-  }
-
-  return {
-    baseProblem: problem,
-    choiceLayout: "stacked",
-    choices: [],
-    stemLatex,
-    stemText,
-  };
 }
 
 export function renderText(value: unknown): string {

@@ -72,6 +72,8 @@ celery.conf.update(
         "app.workers.auto_review",
         "app.workers.analysis_pipeline",
         "app.workers.unified_analysis",
+        "app.workers.textbook_metadata_analysis",
+        "app.workers.exam_reference_metadata_analysis",
         "app.workers.detect_sections",
         "app.workers.segment_textbook",
         "app.workers.match_answers",

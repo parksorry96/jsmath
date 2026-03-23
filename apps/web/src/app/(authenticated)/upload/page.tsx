@@ -22,12 +22,18 @@ const API_URL =
 const MULTIPART_UPLOAD_CONCURRENCY = 4;
 
 type DocumentType = "exam" | "textbook";
-type UploadRole = "exam" | "textbook_problem" | "textbook_answer";
+type UploadRole =
+  | "exam"
+  | "exam_problem"
+  | "exam_answer"
+  | "textbook_problem"
+  | "textbook_answer";
 type UploadStatus =
   | "pending"
   | "uploading"
   | "processing"
   | "completed"
+  | "partial"
   | "failed";
 
 interface UploadedFile {
@@ -69,6 +75,7 @@ const statusLabel: Record<UploadStatus, string> = {
   uploading: "업로드중",
   processing: "처리중",
   completed: "완료",
+  partial: "부분완료",
   failed: "실패",
 };
 
@@ -106,7 +113,8 @@ function getStageProgress(documentType: DocumentType): Record<string, number> {
     ocr_processing: 40,
     parsing: 55,
     segmentation: 65,
-    ocr_complete: 70,
+    answer_matching: 75,
+    ocr_complete: 80,
     analyzing: 85,
     analysis_complete: 100,
   };
@@ -132,8 +140,9 @@ function getStageRanges(documentType: DocumentType): Record<string, [number, num
     ocr_processing: [25, 40],
     parsing: [40, 55],
     segmentation: [55, 70],
-    ocr_complete: [70, 80],
-    analyzing: [80, 98],
+    answer_matching: [70, 80],
+    ocr_complete: [80, 85],
+    analyzing: [85, 98],
     analysis_complete: [100, 100],
   };
 }
@@ -163,7 +172,7 @@ function getProgressFromStage(args: {
   return end;
 }
 
-function formatTextbookUploadName(problemFile: File, answerFile?: File | null) {
+function formatCompositeUploadName(problemFile: File, answerFile?: File | null) {
   if (!answerFile) {
     return problemFile.name;
   }
@@ -347,9 +356,13 @@ export default function UploadPage() {
   const [autoAnalyze, setAutoAnalyze] = useState(false);
   const [bookTitle, setBookTitle] = useState("");
   const [publisher, setPublisher] = useState("");
+  const [examProblemFile, setExamProblemFile] = useState<File | null>(null);
+  const [examAnswerFile, setExamAnswerFile] = useState<File | null>(null);
   const [textbookProblemFile, setTextbookProblemFile] = useState<File | null>(null);
   const [textbookAnswerFile, setTextbookAnswerFile] = useState<File | null>(null);
   const examFileInputRef = useRef<HTMLInputElement>(null);
+  const examProblemFileInputRef = useRef<HTMLInputElement>(null);
+  const examAnswerFileInputRef = useRef<HTMLInputElement>(null);
   const problemFileInputRef = useRef<HTMLInputElement>(null);
   const answerFileInputRef = useRef<HTMLInputElement>(null);
   const streamControllers = useRef<Map<string, AbortController>>(new Map());
@@ -414,15 +427,30 @@ export default function UploadPage() {
               });
 
               if (data.stage === "analysis_complete") {
+                const isPartialComplete =
+                  typeof data.total === "number" &&
+                  data.total > 0 &&
+                  typeof data.current === "number" &&
+                  data.current < data.total;
+                const failedCount = isPartialComplete ? Math.max(0, data.total - data.current) : 0;
+
                 updateFile(uploadId, {
-                  status: "completed",
-                  progress: 100,
+                  status: isPartialComplete ? "partial" : "completed",
+                  progress:
+                    isPartialComplete && data.total > 0
+                      ? Math.round((data.current / data.total) * 100)
+                      : 100,
                   stage: data.stage,
-                  stageMessage: data.message,
+                  stageMessage: isPartialComplete ? "AI 분석 부분 완료" : data.message,
                   stageCurrent: data.current,
                   stageTotal: data.total,
+                  error: isPartialComplete ? `${failedCount}개 분석 실패` : undefined,
                 });
-                toast.success("분석 완료! 검수 페이지에서 확인하세요.");
+                if (isPartialComplete) {
+                  toast.warning(`AI 분석이 일부만 완료되었습니다. (${data.current}/${data.total})`);
+                } else {
+                  toast.success("분석 완료! 검수 페이지에서 확인하세요.");
+                }
                 controller.abort();
                 if (streamControllers.current.get(uploadId) === controller) {
                   streamControllers.current.delete(uploadId);
@@ -593,6 +621,93 @@ export default function UploadPage() {
     [autoAnalyze, createUploadEntry, handleRegisteredUpload, updateFile],
   );
 
+  const uploadExamFiles = useCallback(() => {
+    if (!examProblemFile) {
+      toast.error("시험지 PDF를 선택해주세요");
+      return;
+    }
+
+    const totalSize = examProblemFile.size + (examAnswerFile?.size ?? 0);
+    const { id, abortController } = createUploadEntry(
+      formatCompositeUploadName(examProblemFile, examAnswerFile),
+      totalSize,
+      "exam",
+      autoAnalyze,
+    );
+
+    void (async () => {
+      let problemLoaded = 0;
+      let answerLoaded = 0;
+      const reportCombinedProgress = () => {
+        updateFile(id, {
+          progress: Math.round(
+            ((problemLoaded + answerLoaded) / Math.max(totalSize, 1)) * 100,
+          ),
+        });
+      };
+
+      try {
+        const uploadedProblem = await uploadMultipartPdf({
+          file: examProblemFile,
+          role: "exam_problem",
+          signal: abortController.signal,
+          onProgress: (loaded) => {
+            problemLoaded = loaded;
+            reportCombinedProgress();
+          },
+        });
+
+        const uploadedAnswer = examAnswerFile
+          ? await uploadMultipartPdf({
+              file: examAnswerFile,
+              role: "exam_answer",
+              signal: abortController.signal,
+              onProgress: (loaded) => {
+                answerLoaded = loaded;
+                reportCombinedProgress();
+              },
+            })
+          : null;
+
+        const response = await api.post<UploadRegisterResponse>("/files/exam/register", {
+          problem_key: uploadedProblem.key,
+          problem_filename: uploadedProblem.filename,
+          problem_size: uploadedProblem.size,
+          answer_key: uploadedAnswer?.key ?? null,
+          answer_size: uploadedAnswer?.size ?? null,
+          auto_analyze: autoAnalyze,
+        });
+
+        handleRegisteredUpload(id, response, "exam", autoAnalyze);
+
+        setExamProblemFile(null);
+        setExamAnswerFile(null);
+        if (examProblemFileInputRef.current) {
+          examProblemFileInputRef.current.value = "";
+        }
+        if (examAnswerFileInputRef.current) {
+          examAnswerFileInputRef.current.value = "";
+        }
+      } catch (error) {
+        updateFile(id, {
+          status: "failed",
+          error: isAbortError(error)
+            ? "업로드가 취소되었습니다."
+            : error instanceof Error
+              ? error.message
+              : "업로드에 실패했습니다.",
+        });
+      }
+    })();
+  }, [
+    autoAnalyze,
+    createUploadEntry,
+    examAnswerFile,
+    examProblemFile,
+    handleRegisteredUpload,
+    updateFile,
+  ]);
+
   const uploadTextbookFiles = useCallback(() => {
     if (!bookTitle.trim()) {
       toast.error("교재 제목을 입력해주세요");
@@ -606,7 +721,7 @@ export default function UploadPage() {
 
     const totalSize = textbookProblemFile.size + (textbookAnswerFile?.size ?? 0);
     const { id, abortController } = createUploadEntry(
-      formatTextbookUploadName(textbookProblemFile, textbookAnswerFile),
+      formatCompositeUploadName(textbookProblemFile, textbookAnswerFile),
       totalSize,
       "textbook",
       autoAnalyze,
@@ -768,6 +883,28 @@ export default function UploadPage() {
     [],
   );
 
+  const handleExamFileChange = useCallback(
+    (kind: "problem" | "answer", fileList: FileList | null) => {
+      const selectedFile = fileList?.[0];
+      if (!selectedFile) {
+        return;
+      }
+
+      if (!isPdfFile(selectedFile)) {
+        toast.error("PDF 파일만 업로드할 수 있습니다.");
+        return;
+      }
+
+      if (kind === "problem") {
+        setExamProblemFile(selectedFile);
+        return;
+      }
+
+      setExamAnswerFile(selectedFile);
+    },
+    [],
+  );
+
   useEffect(() => {
     fetch(`${API_URL}/files`, {
       credentials: "include",
@@ -904,38 +1041,139 @@ export default function UploadPage() {
           </label>
 
           {documentType === "exam" ? (
-            <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-12 transition-colors ${
-                isDragging
-                  ? "border-brand-beige bg-brand-beige/5"
-                  : "border-border hover:border-brand-warm"
-              }`}
-            >
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-brand-charcoal">
-                <Upload className="h-8 w-8 text-brand-beige" />
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg border border-border bg-brand-charcoal/40 p-4">
+                  <p className="text-sm font-medium">시험지 PDF</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    필수. 문제 본문 OCR 대상입니다.
+                  </p>
+                  <input
+                    ref={examProblemFileInputRef}
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    onChange={(event) => handleExamFileChange("problem", event.target.files)}
+                  />
+                  <Button
+                    variant="outline"
+                    className="mt-4"
+                    onClick={() => examProblemFileInputRef.current?.click()}
+                  >
+                    <FileUp className="mr-2 h-4 w-4" />
+                    시험지 선택
+                  </Button>
+                  {examProblemFile && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm">{examProblemFile.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(examProblemFile.size)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExamProblemFile(null);
+                          if (examProblemFileInputRef.current) {
+                            examProblemFileInputRef.current.value = "";
+                          }
+                        }}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-border bg-brand-charcoal/40 p-4">
+                  <p className="text-sm font-medium">해설지 PDF</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    선택. 내부에서는 따로 저장하고 정답/해설 매칭에만 사용합니다.
+                  </p>
+                  <input
+                    ref={examAnswerFileInputRef}
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    onChange={(event) => handleExamFileChange("answer", event.target.files)}
+                  />
+                  <Button
+                    variant="outline"
+                    className="mt-4"
+                    onClick={() => examAnswerFileInputRef.current?.click()}
+                  >
+                    <FileUp className="mr-2 h-4 w-4" />
+                    해설지 선택
+                  </Button>
+                  {examAnswerFile && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm">{examAnswerFile.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(examAnswerFile.size)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExamAnswerFile(null);
+                          if (examAnswerFileInputRef.current) {
+                            examAnswerFileInputRef.current.value = "";
+                          }
+                        }}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
-              <p className="mt-4 text-lg font-medium">PDF 파일을 드래그하여 놓으세요</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                또는 아래 버튼을 클릭하여 파일을 선택하세요
-              </p>
-              <input
-                ref={examFileInputRef}
-                type="file"
-                accept="application/pdf"
-                multiple
-                className="hidden"
-                onChange={handleFileInputChange}
-              />
-              <Button className="mt-4" onClick={() => examFileInputRef.current?.click()}>
-                <FileUp className="mr-2 h-4 w-4" />
-                파일 선택
-              </Button>
-              <p className="mt-3 text-xs text-muted-foreground">
-                대용량 PDF는 브라우저에서 S3로 직접 업로드합니다.
-              </p>
+
+              <div className="flex items-center justify-between rounded-lg border border-border bg-brand-dark/60 px-4 py-3">
+                <p className="text-sm text-muted-foreground">
+                  해설지 PDF가 있으면 별도 OCR 후 시험지 문항과 매칭합니다. 없으면 시험지만 OCR합니다.
+                </p>
+                <Button onClick={uploadExamFiles} disabled={!examProblemFile}>
+                  시험지 업로드
+                </Button>
+              </div>
+
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-12 transition-colors ${
+                  isDragging
+                    ? "border-brand-beige bg-brand-beige/5"
+                    : "border-border hover:border-brand-warm"
+                }`}
+              >
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-brand-charcoal">
+                  <Upload className="h-8 w-8 text-brand-beige" />
+                </div>
+                <p className="mt-4 text-lg font-medium">시험지 PDF 빠른 업로드</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  해설지 없이 시험지만 바로 올릴 때 사용합니다
+                </p>
+                <input
+                  ref={examFileInputRef}
+                  type="file"
+                  accept="application/pdf"
+                  multiple
+                  className="hidden"
+                  onChange={handleFileInputChange}
+                />
+                <Button className="mt-4" onClick={() => examFileInputRef.current?.click()}>
+                  <FileUp className="mr-2 h-4 w-4" />
+                  파일 선택
+                </Button>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  대용량 PDF는 브라우저에서 S3로 직접 업로드합니다.
+                </p>
+              </div>
             </div>
           ) : (
             <div className="space-y-4">
@@ -1086,6 +1324,8 @@ export default function UploadPage() {
                     <div className="flex items-center gap-2">
                       {file.status === "completed" ? (
                         <CheckCircle2 className="h-4 w-4 text-green-400" />
+                      ) : file.status === "partial" ? (
+                        <AlertCircle className="h-4 w-4 text-yellow-400" />
                       ) : file.status === "failed" ? (
                         <AlertCircle className="h-4 w-4 text-destructive" />
                       ) : file.status === "uploading" ? (
@@ -1119,7 +1359,7 @@ export default function UploadPage() {
                   {file.error && (
                     <p className="mt-1 text-xs text-destructive">{file.error}</p>
                   )}
-                  {file.status !== "completed" && file.status !== "failed" && (
+                  {file.status !== "completed" && file.status !== "partial" && file.status !== "failed" && (
                     <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-brand-dark">
                       <div
                         className="h-full rounded-full bg-brand-beige transition-all"

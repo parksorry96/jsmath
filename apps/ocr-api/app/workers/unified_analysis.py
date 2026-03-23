@@ -63,6 +63,34 @@ def _book_source_value(book_source: dict[str, Any], *keys: str) -> str:
     return ""
 
 
+def _exam_source_value(problem: Problem, key: str) -> Any:
+    if isinstance(problem.exam_source, dict):
+        return problem.exam_source.get(key)
+    return None
+
+
+def _build_exam_context_hint(problem: Problem) -> str:
+    exam_type = _exam_source_value(problem, "type")
+    question_number = _exam_source_value(problem, "number")
+    is_common = _exam_source_value(problem, "isCommon")
+    exam_subject = _exam_source_value(problem, "subject")
+
+    if exam_type == "suneung" and is_common is True:
+        return (
+            "- 이 문제는 수능 공통 문항(1~22번)으로 식별되었습니다.\n"
+            "- classification_2015.subject는 반드시 수학I 또는 수학II 중 하나여야 합니다.\n"
+            "- 확률과 통계, 미적분, 기하는 선택과목이므로 classification_2015.subject로 선택하지 마세요."
+        )
+
+    if exam_type == "suneung" and isinstance(question_number, int) and question_number >= 23 and exam_subject:
+        return (
+            f"- 이 문제는 수능 선택과목 문항으로 식별되었고 선택과목은 {exam_subject}입니다.\n"
+            f"- classification_2015.subject는 특별한 반례가 없으면 {exam_subject}로 유지하세요."
+        )
+
+    return ""
+
+
 def _normalize_curriculum_classification(
     classification: CurriculumClassificationResult,
     *,
@@ -89,6 +117,27 @@ def _normalize_curriculum_classification(
         "unitSub": classification.unit_sub,
         "curriculumNodeId": None,
         "confidence": round(classification.confidence, 3),
+    }
+
+
+def _pick_primary_classification(
+    classification_2015: dict[str, Any],
+    classification_2022: dict[str, Any],
+) -> dict[str, Any]:
+    primary_year = 2015
+    primary = classification_2015
+
+    if not classification_2015.get("subject") and classification_2022.get("subject"):
+        primary_year = 2022
+        primary = classification_2022
+
+    return {
+        "curriculum_year": primary_year,
+        "subject": primary.get("subject"),
+        "unit_major": primary.get("unitMajor"),
+        "unit_minor": primary.get("unitMinor"),
+        "unit_sub": primary.get("unitSub"),
+        "confidence": primary.get("confidence"),
     }
 
 # ─── Textbook-specific prompts ───
@@ -149,6 +198,12 @@ If one curriculum does not meaningfully cover the concept, set that curriculum's
 - exam_source는 강한 근거가 없으면 null로 두세요.
 - classification_reasoning은 2-4문장 분량의 근거 요약으로 쓰고, 숨겨진 chain-of-thought를 그대로 쓰지 마세요.
 
+## Curriculum Boundary
+- 풀이와 해설은 반드시 한국 고등학교 교육과정 범위 안에서만 작성하세요.
+- 교과과정 밖의 방법(예: 외적, 행렬/행렬식 고급기법, 고유값/고유벡터, 벡터공간/기저, 미분방정식, 복소해석, 대학수학 선형대수/해석학)은 사용하지 마세요.
+- 기하/벡터 문항은 내적, 닮음, 원의 성질, 좌표기하, 사인법칙, 코사인법칙 등 고등수학 범위의 도구로만 해결하세요.
+- 교과외 방법이 더 짧아 보여도 사용하지 말고, 교육과정 내 풀이를 우선하세요.
+
 ## Solution Strategy Tags
 Select 1-4 tags from this list that best describe the solution approach:
 {solution_tags_json}
@@ -198,6 +253,9 @@ Problem number: {problem_number}
 해설지 정답: {answer_text}
 해설지 풀이: {solution_text}
 매칭 상태: {answer_match_status}
+
+## Exam Structure Hint
+{exam_context_hint}
 
 ## Task
 - 교재 단원 정보를 strong prior로 사용해 먼저 분류하세요.
@@ -347,6 +405,12 @@ If one curriculum does not meaningfully cover the concept, set that curriculum's
 - exam_source는 강한 근거가 없으면 null로 두세요.
 - classification_reasoning은 2-4문장 분량의 근거 요약으로 쓰고, 숨겨진 chain-of-thought를 그대로 쓰지 마세요.
 
+## Curriculum Boundary
+- 풀이와 해설은 반드시 한국 고등학교 교육과정 범위 안에서만 작성하세요.
+- 교과과정 밖의 방법(예: 외적, 행렬/행렬식 고급기법, 고유값/고유벡터, 벡터공간/기저, 미분방정식, 복소해석, 대학수학 선형대수/해석학)은 사용하지 마세요.
+- 기하/벡터 문항은 내적, 닮음, 원의 성질, 좌표기하, 사인법칙, 코사인법칙 등 고등수학 범위의 도구로만 해결하세요.
+- 교과외 방법이 더 짧아 보여도 사용하지 말고, 교육과정 내 풀이를 우선하세요.
+
 ## IMPORTANT: Language
 - ALL text fields (classification_reasoning, solution_strategy, required_concepts, solution_steps descriptions, common_mistakes) MUST be written in Korean (한국어).
 - Do NOT use English for any descriptive text. Only use English for mathematical notation/LaTeX.
@@ -396,6 +460,9 @@ Problem number: {problem_number}
 - Unit Major: {current_unit_major}
 - Difficulty: {current_difficulty}
 
+## Exam Structure Hint
+{exam_context_hint}
+
 ## Task
 - 현재 분류 값은 참고만 하고, 문제 본문 기준으로 다시 분류하세요.
 - 2015 교육과정과 2022 교육과정에 대해 각각 별도로 분류하세요.
@@ -436,12 +503,14 @@ def unified_analysis(
 async def analyze_problem(
     problem_id: str,
     max_retries: int = 3,
+    *,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Standalone async analysis with built-in retry. Used by batch processing."""
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            return await _unified_analyze(problem_id)
+            return await _unified_analyze(problem_id, model=model)
         except (RateLimitError, APITimeoutError, APIConnectionError, ValidationError, ValueError) as exc:
             last_exc = exc
             if attempt < max_retries:
@@ -453,7 +522,7 @@ async def analyze_problem(
     raise last_exc  # type: ignore[misc]
 
 
-async def _unified_analyze(problem_id: str) -> dict[str, Any]:
+async def _unified_analyze(problem_id: str, *, model: str | None = None) -> dict[str, Any]:
     """Core GPT analysis — raises exceptions on failure (no Celery retry)."""
     async with worker_session() as session:
         result = await session.execute(
@@ -502,6 +571,7 @@ async def _unified_analyze(problem_id: str) -> dict[str, Any]:
                 answer_text=problem.answer_text or "없음",
                 solution_text=problem.solution_text or "없음",
                 answer_match_status=problem.answer_match_status or "no_answer_key",
+                exam_context_hint=_build_exam_context_hint(problem) or "- 별도 시험 구조 힌트 없음",
             )
         else:
             system_prompt = _render_prompt(
@@ -521,6 +591,7 @@ async def _unified_analyze(problem_id: str) -> dict[str, Any]:
                 current_subject=problem.subject or "unknown",
                 current_unit_major=problem.unit_major or "unknown",
                 current_difficulty=problem.difficulty or "unknown",
+                exam_context_hint=_build_exam_context_hint(problem) or "- 별도 시험 구조 힌트 없음",
             )
 
     if not settings.ai_api_key:
@@ -528,9 +599,10 @@ async def _unified_analyze(problem_id: str) -> dict[str, Any]:
         return _heuristic_fallback(problem_id)
 
     client = get_openai_client()
+    model_name = model or settings.ai_model
 
     response = await client.chat.completions.create(
-        model=settings.ai_model,
+        model=model_name,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -564,7 +636,11 @@ async def _unified_analyze(problem_id: str) -> dict[str, Any]:
         allowed_subjects=SUBJECTS_2022,
     )
 
-    subject = classification_2015["subject"]
+    primary_classification = _pick_primary_classification(
+        classification_2015,
+        classification_2022,
+    )
+    subject = primary_classification["subject"]
     is_common = subject in COMMON_SUBJECTS if subject else None
 
     # Clamp difficulty
@@ -579,13 +655,14 @@ async def _unified_analyze(problem_id: str) -> dict[str, Any]:
         "classification_reasoning": parsed.classification_reasoning,
         "classification_2015": classification_2015,
         "classification_2022": classification_2022,
+        "primary_curriculum_year": primary_classification["curriculum_year"],
         "subject": subject,
-        "unit_major": classification_2015["unitMajor"],
-        "unit_minor": classification_2015["unitMinor"],
-        "unit_sub": classification_2015["unitSub"],
+        "unit_major": primary_classification["unit_major"],
+        "unit_minor": primary_classification["unit_minor"],
+        "unit_sub": primary_classification["unit_sub"],
         "difficulty_refined": round(difficulty, 1),
         "is_common": is_common,
-        "classification_confidence": classification_2015["confidence"],
+        "classification_confidence": primary_classification["confidence"],
         # Solution
         "solution_tags": valid_tags,
         "solution_strategy": parsed.solution_strategy,
@@ -683,7 +760,11 @@ def _postprocess_batch_item(item: BatchItemResult) -> dict[str, Any]:
         curriculum_year=2022,
         allowed_subjects=SUBJECTS_2022,
     )
-    subject = classification_2015["subject"]
+    primary_classification = _pick_primary_classification(
+        classification_2015,
+        classification_2022,
+    )
+    subject = primary_classification["subject"]
     is_common = subject in COMMON_SUBJECTS if subject else None
     difficulty = max(1.0, min(6.0, item.difficulty_refined))
 
@@ -694,13 +775,14 @@ def _postprocess_batch_item(item: BatchItemResult) -> dict[str, Any]:
         "classification_reasoning": item.classification_reasoning,
         "classification_2015": classification_2015,
         "classification_2022": classification_2022,
+        "primary_curriculum_year": primary_classification["curriculum_year"],
         "subject": subject,
-        "unit_major": classification_2015["unitMajor"],
-        "unit_minor": classification_2015["unitMinor"],
-        "unit_sub": classification_2015["unitSub"],
+        "unit_major": primary_classification["unit_major"],
+        "unit_minor": primary_classification["unit_minor"],
+        "unit_sub": primary_classification["unit_sub"],
         "difficulty_refined": round(difficulty, 1),
         "is_common": is_common,
-        "classification_confidence": classification_2015["confidence"],
+        "classification_confidence": primary_classification["confidence"],
         "solution_tags": valid_tags,
         "solution_strategy": item.solution_strategy,
         "required_concepts": item.required_concepts,

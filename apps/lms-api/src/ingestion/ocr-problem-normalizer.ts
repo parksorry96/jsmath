@@ -1,4 +1,10 @@
 import { ProblemType } from "@prisma/client";
+import {
+  getChoiceLabel,
+  parseInlineChoiceSequence,
+  resolveChoiceMarkerPosition,
+  stripChoicePrefix as stripSharedChoicePrefix,
+} from "../common/problem-choice-utils";
 
 interface ParsedInlineChoice {
   content: string;
@@ -24,121 +30,244 @@ export interface NormalizedOcrProblem {
   choices: NormalizedProblemChoice[];
 }
 
-const CIRCLED_CHOICE_LABELS = ["", "①", "②", "③", "④", "⑤"];
-const CIRCLED_TO_POSITION: Record<string, number> = {
-  "①": 1,
-  "②": 2,
-  "③": 3,
-  "④": 4,
-  "⑤": 5,
-};
-
 const CHOICE_PREFIX_PATTERN =
   /^\s*(?:\\textcircled\{\s*[1-5]\s*\}|\\circled\{\s*[1-5]\s*\}|(?:\(|（)\s*[1-5]\s*(?:\)|）)|[1-5][.)]|[①②③④⑤])\s*/u;
-const INLINE_CHOICE_PATTERN =
-  /(^|[\s])(\\textcircled\{\s*[1-5]\s*\}|\\circled\{\s*[1-5]\s*\}|(?:\(|（)\s*[1-5]\s*(?:\)|）)|[①②③④⑤]|[1-5][.)])/gmu;
+const IMAGE_MARKDOWN_LINE_PATTERN = /^\s*!\[[^\]]*\]\([^)]+\)\s*$/gmu;
+const BARE_URL_LINE_PATTERN = /^\s*https?:\/\/\S+\s*$/gmu;
+const STANDALONE_SCORE_LINE_PATTERN = /^\s*\[\s*\d+\s*점\s*\]\s*$/u;
+const LEADING_PROBLEM_NUMBER_PATTERN = /^\s*\d{1,3}\s*[.．](?!\d)\s*/u;
 
 function normalizeLineEndings(content: string | null | undefined): string {
-  return (content ?? "").replace(/\r\n?/g, "\n").trim();
+  return (content ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(IMAGE_MARKDOWN_LINE_PATTERN, "")
+    .replace(BARE_URL_LINE_PATTERN, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
-function stripChoicePrefix(content: string | null | undefined): string {
+function stripLeadingProblemNumber(content: string | null | undefined): string {
   const normalized = normalizeLineEndings(content);
   if (!normalized) {
     return "";
   }
 
-  const stripped = normalized.replace(CHOICE_PREFIX_PATTERN, "").trim();
-  return stripped.length > 0 ? stripped : normalized;
+  const [firstLine, ...rest] = normalized.split("\n");
+  const strippedFirstLine = firstLine.replace(LEADING_PROBLEM_NUMBER_PATTERN, "").trim();
+
+  return [strippedFirstLine, ...rest]
+    .filter((line) => line.trim().length > 0)
+    .join("\n")
+    .trim();
+}
+
+function stripChoicePrefix(content: string | null | undefined): string {
+  return stripSharedChoicePrefix(content, {
+    markerStyle: "latex-aware",
+    normalizeInput: normalizeLineEndings,
+  });
 }
 
 function resolveMarkerPosition(marker: string): number {
-  if (marker in CIRCLED_TO_POSITION) {
-    return CIRCLED_TO_POSITION[marker];
+  return resolveChoiceMarkerPosition(marker);
+}
+
+function isLeadingProblemNumberStemLine(line: string, lineIndex: number): boolean {
+  return lineIndex === 0 && /^\s*[1-5]\.(?!\d)\s*\S/u.test(line);
+}
+
+function parseChoiceLine(
+  line: string,
+  lineIndex: number,
+): ParsedInlineChoice | null {
+  if (isLeadingProblemNumberStemLine(line, lineIndex)) {
+    return null;
   }
 
-  const match = marker.match(
-    /\\textcircled\{\s*([1-5])\s*\}|\\circled\{\s*([1-5])\s*\}|(?:\(|（)\s*([1-5])\s*(?:\)|）)|([1-5])[.)]/u,
-  );
-  if (!match) {
-    return 0;
+  const prefixMatch = line.match(CHOICE_PREFIX_PATTERN);
+  if (!prefixMatch) {
+    return null;
   }
 
-  for (let index = 1; index <= 4; index += 1) {
-    if (match[index]) {
-      return Number(match[index]);
-    }
+  const position = resolveMarkerPosition(prefixMatch[0].trim());
+  if (position === 0) {
+    return null;
   }
 
-  return 0;
+  return {
+    position,
+    content: stripChoicePrefix(line),
+  };
 }
 
 function parseInlineChoices(content: string | null | undefined): ParsedInlineChoiceSet | null {
+  return parseInlineChoiceSequence(content, {
+    markerStyle: "latex-aware",
+    normalizeInput: normalizeLineEndings,
+    sequenceMode: "prefix",
+  });
+}
+
+function parseLineChoices(content: string | null | undefined): ParsedInlineChoiceSet | null {
   const normalized = normalizeLineEndings(content);
   if (!normalized) {
     return null;
   }
 
-  const matches = Array.from(normalized.matchAll(INLINE_CHOICE_PATTERN)).map((match) => ({
-    index: (match.index ?? 0) + (match[1]?.length ?? 0),
-    marker: match[2],
-    position: resolveMarkerPosition(match[2]),
-  }));
-
-  if (matches.length < 4) {
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length < 5) {
     return null;
   }
 
-  for (let start = 0; start < matches.length; start += 1) {
-    if (matches[start].position !== 1) {
-      continue;
-    }
+  const choiceStarts = lines
+    .map((line, lineIndex) => {
+      const parsed = parseChoiceLine(line, lineIndex);
+      if (!parsed) {
+        return null;
+      }
 
-    const sequence: typeof matches = [];
-    let expectedPosition = 1;
-    for (const candidate of matches.slice(start)) {
-      if (candidate.position === expectedPosition) {
-        sequence.push(candidate);
-        expectedPosition += 1;
-        if (expectedPosition > 5) {
-          break;
-        }
+      return {
+        content: parsed.content,
+        lineIndex,
+        position: parsed.position,
+      };
+    })
+    .filter(
+      (
+        choice,
+      ): choice is {
+        content: string;
+        lineIndex: number;
+        position: number;
+      } => Boolean(choice),
+    );
+
+  if (choiceStarts.length < 4) {
+    return null;
+  }
+
+  let bestWindow:
+    | {
+        score: number;
+        span: number;
+        uniqueCount: number;
+        starts: Array<{ content: string; lineIndex: number; position: number }>;
+      }
+    | null = null;
+
+  for (let startIndex = 0; startIndex < choiceStarts.length; startIndex += 1) {
+    const uniqueByPosition = new Map<number, { content: string; lineIndex: number; position: number }>();
+
+    for (let endIndex = startIndex; endIndex < choiceStarts.length; endIndex += 1) {
+      const candidate = choiceStarts[endIndex];
+      if (!uniqueByPosition.has(candidate.position)) {
+        uniqueByPosition.set(candidate.position, candidate);
+      }
+
+      const orderedPositions = Array.from(uniqueByPosition.keys()).sort((a, b) => a - b);
+      const uniqueCount = orderedPositions.length;
+      const hasMinimumSequence =
+        orderedPositions.length >= 4 &&
+        orderedPositions[0] === 1 &&
+        orderedPositions[1] === 2 &&
+        orderedPositions[2] === 3 &&
+        orderedPositions[3] === 4;
+
+      if (!hasMinimumSequence) {
         continue;
       }
 
-      if (sequence.length > 0) {
-        break;
+      const span = choiceStarts[endIndex].lineIndex - choiceStarts[startIndex].lineIndex;
+      const duplicateCount = endIndex - startIndex + 1 - uniqueCount;
+      const nonChoiceBetween = span - (endIndex - startIndex);
+      const score = uniqueCount * 100 - span * 5 - duplicateCount * 30 - nonChoiceBetween * 10;
+      const starts = orderedPositions
+        .map((position) => uniqueByPosition.get(position))
+        .filter(
+          (
+            choice,
+          ): choice is { content: string; lineIndex: number; position: number } => Boolean(choice),
+        )
+        .sort((a, b) => a.lineIndex - b.lineIndex);
+
+      if (
+        !bestWindow ||
+        score > bestWindow.score ||
+        (score === bestWindow.score && uniqueCount > bestWindow.uniqueCount) ||
+        (score === bestWindow.score &&
+          uniqueCount === bestWindow.uniqueCount &&
+          span < bestWindow.span)
+      ) {
+        bestWindow = {
+          score,
+          span,
+          uniqueCount,
+          starts,
+        };
       }
     }
-
-    if (sequence.length < 4) {
-      continue;
-    }
-
-    const stem = normalized.slice(0, sequence[0].index).trim();
-    if (!stem) {
-      continue;
-    }
-
-    const choices = sequence.map((match, index) => {
-      const nextIndex =
-        index + 1 < sequence.length ? sequence[index + 1].index : normalized.length;
-      return {
-        content: stripChoicePrefix(
-          normalized.slice(match.index + match.marker.length, nextIndex),
-        ),
-        position: match.position,
-      };
-    });
-
-    if (choices.some((choice) => !choice.content)) {
-      continue;
-    }
-
-    return { choices, stem };
   }
 
-  return null;
+  if (!bestWindow || bestWindow.starts.length < 4) {
+    return null;
+  }
+
+  const allChoiceStartLines = new Set(choiceStarts.map((choice) => choice.lineIndex));
+  const firstChoiceLine = bestWindow.starts[0].lineIndex;
+  const stemLines = lines.filter((line, lineIndex) => {
+    if (lineIndex >= firstChoiceLine) {
+      return false;
+    }
+    if (!allChoiceStartLines.has(lineIndex)) {
+      return true;
+    }
+    return isLeadingProblemNumberStemLine(line, lineIndex);
+  });
+  if (stemLines.length === 0) {
+    return null;
+  }
+
+  const nextBoundaryByLine = new Map<number, number>();
+  for (let index = 0; index < choiceStarts.length; index += 1) {
+    const current = choiceStarts[index];
+    const next = choiceStarts[index + 1];
+    nextBoundaryByLine.set(current.lineIndex, next?.lineIndex ?? lines.length);
+  }
+
+  const choices = bestWindow.starts
+    .map((choiceStart) => {
+      const nextBoundary = nextBoundaryByLine.get(choiceStart.lineIndex) ?? lines.length;
+      const parts = [stripChoicePrefix(lines[choiceStart.lineIndex])];
+      for (let lineIndex = choiceStart.lineIndex + 1; lineIndex < nextBoundary; lineIndex += 1) {
+        if (!STANDALONE_SCORE_LINE_PATTERN.test(lines[lineIndex])) {
+          parts.push(lines[lineIndex]);
+        }
+      }
+
+      const content = parts.join(" ").trim();
+      if (!content) {
+        return null;
+      }
+
+      return {
+        content,
+        position: choiceStart.position,
+      };
+    })
+    .filter((choice): choice is ParsedInlineChoice => Boolean(choice))
+    .sort((a, b) => a.position - b.position);
+
+  if (choices.length < 4) {
+    return null;
+  }
+
+  return {
+    choices,
+    stem: stemLines.join("\n").trim(),
+  };
 }
 
 function toRecord(value: unknown): Record<string, unknown> | null {
@@ -190,10 +319,10 @@ function normalizeExistingChoices(value: unknown): NormalizedProblemChoice[] {
 
       return {
         position,
-        label:
-          (typeof record.label === "string" && record.label.trim()) ||
-          CIRCLED_CHOICE_LABELS[position] ||
-          `(${position})`,
+        label: getChoiceLabel(
+          position,
+          typeof record.label === "string" ? record.label : null,
+        ),
         contentLatex: contentLatex || contentText,
         contentText: contentText || contentLatex,
       };
@@ -210,8 +339,8 @@ function deriveChoicesFromStem(
   cleanedStemText: string;
   choices: NormalizedProblemChoice[];
 } {
-  const latexSplit = parseInlineChoices(stemLatex);
-  const textSplit = parseInlineChoices(stemText);
+  const latexSplit = parseLineChoices(stemLatex) ?? parseInlineChoices(stemLatex);
+  const textSplit = parseLineChoices(stemText) ?? parseInlineChoices(stemText);
   const derivedCount =
     latexSplit?.choices.length ?? textSplit?.choices.length ?? 0;
 
@@ -237,7 +366,7 @@ function deriveChoicesFromStem(
 
     return {
       position,
-      label: CIRCLED_CHOICE_LABELS[position] || `(${position})`,
+      label: getChoiceLabel(position),
       contentLatex: contentLatex || contentText,
       contentText: contentText || contentLatex,
     };
@@ -253,26 +382,38 @@ function deriveChoicesFromStem(
 }
 
 export function normalizeOcrProblem(problem: Record<string, unknown>): NormalizedOcrProblem {
-  const stemLatex = normalizeLineEndings(
+  const stemLatex = stripLeadingProblemNumber(
     typeof problem.stemLatex === "string" ? problem.stemLatex : null,
   );
-  const stemText = normalizeLineEndings(
+  const stemText = stripLeadingProblemNumber(
     typeof problem.stemText === "string" ? problem.stemText : null,
   );
+
+  const originalType =
+    typeof problem.problemType === "string" &&
+    Object.values(ProblemType).includes(problem.problemType as ProblemType)
+      ? (problem.problemType as ProblemType)
+      : null;
+
+  // Only derive choices from the stem when the problem is already MCQ or unclassified.
+  // Explicitly non-MCQ types (short_answer, essay) must not be force-upgraded.
+  const allowDeriveFromStem =
+    originalType === null ||
+    originalType === ProblemType.multiple_choice;
+
   const existingChoices = normalizeExistingChoices(problem.choices);
-  const derived = deriveChoicesFromStem(stemLatex, stemText);
+  const derived = allowDeriveFromStem
+    ? deriveChoicesFromStem(stemLatex, stemText)
+    : { cleanedStemLatex: stemLatex, cleanedStemText: stemText, choices: [] as NormalizedProblemChoice[] };
   const choices = existingChoices.length >= 4 ? existingChoices : derived.choices;
 
   return {
     problemType:
       choices.length >= 4
         ? ProblemType.multiple_choice
-        : typeof problem.problemType === "string" &&
-            Object.values(ProblemType).includes(problem.problemType as ProblemType)
-          ? (problem.problemType as ProblemType)
-          : ProblemType.short_answer,
-    stemLatex: choices.length >= 4 ? derived.cleanedStemLatex : stemLatex,
-    stemText: choices.length >= 4 ? derived.cleanedStemText : stemText,
+        : originalType ?? ProblemType.short_answer,
+    stemLatex: stripLeadingProblemNumber(choices.length >= 4 ? derived.cleanedStemLatex : stemLatex),
+    stemText: stripLeadingProblemNumber(choices.length >= 4 ? derived.cleanedStemText : stemText),
     choices,
   };
 }

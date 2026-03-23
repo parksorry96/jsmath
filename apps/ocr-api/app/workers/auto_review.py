@@ -14,15 +14,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery
 from app.database import worker_session
-from app.models.problem import AnalysisStatus, Problem, ReviewStatus
+from app.models.exam_meta import ExamQuestionMeta
+from app.models.problem import (
+    AnalysisStatus,
+    Problem,
+    ProblemType,
+    QuestionFormat,
+    ReviewStatus,
+)
 from app.models.similarity import ProblemSimilarity
 from app.schemas.problem import CURRICULUM_TREE, SUBJECTS
 
@@ -70,6 +80,9 @@ _SUBJECT_CONCEPT_KEYWORDS: dict[str, list[str]] = {
     ],
 }
 
+_COMMON_SUBJECTS = {"수학I", "수학II"}
+_CIRCLED_CHOICE_TO_POSITION = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5}
+
 
 def _compute_chapter_match(
     subject: str | None, unit_major: str | None, book_source: dict | None,
@@ -91,11 +104,85 @@ def _compute_chapter_match(
 
 def _normalize_answer(answer: str) -> str:
     """Normalize answer text for comparison."""
-    answer = answer.strip()
+    answer = unicodedata.normalize("NFKC", answer).strip()
     circled = {"①": "1", "②": "2", "③": "3", "④": "4", "⑤": "5"}
     for k, v in circled.items():
         answer = answer.replace(k, v)
-    return answer
+    answer = answer.replace("\\left", "").replace("\\right", "")
+    answer = re.sub(r"\\(?:mathrm|text)\{([^{}]+)\}", r"\1", answer)
+    answer = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"\1/\2", answer)
+    answer = answer.replace("$", "")
+    answer = re.sub(r"^(?:정답|답|해답)\s*[:：]?\s*", "", answer)
+    answer = re.sub(r"\s+", "", answer)
+    match = re.fullmatch(r"\(?([1-5])\)?(?:번)?", answer)
+    if match:
+        return match.group(1)
+    return answer.lower()
+
+
+def _extract_choice_position(answer: str | None) -> int | None:
+    if not answer:
+        return None
+
+    raw = unicodedata.normalize("NFKC", answer).strip()
+    if not raw:
+        return None
+
+    for circled, position in _CIRCLED_CHOICE_TO_POSITION.items():
+        if answer.strip().startswith(circled):
+            return position
+
+    cleaned = raw.replace("$", "").strip()
+    cleaned = re.sub(r"^(?:정답|답)\s*[:：]?\s*", "", cleaned)
+    match = re.match(r"^\(?\s*([1-5])\s*\)?(?:번)?(?:\b|(?=\s)|$)", cleaned)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _is_objective_problem(problem: Problem) -> bool:
+    if len(problem.choices or []) >= 4:
+        return True
+    if problem.question_format == QuestionFormat.multiple_choice_5:
+        return True
+    return problem.problem_type == ProblemType.multiple_choice
+
+
+def _candidate_exam_subjects(problem: Problem, exam_source: dict[str, Any]) -> list[str] | None:
+    hinted_subject = str(exam_source.get("subject") or problem.subject or "").replace(" ", "")
+    if not hinted_subject or hinted_subject in {subject.replace(" ", "") for subject in _COMMON_SUBJECTS}:
+        return None
+
+    alias_map = {
+        "확률과통계": ["확률과통계", "확률과 통계"],
+        "미적분": ["미적분"],
+        "기하": ["기하"],
+        "수학a": ["수학A", "수학(가)"],
+        "수학b": ["수학B", "수학(나)"],
+        "수학(가)": ["수학(가)", "수학A"],
+        "수학(나)": ["수학(나)", "수학B"],
+    }
+    lowered = hinted_subject.lower()
+    for key, candidates in alias_map.items():
+        if key in lowered:
+            return candidates
+
+    return [str(exam_source.get("subject") or problem.subject)]
+
+
+def _normalize_exam_type(raw_type: Any, exam_month: int | None) -> str | None:
+    normalized = str(raw_type or "").strip().lower()
+    if normalized in {"suneung", "수능"}:
+        return "suneung"
+    if normalized in {"mock_pyeongga", "평가원", "모의평가", "모평"}:
+        return "mock_pyeongga"
+    if normalized in {"mock_gyoyuk", "교육청", "학평", "학력평가"}:
+        return "mock_gyoyuk"
+    if exam_month == 11:
+        return "suneung"
+    if exam_month in {6, 9}:
+        return "mock_pyeongga"
+    return None
 
 
 def _compute_answer_cross_check(ai_answer: str | None, problem: Problem) -> float:
@@ -105,6 +192,93 @@ def _compute_answer_cross_check(ai_answer: str | None, problem: Problem) -> floa
     ai_norm = _normalize_answer(ai_answer or "")
     book_norm = _normalize_answer(problem.answer_text)
     return 1.0 if ai_norm == book_norm else 0.0
+
+
+def _has_reference_solution(problem: Problem) -> bool:
+    return bool(
+        (isinstance(problem.solution_text, str) and problem.solution_text.strip())
+        or (isinstance(problem.solution_latex, str) and problem.solution_latex.strip())
+    )
+
+
+def _compute_reference_solution_signal(problem: Problem) -> float:
+    return 1.0 if _has_reference_solution(problem) else 0.0
+
+
+async def _compute_exam_answer_match(
+    session: AsyncSession,
+    problem: Problem,
+    ai_answer: str | None,
+) -> bool | None:
+    linked_result = await session.execute(
+        select(ExamQuestionMeta.correct_answer)
+        .where(ExamQuestionMeta.problem_id == problem.id)
+        .where(ExamQuestionMeta.correct_answer.isnot(None))
+    )
+    raw_answers = [row[0] for row in linked_result.all()]
+    expected_answers = {
+        _normalize_answer(answer)
+        for answer in raw_answers
+        if answer
+    }
+    if not expected_answers:
+        exam_source = problem.exam_source if isinstance(problem.exam_source, dict) else None
+        if not exam_source:
+            return None
+
+        exam_year = exam_source.get("year")
+        exam_month = exam_source.get("month")
+        question_number = exam_source.get("number")
+        if not isinstance(exam_year, int) or not isinstance(exam_month, int) or not isinstance(question_number, int):
+            return None
+
+        exam_type = _normalize_exam_type(exam_source.get("type"), exam_month)
+        if not exam_type:
+            return None
+
+        stmt = (
+            select(ExamQuestionMeta.correct_answer)
+            .where(ExamQuestionMeta.exam_year == exam_year)
+            .where(ExamQuestionMeta.exam_month == exam_month)
+            .where(ExamQuestionMeta.exam_type == exam_type)
+            .where(ExamQuestionMeta.question_number == question_number)
+            .where(ExamQuestionMeta.correct_answer.isnot(None))
+        )
+
+        is_common = exam_source.get("isCommon") is True or problem.subject in _COMMON_SUBJECTS
+        subject_candidates = None if is_common else _candidate_exam_subjects(problem, exam_source)
+        if subject_candidates:
+            stmt = stmt.where(ExamQuestionMeta.subject.in_(subject_candidates))
+
+        fallback_result = await session.execute(stmt)
+        fallback_answers = [row[0] for row in fallback_result.all()]
+        expected_answers = {
+            _normalize_answer(answer)
+            for answer in fallback_answers
+            if answer
+        }
+        if not expected_answers:
+            return None
+        if subject_candidates is None and len(expected_answers) > 1:
+            return None
+
+    ai_norm = _normalize_answer(ai_answer or "")
+    return ai_norm in expected_answers
+
+
+def _compute_exam_structure_match(problem: Problem) -> bool | None:
+    exam_source = problem.exam_source if isinstance(problem.exam_source, dict) else None
+    if not exam_source:
+        return None
+
+    if exam_source.get("type") == "suneung" and exam_source.get("isCommon") is True:
+        return problem.subject in {"수학I", "수학II"}
+
+    expected_subject = exam_source.get("subject")
+    if exam_source.get("type") == "suneung" and expected_subject:
+        return problem.subject == expected_subject
+
+    return None
 
 
 def _clamp_confidence(raw_confidence: float | None) -> float | None:
@@ -288,11 +462,17 @@ async def _review(problem_id: str) -> dict[str, Any]:
 
     async with worker_session() as session:
         result = await session.execute(
-            select(Problem).where(Problem.id == problem_id)
+            select(Problem)
+            .options(selectinload(Problem.choices))
+            .where(Problem.id == problem_id)
         )
         problem = result.scalar_one_or_none()
         if not problem:
             raise ValueError(f"Problem {problem_id} not found")
+
+        is_textbook = bool(problem.book_source)
+        has_reference_solution = _has_reference_solution(problem)
+        ai_answer = problem.answer_latex if is_textbook else problem.answer_text
 
         # ─── Hard checks (must pass for auto-approve) ───
 
@@ -307,9 +487,12 @@ async def _review(problem_id: str) -> dict[str, Any]:
             unit_matches = problem.unit_major in subject_tree
         checks.append(("unit_matches_subject", unit_matches))
 
-        # Check 3: Solution strategy is populated
-        has_strategy = bool(problem.solution_strategy)
-        checks.append(("has_solution_strategy", has_strategy))
+        # Check 3: explanation metadata exists
+        if has_reference_solution:
+            checks.append(("has_reference_solution", has_reference_solution))
+        else:
+            has_strategy = bool(problem.solution_strategy)
+            checks.append(("has_solution_strategy", has_strategy))
 
         # Check 4: Required concepts populated
         has_concepts = bool(problem.required_concepts and len(problem.required_concepts) > 0)
@@ -322,9 +505,27 @@ async def _review(problem_id: str) -> dict[str, Any]:
         )
         checks.append(("difficulty_in_range", difficulty_ok))
 
-        # ─── Multi-factor composite confidence ───
+        if _is_objective_problem(problem):
+            has_objective_choices = len(problem.choices or []) >= 4
+            checks.append(("objective_choices_present", has_objective_choices))
 
-        is_textbook = bool(problem.book_source)
+            choice_position = _extract_choice_position(ai_answer)
+            valid_choice_positions = {choice.position for choice in problem.choices or []}
+            answer_format_ok = choice_position is not None and (
+                not valid_choice_positions or choice_position in valid_choice_positions
+            )
+            checks.append(("objective_answer_format_ok", answer_format_ok))
+
+        exam_structure_match = _compute_exam_structure_match(problem)
+        if exam_structure_match is not None:
+            checks.append(("exam_structure_match", exam_structure_match))
+
+        if not is_textbook:
+            exam_answer_match = await _compute_exam_answer_match(session, problem, ai_answer)
+            if exam_answer_match is not None:
+                checks.append(("exam_answer_match", exam_answer_match))
+
+        # ─── Multi-factor composite confidence ───
 
         factors["classification_confidence"] = round(
             _clamp_confidence(problem.classification_confidence) or 0.0, 4
@@ -360,20 +561,18 @@ async def _review(problem_id: str) -> dict[str, Any]:
             )
             factors["chapter_match"] = f_chapter
 
-            f_answer = _compute_answer_cross_check(
-                problem.answer_latex, problem,
-            )
-            factors["answer_cross_check"] = f_answer
+            f_reference_solution = _compute_reference_solution_signal(problem)
+            factors["reference_solution"] = f_reference_solution
 
             has_answer_key = problem.answer_match_status == "matched"
             if has_answer_key:
                 composite = (
-                    0.15 * f_ai
+                    0.20 * f_ai
                     + 0.15 * f_subject
                     + 0.10 * f_time
                     + 0.15 * f_similar
                     + 0.20 * f_chapter
-                    + 0.25 * f_answer
+                    + 0.20 * f_reference_solution
                 )
                 threshold = 0.80
             else:
@@ -382,7 +581,8 @@ async def _review(problem_id: str) -> dict[str, Any]:
                     + 0.20 * f_subject
                     + 0.10 * f_time
                     + 0.15 * f_similar
-                    + 0.30 * f_chapter
+                    + 0.15 * f_chapter
+                    + 0.15 * f_reference_solution
                 )
                 threshold = 0.85
         else:

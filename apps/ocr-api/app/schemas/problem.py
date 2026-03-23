@@ -180,6 +180,9 @@ class SegmentedProblem(BaseModel):
     sub_problems: list[SegmentedProblem] | None = None
     shared_stem_latex: str | None = None
     shared_stem_text: str | None = None
+    subject: str | None = None
+    is_common: bool | None = None
+    exam_source: dict[str, Any] | None = None
 
 
 class ChoiceItem(BaseModel):

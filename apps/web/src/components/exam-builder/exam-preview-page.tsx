@@ -1,26 +1,9 @@
 "use client";
 
-import { resolveProblemChoices } from "@/components/exam-builder/choice-utils";
-import { LatexRenderer } from "@/components/math/latex-renderer";
-
-export interface Problem {
-  id: string;
-  displayNumber: string | null;
-  problemNumber: string | null;
-  stemText: string;
-  stemLatex: string;
-  problemType: string;
-  difficulty: number | null;
-  subject: string | null;
-  unitMajor: string | null;
-  choices?: {
-    label: string;
-    contentLatex: string;
-    contentText: string;
-    position: number;
-  }[];
-  answerText?: string | null;
-}
+import {
+  ExamBuilderProblemContent,
+  type ExamBuilderProblem as Problem,
+} from "@/components/exam-builder/problem-preview-content";
 
 export interface ExamPreviewPageProps {
   problems: Problem[];
@@ -35,52 +18,6 @@ export interface ExamPreviewPageProps {
   duration?: string;
   showNameField?: boolean;
   showHeader?: boolean;
-}
-
-const CIRCLED_NUMBERS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
-
-function ProblemChoices({
-  choices,
-  layout,
-}: {
-  choices: ReturnType<typeof resolveProblemChoices>["choices"];
-  layout: ReturnType<typeof resolveProblemChoices>["choiceLayout"];
-}) {
-  if (choices.length === 0) {
-    return null;
-  }
-
-  if (layout === "spread") {
-    return (
-      <div className="mt-1 ml-4 grid grid-cols-5 gap-x-3 gap-y-1 text-[0.92em]">
-        {choices.map((choice) => (
-          <div key={`${choice.position}-${choice.label}`} className="flex min-w-0 items-baseline gap-1">
-            <span className="shrink-0">{CIRCLED_NUMBERS[choice.position - 1] ?? `(${choice.position})`}</span>
-            <LatexRenderer
-              content={choice.contentLatex || choice.contentText}
-              className="min-w-0"
-            />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-1.5 ml-4 flex flex-col gap-1">
-      {choices.map((choice, idx) => (
-        <div key={`${choice.position}-${choice.label}-${idx}`} className="flex gap-1.5 items-baseline">
-          <span className="shrink-0">
-            {CIRCLED_NUMBERS[idx] ?? `(${idx + 1})`}
-          </span>
-          <LatexRenderer
-            content={choice.contentLatex || choice.contentText}
-            className="min-w-0"
-          />
-        </div>
-      ))}
-    </div>
-  );
 }
 
 /** Layout config per problemsPerPage setting */
@@ -185,27 +122,15 @@ function ProblemBlock({
   number: number;
   layout: ReturnType<typeof getLayoutConfig>;
 }) {
-  const resolvedProblem = resolveProblemChoices(problem);
-
   return (
     <div
       data-problem-id={problem.id}
       className="break-inside-avoid mb-2"
     >
-      {/* Problem stem */}
-      <div className="flex gap-1.5">
-        <span className="font-bold shrink-0">{number}.</span>
-        <div className="min-w-0 flex-1">
-          <LatexRenderer
-            content={resolvedProblem.stemContent}
-            className="leading-relaxed"
-          />
-        </div>
-      </div>
-
-      <ProblemChoices
-        choices={resolvedProblem.choices}
-        layout={resolvedProblem.choiceLayout}
+      <ExamBuilderProblemContent
+        problem={problem}
+        number={number}
+        variant="page"
       />
     </div>
   );

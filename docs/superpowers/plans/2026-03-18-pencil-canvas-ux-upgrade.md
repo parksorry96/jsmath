@@ -2,13 +2,21 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Upgrade the iPad pencil canvas with smart AI intervention timing, progressive hints, animated status indicators, enhanced pen tools with palm rejection, scratch pad mode, and step progress tracking.
+**Goal:** Upgrade the existing iPad pencil canvas screen with smarter AI timing, progressive hints, animated status indicators, safer pen input, scratch pad mode, and step progress tracking, without redesigning the overall page layout in this phase.
 
-**Architecture:** Pure client-side changes in `apps/student-app`. New hooks (`useCanvasActivity`, `useHintLevel`) encapsulate AI timing and hint logic. `drawing-canvas.tsx` gets Gesture Handler migration + dual-layer paths. New UI components (`AiStatusIndicator`, `StepProgressBar`) use `moti` for animations. AI behavior is modified via prompt templates only — no server changes.
+**Architecture:** Pure client-side changes in `apps/student-app`. New hooks (`useCanvasActivity`, `useHintLevel`) encapsulate AI timing and hint policy. `drawing-canvas.tsx` migrates to Gesture Handler in JS-thread mode (`runOnJS(true)`) so the existing React state drawing model remains valid, and uses a dedicated white-background export surface for solution-only snapshots. Tutor message parsing is shared so `[STEP:N/T]` tags are stripped in both canvas and full-screen tutor flows. Local struggle nudges stay client-side only — they do not enqueue hidden tutor turns. `ensureSession()` gets an in-flight guard to prevent duplicate tutor sessions. AI behavior is still modified through prompt templates only — no server changes.
 
 **Tech Stack:** React Native (Expo 55), @shopify/react-native-skia, react-native-gesture-handler, react-native-reanimated, moti (new), lucide-react-native
 
 **Spec:** `docs/superpowers/specs/2026-03-18-pencil-canvas-ux-upgrade-design.md`
+
+**Scope Decisions For This Plan:**
+- Keep the current canvas screen shell (problem card + canvas + overlay tutor panel). A true split-view redesign is deferred.
+- Auto-analysis always uses hint level 0. The "더 자세한 힌트" button only affects explicit manual hint requests.
+- Hint escalation resets when `problemId` changes, when the student sends a free-form chat message, and after a successful full solution submission.
+- Struggle nudges are local UI state only. They do not send hidden student turns to the server.
+- Pressure sensitivity is explicitly deferred. This plan covers stylus detection, palm rejection, tool widths, and scratch/solution separation only.
+- Canvas export must always exclude scratch strokes, use a white background, and stay within the existing iPad layout bounds so the exported image remains within the upstream `<= 1024px` expectation.
 
 ---
 
@@ -80,6 +88,15 @@ export const SCRATCH_BG = {
 
 export const DEFAULT_STEP_LABELS = ['문제 파악', '식 세우기', '풀이', '검산'] as const;
 
+export const AUTO_HINT_LEVEL = 0 as const;
+
+export const MAX_HINT_LEVEL = 3 as const;
+
+export const LOCAL_NUDGE_MESSAGES = {
+  idle: '힌트가 필요하면 알려주세요',
+  erase: '다시 접근하는 것도 좋은 방법이에요',
+} as const;
+
 export const HINT_PROMPTS: Record<0 | 1 | 2 | 3, string> = {
   0: '지금까지의 풀이를 보고, 오류가 있는 줄 번호만 짧게 알려주세요. 정답이나 풀이법은 절대 말하지 마세요. 응답 첫 줄에 [STEP:N/T] 형식으로 현재 단계를 표시하세요.',
   1: '오류의 종류(부호/계산/개념)를 알려주세요. 구체적 수정 방법은 말하지 마세요. 응답 첫 줄에 [STEP:N/T] 형식으로 현재 단계를 표시하세요.',
@@ -97,7 +114,7 @@ git commit -m "feat: add canvas constants (timing, colors, hints)"
 
 ---
 
-### Task 3: Create parseStepTag utility
+### Task 3: Create tutor message parsing utilities
 
 **Files:**
 - Create: `apps/student-app/lib/parse-step-tag.ts`
@@ -114,18 +131,31 @@ export interface StepTag {
 }
 
 export function parseStepTag(content: string): StepTag | null {
-  const match = content.match(/\[STEP:(\d+)\/(\d+)\]/);
+  const match = content.match(/^\s*\[STEP:(\d+)\/(\d+)\]\s*/);
   if (!match) return null;
 
   const currentStep = parseInt(match[1], 10);
   const totalSteps = parseInt(match[2], 10);
 
-  if (currentStep < 1 || totalSteps < 1 || currentStep > totalSteps) return null;
+  if (currentStep < 1 || totalSteps < 1 || currentStep > totalSteps || totalSteps > 8) {
+    return null;
+  }
 
   return {
     currentStep,
     totalSteps,
-    cleanContent: content.replace(/\[STEP:\d+\/\d+\]\s*/, ''),
+    cleanContent: content.replace(/^\s*\[STEP:\d+\/\d+\]\s*/, ''),
+  };
+}
+
+export function normalizeTutorMessage(content: string) {
+  const parsed = parseStepTag(content);
+
+  return {
+    content: parsed?.cleanContent ?? content,
+    stepProgress: parsed
+      ? { current: parsed.currentStep, total: parsed.totalSteps }
+      : null,
   };
 }
 ```
@@ -134,7 +164,7 @@ export function parseStepTag(content: string): StepTag | null {
 
 ```bash
 git add apps/student-app/lib/parse-step-tag.ts
-git commit -m "feat: add parseStepTag utility for AI response parsing"
+git commit -m "feat: add tutor message parsing utilities"
 ```
 
 ---
@@ -151,29 +181,57 @@ git commit -m "feat: add parseStepTag utility for AI response parsing"
 Write `apps/student-app/hooks/useHintLevel.ts`:
 
 ```typescript
-import { useCallback, useRef, useState } from 'react';
-import { HINT_PROMPTS } from '@/constants/canvas';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  AUTO_HINT_LEVEL,
+  HINT_PROMPTS,
+  MAX_HINT_LEVEL,
+} from '@/constants/canvas';
 
 type HintLevel = 0 | 1 | 2 | 3;
 
-export function useHintLevel(_problemId: string) {
-  const [level, setLevel] = useState<HintLevel>(0);
+export function useHintLevel(problemId: string) {
+  const [level, setLevel] = useState<HintLevel>(AUTO_HINT_LEVEL);
   const levelRef = useRef(level);
   levelRef.current = level;
 
-  const escalate = useCallback(() => {
-    setLevel((prev) => (prev < 3 ? ((prev + 1) as HintLevel) : prev));
+  useEffect(() => {
+    setLevel(AUTO_HINT_LEVEL);
+    levelRef.current = AUTO_HINT_LEVEL;
+  }, [problemId]);
+
+  const escalateAndGetPrompt = useCallback(() => {
+    const next =
+      levelRef.current < MAX_HINT_LEVEL
+        ? ((levelRef.current + 1) as HintLevel)
+        : levelRef.current;
+
+    levelRef.current = next;
+    setLevel(next);
+    return HINT_PROMPTS[next];
   }, []);
 
   const reset = useCallback(() => {
-    setLevel(0);
+    levelRef.current = AUTO_HINT_LEVEL;
+    setLevel(AUTO_HINT_LEVEL);
   }, []);
 
-  const promptForLevel = useCallback(() => {
+  const getAutoPrompt = useCallback(() => {
+    return HINT_PROMPTS[AUTO_HINT_LEVEL];
+  }, []);
+
+  const getPromptForCurrentLevel = useCallback(() => {
     return HINT_PROMPTS[levelRef.current];
   }, []);
 
-  return { level, escalate, reset, promptForLevel };
+  return {
+    level,
+    reset,
+    getAutoPrompt,
+    getPromptForCurrentLevel,
+    escalateAndGetPrompt,
+    isMaxLevel: level === MAX_HINT_LEVEL,
+  };
 }
 ```
 
@@ -197,7 +255,7 @@ Write `apps/student-app/hooks/useCanvasActivity.ts`:
 
 ```typescript
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { TIMING } from '@/constants/canvas';
+import { LOCAL_NUDGE_MESSAGES, TIMING } from '@/constants/canvas';
 
 type ActivityState = 'writing' | 'paused' | 'idle' | 'struggling';
 
@@ -225,6 +283,7 @@ export function useCanvasActivity({
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const struggleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enteredIdleRef = useRef(false);
+  const hasWrittenSinceEnableRef = useRef(false);
 
   const strokesSinceAnalysisRef = useRef(0);
   const recentStrokesRef = useRef<StrokeRecord[]>([]);
@@ -247,13 +306,6 @@ export function useCanvasActivity({
     struggleTimerRef.current = null;
     enteredIdleRef.current = false;
   }, []);
-
-  useEffect(() => {
-    if (!enabled) {
-      clearAllTimers();
-      setActivityState('writing');
-    }
-  }, [enabled, clearAllTimers]);
 
   useEffect(() => {
     return () => clearAllTimers();
@@ -307,13 +359,26 @@ export function useCanvasActivity({
           if (!enabledRef.current) return;
           if (!enteredIdleRef.current) return; // guard: spec says idle->struggling
           setActivityState('struggling');
-          onNudgeRef.current('힌트가 필요하면 알려주세요');
+          onNudgeRef.current(LOCAL_NUDGE_MESSAGES.idle);
         }, TIMING.STRUGGLE_THRESHOLD_MS - TIMING.IDLE_THRESHOLD_MS);
       }, TIMING.IDLE_THRESHOLD_MS - TIMING.PAUSE_THRESHOLD_MS);
     }, TIMING.PAUSE_THRESHOLD_MS);
   }, [clearAllTimers]);
 
+  useEffect(() => {
+    if (!enabled) {
+      clearAllTimers();
+      setActivityState('writing');
+      return;
+    }
+
+    if (hasWrittenSinceEnableRef.current) {
+      startTimers();
+    }
+  }, [enabled, clearAllTimers, startTimers]);
+
   const handleStrokeEnd = useCallback(() => {
+    hasWrittenSinceEnableRef.current = true;
     recentStrokesRef.current.push({ timestamp: Date.now(), isEraser: false });
     strokesSinceAnalysisRef.current += 1;
     setActivityState('writing');
@@ -321,6 +386,7 @@ export function useCanvasActivity({
   }, [startTimers]);
 
   const handleEraserStrokeEnd = useCallback(() => {
+    hasWrittenSinceEnableRef.current = true;
     recentStrokesRef.current.push({ timestamp: Date.now(), isEraser: true });
     strokesSinceAnalysisRef.current += 1;
     setActivityState('writing');
@@ -328,19 +394,20 @@ export function useCanvasActivity({
       startTimers();
       if (checkEraseRatio()) {
         setActivityState('struggling');
-        onNudgeRef.current('다시 접근하는 것도 좋은 방법이에요');
+        onNudgeRef.current(LOCAL_NUDGE_MESSAGES.erase);
       }
     }
   }, [startTimers, checkEraseRatio]);
 
-  const resetTimers = useCallback(() => {
+  const resetActivity = useCallback(() => {
     clearAllTimers();
+    hasWrittenSinceEnableRef.current = false;
     strokesSinceAnalysisRef.current = 0;
     recentStrokesRef.current = [];
     setActivityState('writing');
   }, [clearAllTimers]);
 
-  return { activityState, handleStrokeEnd, handleEraserStrokeEnd, resetTimers };
+  return { activityState, handleStrokeEnd, handleEraserStrokeEnd, resetActivity };
 }
 ```
 
@@ -377,6 +444,7 @@ interface AiStatusIndicatorProps {
   isAnalyzing: boolean;
   isStreaming: boolean;
   hasUnread: boolean;
+  nudgeMessage?: string | null;
   onPress: () => void;
 }
 
@@ -385,6 +453,7 @@ export function AiStatusIndicator({
   isAnalyzing,
   isStreaming,
   hasUnread,
+  nudgeMessage,
   onPress,
 }: AiStatusIndicatorProps) {
   const { colors } = useTheme();
@@ -409,7 +478,7 @@ export function AiStatusIndicator({
     if (isStreaming) return 'AI 응답 중...';
     if (isAnalyzing) return '분석 중...';
     if (isWriting) return '관찰 중';
-    if (isStruggling) return '도움이 필요하신가요?';
+    if (isStruggling) return nudgeMessage ?? '도움이 필요하신가요?';
     return 'AI 피드백';
   }
 
@@ -564,7 +633,7 @@ Replace the entire file `apps/student-app/components/canvas/drawing-canvas.tsx` 
 import React, { ForwardedRef, useCallback, useImperativeHandle, useRef, useState } from 'react';
 import { View, Pressable, Text, ActivityIndicator } from 'react-native';
 import { Canvas, Path, Skia, ImageFormat, useCanvasRef } from '@shopify/react-native-skia';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
 import { Undo2, Redo2, Trash2, Eraser, Send } from 'lucide-react-native';
 import { useTheme } from '@/lib/theme';
 import { PEN_COLORS, STROKE_WIDTHS, ERASER_WIDTHS, SCRATCH_BG } from '@/constants/canvas';
@@ -573,6 +642,7 @@ interface DrawingPath {
   path: string;
   color: string;
   strokeWidth: number;
+  isEraser: boolean;
 }
 
 export interface DrawingCanvasRef {
@@ -591,14 +661,16 @@ interface DrawingCanvasProps {
   onCanvasChange?: () => void;
   onStrokeEnd?: () => void;
   onEraserStrokeEnd?: () => void;
+  onSolutionClear?: () => void;
 }
 
 function DrawingCanvasImpl(
-  { onCapture, toolbarPosition = 'top', onCanvasChange, onStrokeEnd, onEraserStrokeEnd }: DrawingCanvasProps,
+  { onCapture, toolbarPosition = 'top', onCanvasChange, onStrokeEnd, onEraserStrokeEnd, onSolutionClear }: DrawingCanvasProps,
   ref: ForwardedRef<DrawingCanvasRef>,
 ) {
-  const { colors, mode: themeMode } = useTheme();
+  const { colors, isDark } = useTheme();
   const canvasRef = useCanvasRef();
+  const exportCanvasRef = useCanvasRef();
 
   // Dual-layer state
   const [mode, setMode] = useState<'solution' | 'scratch'>('solution');
@@ -624,12 +696,8 @@ function DrawingCanvasImpl(
   const shouldDrawRef = useRef(true);
   const pencilDetectedRef = useRef(false);
 
-  // Capture override for solution-only snapshots
-  const captureOverrideRef = useRef<DrawingPath[] | null>(null);
-  const renderedPaths = captureOverrideRef.current ?? activePaths;
-
   const canvasBg = mode === 'scratch'
-    ? (themeMode === 'dark' ? SCRATCH_BG.dark : SCRATCH_BG.light)
+    ? (isDark ? SCRATCH_BG.dark : SCRATCH_BG.light)
     : colors.bg;
 
   function buildPath(pathStr: string) {
@@ -641,8 +709,9 @@ function DrawingCanvasImpl(
     const activeWidth = isEraser ? eraserWidth : strokeWidth;
     setCurrentPath({
       path: currentPathRef.current,
-      color: isEraser ? canvasBg : currentColor,
+      color: currentColor,
       strokeWidth: activeWidth,
+      isEraser,
     });
     if (mode === 'solution') {
       setActiveUndone([]);
@@ -657,8 +726,9 @@ function DrawingCanvasImpl(
     const activeWidth = isEraser ? eraserWidth : strokeWidth;
     setCurrentPath({
       path: currentPathRef.current,
-      color: isEraser ? canvasBg : currentColor,
+      color: currentColor,
       strokeWidth: activeWidth,
+      isEraser,
     });
   }
 
@@ -683,12 +753,13 @@ function DrawingCanvasImpl(
 
   // Gesture Handler with palm rejection
   const panGesture = Gesture.Pan()
+    .runOnJS(true)
     .minDistance(0)
     .minPointers(1)
     .maxPointers(1)
     .onBegin((e) => {
-      if (e.pointerType === 2) pencilDetectedRef.current = true;
-      if (pencilDetectedRef.current && e.pointerType !== 2) {
+      if (e.pointerType === PointerType.STYLUS) pencilDetectedRef.current = true;
+      if (pencilDetectedRef.current && e.pointerType !== PointerType.STYLUS) {
         shouldDrawRef.current = false;
         return;
       }
@@ -731,20 +802,21 @@ function DrawingCanvasImpl(
     setActiveUndone([]);
     setCurrentPath(null);
     currentPathRef.current = '';
-    if (mode === 'solution') onCanvasChange?.();
-  }, [mode, onCanvasChange, setActivePaths, setActiveUndone]);
+    if (mode === 'solution') {
+      onCanvasChange?.();
+      onSolutionClear?.();
+    }
+  }, [mode, onCanvasChange, onSolutionClear, setActivePaths, setActiveUndone]);
 
   const captureSnapshot = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    // Always capture solution layer
-    captureOverrideRef.current = solutionPaths;
-    const image = canvas.makeImageSnapshot();
+    const exportCanvas = exportCanvasRef.current;
+    if (!exportCanvas) return null;
+
+    const image = exportCanvas.makeImageSnapshot();
     const base64 = image.encodeToBase64(ImageFormat.PNG, 100);
     image.dispose?.();
-    captureOverrideRef.current = null;
     return base64;
-  }, [canvasRef, solutionPaths]);
+  }, [exportCanvasRef]);
 
   async function submitCapture() {
     if (isSubmitting || mode === 'scratch') return;
@@ -867,28 +939,46 @@ function DrawingCanvasImpl(
     <View style={{ flex: 1, backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' }}>
       {toolbarPosition === 'top' ? toolbar : null}
 
-      <GestureDetector gesture={panGesture}>
-        <View style={{ flex: 1, backgroundColor: canvasBg }}>
-          <Canvas ref={canvasRef} style={{ flex: 1, backgroundColor: canvasBg }}>
-            {renderedPaths.map((p, index) => {
+      <View style={{ flex: 1 }}>
+        <View
+          pointerEvents="none"
+          style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, opacity: 0 }}
+        >
+          <Canvas ref={exportCanvasRef} style={{ flex: 1, backgroundColor: '#ffffff' }}>
+            {solutionPaths.map((p, index) => {
               const skPath = buildPath(p.path);
               if (!skPath) return null;
               return (
-                <Path key={index} path={skPath} color={p.color} style="stroke"
+                <Path key={`export-${index}`} path={skPath} color={p.isEraser ? '#ffffff' : p.color} style="stroke"
                   strokeWidth={p.strokeWidth} strokeCap="round" strokeJoin="round" />
               );
             })}
-            {currentPath && (() => {
-              const skPath = buildPath(currentPath.path);
-              if (!skPath) return null;
-              return (
-                <Path path={skPath} color={currentPath.color} style="stroke"
-                  strokeWidth={currentPath.strokeWidth} strokeCap="round" strokeJoin="round" />
-              );
-            })()}
           </Canvas>
         </View>
-      </GestureDetector>
+
+        <GestureDetector gesture={panGesture}>
+          <View style={{ flex: 1, backgroundColor: canvasBg }}>
+            <Canvas ref={canvasRef} style={{ flex: 1, backgroundColor: canvasBg }}>
+              {activePaths.map((p, index) => {
+                const skPath = buildPath(p.path);
+                if (!skPath) return null;
+                return (
+                  <Path key={index} path={skPath} color={p.isEraser ? canvasBg : p.color} style="stroke"
+                    strokeWidth={p.strokeWidth} strokeCap="round" strokeJoin="round" />
+                );
+              })}
+              {currentPath && (() => {
+                const skPath = buildPath(currentPath.path);
+                if (!skPath) return null;
+                return (
+                  <Path path={skPath} color={currentPath.isEraser ? canvasBg : currentPath.color} style="stroke"
+                    strokeWidth={currentPath.strokeWidth} strokeCap="round" strokeJoin="round" />
+                );
+              })()}
+            </Canvas>
+          </View>
+        </GestureDetector>
+      </View>
 
       {toolbarPosition === 'bottom' ? toolbar : null}
     </View>
@@ -897,6 +987,12 @@ function DrawingCanvasImpl(
 
 export const DrawingCanvas = React.forwardRef(DrawingCanvasImpl);
 ```
+
+Notes:
+- Keep `Gesture.Pan().runOnJS(true)` explicit. This rewrite still uses React state for path accumulation, so JS-thread callbacks are intentional here.
+- Do not use numeric `pointerType` literals. Use `PointerType.STYLUS` so palm rejection remains correct if enum values differ by platform or library version.
+- The hidden export canvas is the only capture source. This guarantees scratch strokes and theme-colored backgrounds never leak into uploads.
+- Store `isEraser` on each path and resolve eraser color at render time. Otherwise a white export surface would still replay theme-colored eraser strokes into the uploaded PNG.
 
 - [ ] **Step 2: Verify no TypeScript errors**
 
@@ -934,10 +1030,16 @@ interface DrawingCanvasProps {
   onCanvasChange?: () => void;
   onStrokeEnd?: () => void;
   onEraserStrokeEnd?: () => void;
+  onSolutionClear?: () => void;
 }
 
 function DrawingCanvasWebImpl(
-  { onCapture: _onCapture, onStrokeEnd: _s, onEraserStrokeEnd: _e }: DrawingCanvasProps,
+  {
+    onCapture: _onCapture,
+    onStrokeEnd: _s,
+    onEraserStrokeEnd: _e,
+    onSolutionClear: _c,
+  }: DrawingCanvasProps,
   ref: ForwardedRef<DrawingCanvasRef>,
 ) {
   const { colors } = useTheme();
@@ -982,7 +1084,7 @@ git commit -m "fix: update web canvas stub for new DrawingCanvasRef interface"
 
 ---
 
-## Chunk 5: Integration — LiveTutorPanel, [problemId].tsx
+## Chunk 5: Integration — LiveTutorPanel, useTutorChat, [problemId].tsx
 
 ### Task 10: Update LiveTutorPanel with hint level UI
 
@@ -1058,7 +1160,66 @@ git commit -m "feat: add progressive hint UI to LiveTutorPanel"
 
 ---
 
-### Task 11: Rewrite [problemId].tsx to wire everything together
+### Task 11: Normalize tutor messages in useTutorChat
+
+**Files:**
+- Modify: `apps/student-app/hooks/useTutorChat.ts`
+
+- [ ] **Step 1: Import the shared normalizer**
+
+Add:
+
+```typescript
+import { normalizeTutorMessage } from '@/lib/parse-step-tag';
+```
+
+- [ ] **Step 2: Normalize loaded session messages**
+
+When mapping `session.messages`, strip `[STEP:N/T]` tags from tutor content before storing it in hook state:
+
+```typescript
+setMessages(
+  session.messages.map((m, i) => {
+    const normalized =
+      m.role === 'tutor' ? normalizeTutorMessage(m.content) : { content: m.content };
+
+    return {
+      id: `init-${i}`,
+      role: m.role as 'student' | 'tutor',
+      content: normalized.content,
+    };
+  }),
+);
+```
+
+- [ ] **Step 3: Normalize streaming tutor chunks**
+
+Inside `sendMessage`, normalize tutor chunks before they reach the full-screen tutor UI:
+
+```typescript
+onChunk: (nextContent) => {
+  tutorContent = nextContent;
+  const normalized = normalizeTutorMessage(nextContent);
+  setMessages((prev) =>
+    prev.map((message) =>
+      message.id === tutorMsgId
+        ? { ...message, content: normalized.content }
+        : message,
+    ),
+  );
+},
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add apps/student-app/hooks/useTutorChat.ts
+git commit -m "fix: normalize tutor step tags across full-screen chat"
+```
+
+---
+
+### Task 12: Rewrite [problemId].tsx to wire everything together
 
 **Files:**
 - Modify: `apps/student-app/app/canvas/[problemId].tsx`
@@ -1073,12 +1234,12 @@ import { useCanvasActivity } from '@/hooks/useCanvasActivity';
 import { useHintLevel } from '@/hooks/useHintLevel';
 import { AiStatusIndicator } from '@/components/canvas/ai-status-indicator';
 import { StepProgressBar } from '@/components/canvas/step-progress-bar';
-import { parseStepTag } from '@/lib/parse-step-tag';
+import { normalizeTutorMessage } from '@/lib/parse-step-tag';
 ```
 
 Remove the `Bot, LoaderCircle` imports from lucide (no longer needed).
 
-- [ ] **Step 2: Remove old state and add new state**
+- [ ] **Step 2: Remove old state, add guarded session state, and wire activity/hint state**
 
 Remove these lines:
 - `const autoAnalysisTimerRef = useRef<...>(null);` (line ~75)
@@ -1090,26 +1251,34 @@ Remove these lines:
 Add after existing state declarations:
 
 ```typescript
-const { level: hintLevel, escalate: escalateHint, promptForLevel } = useHintLevel(problemId!);
+const sessionPromiseRef = useRef<Promise<string> | null>(null);
+const [localNudgeMessage, setLocalNudgeMessage] = useState<string | null>(null);
 const [stepProgress, setStepProgress] = useState<{ current: number; total: number } | null>(null);
+const {
+  level: hintLevel,
+  reset: resetHintLevel,
+  getAutoPrompt,
+  escalateAndGetPrompt,
+  isMaxLevel,
+} = useHintLevel(problemId!);
 
-const { activityState, handleStrokeEnd, handleEraserStrokeEnd } = useCanvasActivity({
+const { activityState, handleStrokeEnd, handleEraserStrokeEnd, resetActivity } = useCanvasActivity({
   onAutoAnalyze: () => {
     if (!canvasRef.current?.hasContent()) return;
     setIsSubmitting(true);
     void analyzeCurrentCanvas({
-      prompt: promptForLevel(),
+      prompt: getAutoPrompt(),
       revealPanel: false,
       showStudentMessage: false,
     })
+      .then(() => {
+        resetActivity();
+      })
       .catch(() => undefined)
       .finally(() => setIsSubmitting(false));
   },
   onNudge: (message) => {
-    void sendTutorTurn(message, undefined, {
-      revealPanel: false,
-      showStudentMessage: false,
-    }).catch(() => undefined);
+    setLocalNudgeMessage(message);
   },
   enabled: autoAnalyzeEnabled && isTablet,
   isBusy: isSubmitting || isTutorStreaming,
@@ -1123,7 +1292,60 @@ useEffect(() => {
 }, []);
 ```
 
-- [ ] **Step 3: Update analyzeCurrentCanvas prompt**
+Add a small effect so the local nudge clears automatically once the student resumes writing:
+
+```typescript
+useEffect(() => {
+  if (activityState !== 'struggling') {
+    setLocalNudgeMessage(null);
+  }
+}, [activityState]);
+```
+
+- [ ] **Step 3: Harden ensureSession, reset policy, and analyzeCurrentCanvas**
+
+Replace `ensureSession()` with an in-flight guarded version so rapid auto/manual triggers cannot create duplicate tutor sessions:
+
+```typescript
+async function ensureSession() {
+  if (sessionId) {
+    return sessionId;
+  }
+
+  if (sessionPromiseRef.current) {
+    return sessionPromiseRef.current;
+  }
+
+  sessionPromiseRef.current = api
+    .post<{
+      id: string;
+      messages: Array<{ role: string; content: string }>;
+    }>('/student-ai/tutor/sessions', { problemId })
+    .then((session) => {
+      setSessionId(session.id);
+      setTutorMessages(
+        session.messages.map((message, index) => {
+          const normalized =
+            message.role === 'tutor'
+              ? normalizeTutorMessage(message.content)
+              : { content: message.content };
+
+          return {
+            id: `init-${index}`,
+            role: message.role as 'student' | 'tutor',
+            content: normalized.content,
+          };
+        }),
+      );
+      return session.id;
+    })
+    .finally(() => {
+      sessionPromiseRef.current = null;
+    });
+
+  return sessionPromiseRef.current;
+}
+```
 
 Change the `analyzeCurrentCanvas` function. Replace the hardcoded prompt fallback:
 
@@ -1132,17 +1354,37 @@ Change the `analyzeCurrentCanvas` function. Replace the hardcoded prompt fallbac
 await sendTutorTurn(options?.prompt ?? "제 풀이를 확인해주세요", uploadData.s3Key, {
 
 // After:
-await sendTutorTurn(options?.prompt ?? promptForLevel(), uploadData.s3Key, {
+await sendTutorTurn(options?.prompt ?? getAutoPrompt(), uploadData.s3Key, {
 ```
 
 Remove the `options?.auto` / `lastAnalyzedVersionRef` logic at the bottom of the function (lines ~223-225). It's no longer needed.
 
-- [ ] **Step 4: Add step tag parsing after streaming completes**
-
-In `sendTutorTurn`, after `await streamTutorMessage(...)` completes (inside the `try` block, after the await), add step tag parsing:
+Update `handleSubmit` so a successful full solution submission resets the local hint/activity state:
 
 ```typescript
-await streamTutorMessage({
+await sendTutorTurn("제 풀이를 확인해주세요", uploadData.s3Key, {
+  revealPanel: true,
+  showStudentMessage: false,
+});
+resetHintLevel();
+resetActivity();
+setLocalNudgeMessage(null);
+```
+
+Update `handleTutorSend` so a free-form chat message also resets the manual hint ladder:
+
+```typescript
+setTutorInput('');
+resetHintLevel();
+setLocalNudgeMessage(null);
+```
+
+- [ ] **Step 4: Normalize streamed tutor content and update step progress**
+
+In `sendTutorTurn`, capture the final streamed tutor content, normalize it once, and update both the message text and the step progress:
+
+```typescript
+const finalTutorContent = await streamTutorMessage({
   sessionId: activeSessionId,
   content,
   imageS3Key,
@@ -1158,19 +1400,19 @@ await streamTutorMessage({
   },
 });
 
-// Parse step tag from completed message and strip from display
-setTutorMessages((prev) => {
-  const msg = prev.find((m) => m.id === tutorMessageId);
-  if (!msg) return prev;
-  const parsed = parseStepTag(msg.content);
-  if (parsed) {
-    setStepProgress({ current: parsed.currentStep, total: parsed.totalSteps });
-    return prev.map((m) =>
-      m.id === tutorMessageId ? { ...m, content: parsed.cleanContent } : m,
-    );
-  }
-  return prev;
-});
+const normalized = normalizeTutorMessage(finalTutorContent);
+
+if (normalized.stepProgress) {
+  setStepProgress(normalized.stepProgress);
+}
+
+setTutorMessages((prev) =>
+  prev.map((message) =>
+    message.id === tutorMessageId
+      ? { ...message, content: normalized.content }
+      : message,
+  ),
+);
 ```
 
 - [ ] **Step 5: Replace AI feedback button with AiStatusIndicator**
@@ -1185,6 +1427,7 @@ Replace the `{!showTutorPanel ? ( <Pressable ... /> ) : null}` block (lines ~533
       isAnalyzing={isSubmitting}
       isStreaming={isTutorStreaming}
       hasUnread={hasUnreadTutorFeedback}
+      nudgeMessage={localNudgeMessage}
       onPress={() => {
         setShowTutorPanel(true);
         setHasUnreadTutorFeedback(false);
@@ -1194,7 +1437,7 @@ Replace the `{!showTutorPanel ? ( <Pressable ... /> ) : null}` block (lines ~533
 ) : null}
 ```
 
-- [ ] **Step 6: Add StepProgressBar between problem card and canvas**
+- [ ] **Step 6: Add StepProgressBar and update auto-analysis copy**
 
 After the problem card `View` and the auto-analysis toggle row, before the canvas `View`, add:
 
@@ -1213,6 +1456,14 @@ After the problem card `View` and the auto-analysis toggle row, before the canva
 ) : null}
 ```
 
+Also update the helper copy in the auto-analysis toggle row. Replace the old `2초` wording with copy that matches the new behavior, e.g.:
+
+```tsx
+<Text style={{ fontSize: 12, color: colors.textMuted }}>
+  짧은 멈춤에는 기다리고, 약 20초 이상 멈췄을 때만 현재 풀이를 자동 분석합니다.
+</Text>
+```
+
 - [ ] **Step 7: Update DrawingCanvas props**
 
 Replace the `<DrawingCanvas>` usage:
@@ -1222,8 +1473,20 @@ Replace the `<DrawingCanvas>` usage:
   ref={canvasRef}
   onCapture={handleSubmit}
   toolbarPosition="bottom"
-  onStrokeEnd={handleStrokeEnd}
-  onEraserStrokeEnd={handleEraserStrokeEnd}
+  onStrokeEnd={() => {
+    setLocalNudgeMessage(null);
+    handleStrokeEnd();
+  }}
+  onEraserStrokeEnd={() => {
+    setLocalNudgeMessage(null);
+    handleEraserStrokeEnd();
+  }}
+  onSolutionClear={() => {
+    resetActivity();
+    resetHintLevel();
+    setLocalNudgeMessage(null);
+    setStepProgress(null);
+  }}
 />
 ```
 
@@ -1246,12 +1509,20 @@ Add hint props to `<LiveTutorPanel>`:
   onClose={() => setShowTutorPanel(false)}
   hintLevel={hintLevel}
   onEscalateHint={async () => {
-    escalateHint();
-    await analyzeCurrentCanvas({
-      prompt: promptForLevel(),
-      revealPanel: true,
-      showStudentMessage: false,
-    });
+    if (isMaxLevel || !canvasRef.current?.hasContent()) return;
+    const prompt = escalateAndGetPrompt();
+    setLocalNudgeMessage(null);
+    setIsSubmitting(true);
+    try {
+      await analyzeCurrentCanvas({
+        prompt,
+        revealPanel: true,
+        showStudentMessage: false,
+      });
+      resetActivity();
+    } finally {
+      setIsSubmitting(false);
+    }
   }}
 />
 ```
@@ -1273,7 +1544,7 @@ git commit -m "feat: integrate canvas UX upgrade — activity tracking, hints, s
 
 ## Chunk 6: Verification
 
-### Task 12: Full build and type check
+### Task 13: Full build and behavior verification
 
 - [ ] **Step 1: Run full TypeScript check**
 
@@ -1291,7 +1562,24 @@ cd /Users/parkjisong/jsmath/apps/student-app && npx expo start --clear 2>&1 | he
 
 Expected: Metro bundler starts without resolution errors.
 
-- [ ] **Step 3: Final commit if any fixes needed**
+- [ ] **Step 3: Run focused manual QA on iPad or simulator**
+
+Verify all of the following behaviors:
+
+```text
+1. Finger-only drawing still works before any stylus input is detected.
+2. After one stylus stroke is detected, finger touches no longer draw on the canvas.
+3. Scratch mode accepts strokes but does not enable submit and does not trigger auto-analysis.
+4. Solution submit uploads only solution strokes, never scratch strokes, and uses a white background.
+5. Auto-analysis does not re-fire immediately after a successful manual submit or manual hint request.
+6. Tapping "더 자세한 힌트" immediately produces the next hint level, not the previous one.
+7. Step progress tags are not visible in the canvas overlay tutor panel.
+8. Step progress tags are also not visible when the same session is opened in `/tutor/[sessionId]`.
+9. Clearing the solution layer resets local nudge state, step progress, and pending auto-analysis state.
+10. The auto-analysis helper copy matches actual timing (observe on short pause, analyze on long idle).
+```
+
+- [ ] **Step 4: Final commit if any fixes needed**
 
 Stage only the specific files that were fixed:
 

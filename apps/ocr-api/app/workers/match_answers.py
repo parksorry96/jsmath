@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -35,8 +36,10 @@ _ANSWER_NUM_PATTERNS = [
     re.compile(r"^\s*\((\d{1,4})\)\s*"),
 ]
 
-# Quick answer table pattern: "0001③ 0002② 0003①..."
-_ANSWER_TABLE_PATTERN = re.compile(r"(\d{1,4})\s*([①②③④⑤]|\d+)")
+# Quick answer table pattern: "0001③", "01. ③", "11.(4)", "26 36"
+_ANSWER_TABLE_PATTERN = re.compile(
+    r"(?<!\d)(\d{1,4})\s*[.)．]?\s*([①②③④⑤]|\([1-5]\)|（[1-5]）|\d+)"
+)
 
 # "빠른 정답" section header
 _QUICK_ANSWER_HEADER = re.compile(r"빠른\s*정답", re.IGNORECASE)
@@ -49,6 +52,9 @@ _SOLUTION_HEADER = re.compile(
 
 # Multiple choice answer pattern
 _MC_ANSWER = re.compile(r"^[①②③④⑤]$")
+_MC_ANSWER_ONLY = re.compile(r"^\s*([①②③④⑤]|\([1-5]\)|（[1-5]）|[1-5])(?:번)?\s*$")
+_EXPLICIT_ANSWER_LINE = re.compile(r"^\s*(?:정답|답|해답)\s*[:：]?\s*(.+?)\s*$")
+_SOLUTION_NOISE_ONLY = re.compile(r"^[\s:：;,.·ㆍ!?？~\-_=+]+$")
 
 # ─── EBS Quick Answer Table Patterns ───
 _QA_CHAPTER_PATTERN = re.compile(r"^\s*(0[1-9])\s+\S")
@@ -117,6 +123,104 @@ class AnswerLine(Protocol):
 class AnswerPage(Protocol):
     page_number: int
     lines: Sequence[AnswerLine]
+
+
+_CIRCLED_BY_DIGIT = {
+    "1": "①",
+    "2": "②",
+    "3": "③",
+    "4": "④",
+    "5": "⑤",
+}
+_DIGIT_BY_CIRCLED = {value: key for key, value in _CIRCLED_BY_DIGIT.items()}
+
+
+def _strip_answer_prefix(answer_text: str | None) -> str | None:
+    if not answer_text:
+        return None
+
+    normalized = unicodedata.normalize("NFKC", answer_text).strip()
+    if not normalized:
+        return None
+
+    stripped = re.sub(r"^\s*(?:정답|답|해답)\s*[:：]?\s*", "", normalized).strip()
+    return stripped or None
+
+
+def _canonicalize_answer_text(answer_text: str | None, problem_type: str | None) -> str | None:
+    stripped = _strip_answer_prefix(answer_text)
+    if not stripped:
+        return None
+
+    if problem_type == "multiple_choice":
+        match = _MC_ANSWER_ONLY.match(stripped)
+        if match:
+            token = match.group(1)
+            if token in _DIGIT_BY_CIRCLED:
+                return token
+            digit_match = re.search(r"[1-5]", token)
+            if digit_match:
+                return _CIRCLED_BY_DIGIT[digit_match.group(0)]
+
+    return stripped
+
+
+def _is_quick_answer_summary_line(text: str) -> bool:
+    return len(list(_ANSWER_TABLE_PATTERN.finditer(text))) >= 2
+
+
+def _strip_answer_number_prefix(text: str) -> str:
+    stripped = text.strip()
+    for pattern in _ANSWER_NUM_PATTERNS:
+        match = pattern.match(stripped)
+        if match:
+            return stripped[match.end():].strip()
+    return stripped
+
+
+def _looks_like_standalone_answer(text: str) -> bool:
+    stripped = _strip_answer_prefix(text)
+    if not stripped:
+        return False
+    if _MC_ANSWER_ONLY.match(stripped):
+        return True
+    return re.fullmatch(r"-?\d+(?:/\d+)?(?:\.\d+)?", stripped) is not None
+
+
+def _extract_entry_answer(lines: Sequence[dict[str, Any]]) -> tuple[str | None, set[int]]:
+    for idx in range(len(lines) - 1, -1, -1):
+        text = lines[idx]["text"]
+        explicit_match = _EXPLICIT_ANSWER_LINE.match(text)
+        if explicit_match:
+            return explicit_match.group(1).strip(), {idx}
+
+    for idx in range(len(lines) - 1, -1, -1):
+        text = lines[idx]["text"]
+        if _MC_ANSWER_ONLY.match(text):
+            return text.strip(), {idx}
+
+    return None, set()
+
+
+def _is_noise_solution_line(text: str) -> bool:
+    stripped = unicodedata.normalize("NFKC", text).strip()
+    if not stripped:
+        return True
+    if _SOLUTION_NOISE_ONLY.fullmatch(stripped):
+        return True
+
+    compact = re.sub(r"\s+", "", stripped)
+    return len(compact) <= 2 and not re.search(r"[0-9A-Za-z가-힣]", compact)
+
+
+def _trim_solution_lines(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    start = 0
+    end = len(lines)
+    while start < end and _is_noise_solution_line(lines[start]["text"]):
+        start += 1
+    while end > start and _is_noise_solution_line(lines[end - 1]["text"]):
+        end -= 1
+    return lines[start:end]
 
 
 def _clean_latex_table(text: str) -> str:
@@ -712,7 +816,10 @@ async def _match(
         for seg in segments:
             # Check inline answers even when no answer section exists
             if seg.get("inline_answer"):
-                seg["answer_text"] = seg["inline_answer"]
+                seg["answer_text"] = _canonicalize_answer_text(
+                    seg["inline_answer"],
+                    seg.get("problem_type"),
+                )
                 seg["solution_text"] = seg.get("inline_solution")
                 seg["solution_latex"] = seg.get("inline_solution")
                 seg["answer_match_status"] = "inline"
@@ -778,9 +885,9 @@ async def _match(
 
     if not ebs_answers:
         if has_quick_answers and pages:
-            quick_pages, solution_pages = _split_answer_sections(pages)
+            quick_pages, _solution_pages = _split_answer_sections(pages)
             quick_answers = _parse_quick_answer_table(quick_pages)
-            solution_map = _parse_answer_section(solution_pages)
+            solution_map = _parse_answer_section(pages)
         elif pages:
             solution_map = _parse_answer_section(pages)
 
@@ -789,7 +896,10 @@ async def _match(
     for seg in segments:
         # Check if inline answer exists (예제, 대표기출)
         if seg.get("inline_answer"):
-            seg["answer_text"] = seg["inline_answer"]
+            seg["answer_text"] = _canonicalize_answer_text(
+                seg["inline_answer"],
+                seg.get("problem_type"),
+            )
             seg["solution_text"] = seg.get("inline_solution")
             seg["solution_latex"] = seg.get("inline_solution")
             seg["answer_match_status"] = "inline"
@@ -805,7 +915,10 @@ async def _match(
         ebs_key = (chapter_num, section_type, local_num)
 
         if ebs_key in ebs_answers:
-            seg["answer_text"] = ebs_answers[ebs_key]
+            seg["answer_text"] = _canonicalize_answer_text(
+                ebs_answers[ebs_key],
+                seg.get("problem_type"),
+            )
             # Attach solution from 정답과 풀이 if available
             sol = ebs_solutions.get(ebs_key)
             seg["solution_latex"] = sol["solution_latex"] if sol else None
@@ -849,13 +962,16 @@ async def _match(
         if not answer_text and solution:
             answer_text = solution.get("answer_text")
 
-        seg["answer_text"] = answer_text
+        seg["answer_text"] = _canonicalize_answer_text(
+            answer_text,
+            seg.get("problem_type"),
+        )
         seg["solution_latex"] = solution.get("solution_latex")
         seg["solution_text"] = solution.get("solution_text")
 
-        if answer_text or solution:
+        if seg["answer_text"] or solution:
             seg["answer_match_status"] = "matched"
-            seg["match_confidence"] = _compute_match_confidence(seg, answer_text)
+            seg["match_confidence"] = _compute_match_confidence(seg, seg["answer_text"])
             matched_count += 1
         else:
             seg["answer_match_status"] = "unmatched"
@@ -920,7 +1036,7 @@ def _parse_quick_answer_table(pages: Sequence[AnswerPage]) -> dict[str, str]:
                 continue
             for m in _ANSWER_TABLE_PATTERN.finditer(text):
                 num = str(int(m.group(1)))  # normalize: "0001" -> "1"
-                ans = m.group(2)
+                ans = unicodedata.normalize("NFKC", m.group(2)).strip()
                 answers[num] = ans
     return answers
 
@@ -938,6 +1054,8 @@ def _parse_answer_section(pages: Sequence[AnswerPage]) -> dict[str, dict]:
             if not text:
                 continue
             if line.line_type in ("page_info", "page_header", "page_footer"):
+                continue
+            if _is_quick_answer_summary_line(text):
                 continue
 
             # Try to match a new answer entry
@@ -969,28 +1087,40 @@ def _match_answer_number(text: str) -> str | None:
 
 def _build_answer_entry(lines: Sequence[AnswerLine]) -> dict[str, str | None]:
     """Build an answer entry from collected lines."""
-    # First line likely contains the answer itself
-    first_text = lines[0].text.strip()
-    # Strip the number prefix from first line
-    for pattern in _ANSWER_NUM_PATTERNS:
-        m = pattern.match(first_text)
-        if m:
-            first_text = first_text[m.end():].strip()
-            break
+    normalized_lines: list[dict[str, Any]] = []
+    for index, line in enumerate(lines):
+        text = line.text.strip()
+        latex = (line.latex or line.text).strip()
+        if index == 0:
+            text = _strip_answer_number_prefix(text)
+            latex = _strip_answer_number_prefix(latex)
+        if not text and not latex:
+            continue
+        normalized_lines.append({"text": text, "latex": latex or text})
 
-    answer_text = first_text
-    solution_parts_latex = []
-    solution_parts_text = []
+    if not normalized_lines:
+        return {
+            "answer_text": None,
+            "solution_latex": None,
+            "solution_text": None,
+        }
 
-    # Remaining lines are the solution/explanation
-    for line in lines[1:]:
-        solution_parts_latex.append(line.latex or line.text)
-        solution_parts_text.append(line.text)
+    answer_text, excluded_indexes = _extract_entry_answer(normalized_lines)
+    if answer_text is None and _looks_like_standalone_answer(normalized_lines[0]["text"]):
+        answer_text = normalized_lines[0]["text"]
+        excluded_indexes.add(0)
+
+    solution_lines = [
+        line
+        for index, line in enumerate(normalized_lines)
+        if index not in excluded_indexes and line["text"]
+    ]
+    solution_lines = _trim_solution_lines(solution_lines)
 
     return {
         "answer_text": answer_text,
-        "solution_latex": "\n".join(solution_parts_latex) if solution_parts_latex else None,
-        "solution_text": "\n".join(solution_parts_text) if solution_parts_text else None,
+        "solution_latex": "\n".join(line["latex"] for line in solution_lines) if solution_lines else None,
+        "solution_text": "\n".join(line["text"] for line in solution_lines) if solution_lines else None,
     }
 
 

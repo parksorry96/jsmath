@@ -60,8 +60,10 @@ describe("FilesService", () => {
 
   const sourceFileIngestion = {
     uploadPdf: jest.fn(),
+    uploadExamPdf: jest.fn(),
     uploadTextbookPdf: jest.fn(),
     registerUploadedPdf: jest.fn(),
+    registerUploadedExam: jest.fn(),
     registerUploadedTextbook: jest.fn(),
     deleteFile: jest.fn(),
     getStatus: jest.fn(),
@@ -206,7 +208,40 @@ describe("FilesService", () => {
     });
   });
 
-  // ── 2. registerUploadedTextbook (delegated to SourceFileIngestionService) ──
+  // ── 2. registerUploadedExam / registerUploadedTextbook (delegated) ──
+
+  describe("registerUploadedExam", () => {
+    it("delegates to sourceFileIngestion.registerUploadedExam", async () => {
+      sourceFileIngestion.registerUploadedExam.mockResolvedValue({
+        id: "sf-exam-1",
+        filename: "mock-exam.pdf",
+        status: "pending",
+        jobId: "job-exam-1",
+      });
+
+      const result = await service.registerUploadedExam("user-1", {
+        problemKey: "uploads/user-1/exam/mock.pdf",
+        problemFilename: "mock-exam.pdf",
+        problemSize: 1000,
+        answerKey: "uploads/user-1/exam-answer/mock-answer.pdf",
+        answerSize: 600,
+      });
+
+      expect(result).toEqual({
+        id: "sf-exam-1",
+        filename: "mock-exam.pdf",
+        status: "pending",
+        jobId: "job-exam-1",
+      });
+      expect(sourceFileIngestion.registerUploadedExam).toHaveBeenCalledWith(
+        "user-1",
+        expect.objectContaining({
+          problemKey: "uploads/user-1/exam/mock.pdf",
+          answerKey: "uploads/user-1/exam-answer/mock-answer.pdf",
+        }),
+      );
+    });
+  });
 
   describe("registerUploadedTextbook", () => {
     it("delegates to sourceFileIngestion.registerUploadedTextbook", async () => {

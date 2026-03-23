@@ -5,61 +5,17 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  formatExamSource,
-  getPosition,
-  getCorrectRateColor,
-  POSITION_LABELS,
-  POSITION_COLORS,
+  PROBLEM_TYPE_LABELS,
+  difficultyLabel,
+  difficultyColor,
 } from "./constants";
-
-interface ProblemExamMeta {
-  examYear: number;
-  examMonth: number;
-  examType: string;
-  subject: string;
-  questionNumber: number;
-  correctAnswer: string | null;
-  correctRate: number | null;
-  pointValue: number | null;
-  choiceRates: Record<string, number> | null;
-  isCommon: boolean | null;
-}
-
-interface Problem {
-  id: string;
-  displayNumber: string | null;
-  problemNumber: string | null;
-  stemText: string;
-  stemLatex: string;
-  problemType: string;
-  reviewStatus: string;
-  gradeLevel: string | null;
-  subject: string | null;
-  unitMajor: string | null;
-  unitMinor: string | null;
-  difficulty: number | null;
-  classificationConfidence: number | null;
-  sourceFile: string | null;
-  startPage: number | null;
-  createdAt: string;
-  similarity?: number;
-  choices?: Array<{
-    label?: string;
-    contentText?: string;
-    contentLatex?: string;
-  }>;
-  assets?: Array<{
-    id: string;
-    kind: string;
-    s3Key: string;
-  }>;
-  bookSource?: {
-    title?: string;
-    chapter?: string;
-    section?: string;
-  } | null;
-  examMeta?: ProblemExamMeta | null;
-}
+import {
+  getProblemCorrectRatePresentation,
+  getProblemNumberLabel,
+  getProblemReviewPresentation,
+  getProblemSourcePresentation,
+} from "./problem-presenters";
+import type { Problem } from "./problem-types";
 
 interface ProblemCardViewProps {
   problems: Problem[];
@@ -67,50 +23,6 @@ interface ProblemCardViewProps {
   onSelectionChange: (ids: Set<string>) => void;
   onPreview: (problem: Problem) => void;
   onDelete: (id: string) => void;
-}
-
-const PROBLEM_TYPE_LABELS: Record<string, string> = {
-  multiple_choice: "객관식",
-  short_answer: "주관식",
-  essay: "서술형",
-};
-
-const REVIEW_STATUS_STYLES: Record<string, { label: string; className: string }> = {
-  approved: {
-    label: "승인",
-    className: "bg-green-900/30 text-green-400 border-green-400/30",
-  },
-  pending_review: {
-    label: "검수대기",
-    className: "bg-yellow-900/30 text-yellow-400 border-yellow-400/30",
-  },
-  rejected: {
-    label: "반려",
-    className: "bg-red-900/30 text-red-400 border-red-400/30",
-  },
-  auto_approved: {
-    label: "자동승인",
-    className: "bg-green-900/30 text-green-400 border-green-400/30",
-  },
-};
-
-function difficultyLabel(d: number | null): string | null {
-  if (d === null) return null;
-  if (d <= 1) return "기초";
-  if (d <= 2) return "쉬움";
-  if (d <= 3) return "보통";
-  if (d <= 4) return "어려움";
-  if (d <= 5) return "최상";
-  return "최상";
-}
-
-function difficultyColor(d: number | null): string {
-  if (d === null) return "";
-  if (d <= 1) return "bg-green-900/30 text-green-400";
-  if (d <= 2) return "bg-emerald-900/30 text-emerald-400";
-  if (d <= 3) return "bg-yellow-900/30 text-yellow-400";
-  if (d <= 4) return "bg-orange-900/30 text-orange-400";
-  return "bg-red-900/30 text-red-400";
 }
 
 export function ProblemCardView({
@@ -133,29 +45,11 @@ export function ProblemCardView({
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 p-4">
       {problems.map((p) => {
-        const examSource = p.examMeta
-          ? formatExamSource(
-              p.examMeta.examYear,
-              p.examMeta.examMonth,
-              p.examMeta.examType,
-              p.examMeta.questionNumber,
-              p.examMeta.subject,
-            )
-          : null;
-
-        const correctRate = p.examMeta?.correctRate ?? null;
-        const position = getPosition(correctRate);
+        const source = getProblemSourcePresentation(p);
+        const correctRateInfo = getProblemCorrectRatePresentation(p);
         const diffLabel = difficultyLabel(p.difficulty);
-
-        const reviewInfo = REVIEW_STATUS_STYLES[p.reviewStatus] ?? {
-          label: p.reviewStatus,
-          className: "bg-muted text-muted-foreground",
-        };
-
-        const sourceLabel =
-          examSource && examSource.line1
-            ? examSource.line1
-            : p.bookSource?.title || p.sourceFile || null;
+        const numberLabel = getProblemNumberLabel(p);
+        const reviewInfo = getProblemReviewPresentation(p);
 
         return (
           <Card
@@ -172,19 +66,19 @@ export function ProblemCardView({
                   onClick={(e) => e.stopPropagation()}
                   className="accent-primary mt-1.5 shrink-0"
                 />
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-dark text-sm font-bold text-brand-beige">
-                  {p.displayNumber || p.problemNumber || "?"}
+                <div className="flex min-h-9 min-w-12 shrink-0 items-center justify-center rounded-lg bg-brand-dark px-2 text-xs font-bold text-brand-beige">
+                  {numberLabel}
                 </div>
                 <div className="min-w-0 flex-1">
-                  {sourceLabel && (
-                    <p className="text-sm font-medium truncate">{sourceLabel}</p>
+                  {source.shortLabel && (
+                    <p className="text-sm font-medium truncate">{source.shortLabel}</p>
                   )}
-                  {examSource?.line2 && (
+                  {source.line2 && (
                     <p className="text-xs text-muted-foreground truncate">
-                      {examSource.line2}
+                      {source.line2}
                     </p>
                   )}
-                  {!sourceLabel && (
+                  {!source.shortLabel && (
                     <p className="text-sm text-muted-foreground">출처 미상</p>
                   )}
                 </div>
@@ -209,20 +103,20 @@ export function ProblemCardView({
                   </span>
                 )}
 
-                {correctRate !== null && (
+                {correctRateInfo.correctRate !== null && (
                   <span
-                    className={`text-[10px] font-medium ${getCorrectRateColor(correctRate)}`}
+                    className={`text-[10px] font-medium ${correctRateInfo.textClassName ?? ""}`}
                   >
-                    {(correctRate * 100).toFixed(0)}%
+                    {(correctRateInfo.correctRate * 100).toFixed(0)}%
                   </span>
                 )}
 
-                {position && (
+                {correctRateInfo.position && (
                   <Badge
                     variant="outline"
-                    className={`text-[10px] ${POSITION_COLORS[position]}`}
+                    className={`text-[10px] ${correctRateInfo.positionClassName ?? ""}`}
                   >
-                    {POSITION_LABELS[position]}
+                    {correctRateInfo.positionLabel}
                   </Badge>
                 )}
 

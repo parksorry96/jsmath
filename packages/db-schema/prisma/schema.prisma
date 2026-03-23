@@ -640,6 +640,26 @@ model GradeCutoff {
   @@schema("public")
 }
 
+model LegacyGradeCutoff {
+  id               String   @id @default(cuid())
+  examYear         Int      @map("exam_year")
+  examMonth        Int      @map("exam_month")
+  subject          String
+  grade            Int
+  displayScore     Int      @map("display_score")
+  standardScore    Int      @map("standard_score")
+  percentile       Float?
+  topDisplayScore  Int?     @map("top_display_score")
+  topStandardScore Int?     @map("top_standard_score")
+  source           String   @default("ebsi_hidden_legacy")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@unique([examYear, examMonth, subject, grade])
+  @@index([examYear, examMonth, subject])
+  @@map("legacy_grade_cutoffs")
+  @@schema("public")
+}
+
 model StudentStreak {
   id              String    @id @default(cuid())
   studentId       String    @map("student_id")
@@ -908,6 +928,7 @@ model Problem {
   // Relations
   choices                  ProblemChoice[]
   assets                   ProblemAsset[]
+  examMeta                 ExamQuestionMeta[]
 
   createdAt                DateTime      @default(now()) @map("created_at")
   updatedAt                DateTime      @updatedAt @map("updated_at")
@@ -975,6 +996,31 @@ model ProblemAsset {
 
   @@index([problemId, kind])
   @@map("problem_assets")
+  @@schema("ocr")
+}
+
+model ExamQuestionMeta {
+  id             String   @id @default(cuid())
+  examYear       Int      @map("exam_year")
+  examMonth      Int      @map("exam_month")
+  examType       String   @map("exam_type")       // "suneung", "mock_pyeongga", "mock_gyoyuk"
+  subject        String                            // "수학가", "수학나", "수학1", etc.
+  questionNumber Int      @map("question_number")
+  correctAnswer  String?  @map("correct_answer")
+  correctRate    Float?   @map("correct_rate")     // 0.0 ~ 1.0
+  pointValue     Int?     @db.SmallInt @map("point_value")
+  choiceRates    Json?    @map("choice_rates")     // {"1": 0.05, "2": 0.10, ...}
+  isCommon       Boolean? @map("is_common")
+  source         String   @default("megastudy")
+  problemId      String?  @map("problem_id")
+  problem        Problem? @relation(fields: [problemId], references: [id])
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([examYear, examMonth, examType, subject, questionNumber])
+  @@index([problemId])
+  @@index([examYear, examMonth, subject])
+  @@map("exam_question_meta")
   @@schema("ocr")
 }
 

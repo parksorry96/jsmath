@@ -133,11 +133,16 @@ def notify_analysis_completed(
     })
 
 
-def notify_analysis_failed(ocr_job_id: str, reason: str) -> None:
+def notify_analysis_failed(
+    ocr_job_id: str,
+    reason: str,
+    problem_ids: list[str] | None = None,
+) -> None:
     """Notify NestJS that AI analysis failed."""
     publish_dual("analysis:failed", {
         "ocrJobId": ocr_job_id,
         "reason": reason,
+        "problemIds": problem_ids or [],
     })
 
 

@@ -37,15 +37,10 @@ export function useHintLevel(problemId: string) {
     return HINT_PROMPTS[AUTO_HINT_LEVEL];
   }, []);
 
-  const getPromptForCurrentLevel = useCallback(() => {
-    return HINT_PROMPTS[levelRef.current];
-  }, []);
-
   return {
     level,
     reset,
     getAutoPrompt,
-    getPromptForCurrentLevel,
     escalateAndGetPrompt,
     isMaxLevel: level === MAX_HINT_LEVEL,
   };

@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  transpilePackages: ["@jsmath/shared-types"],
   async headers() {
     if (process.env.NODE_ENV !== "production") {
       return [];

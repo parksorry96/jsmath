@@ -24,7 +24,14 @@ const SORT_OPTIONS = [
   { value: "newest", label: "최신순" },
   { value: "correct_rate_asc", label: "정답률 낮은순" },
   { value: "correct_rate_desc", label: "정답률 높은순" },
-  { value: "point_value", label: "배점순" },
+  { value: "point_value_desc", label: "배점순" },
+];
+
+const ELECTIVE_OPTIONS = [
+  { value: "", label: "전체" },
+  { value: "확률과 통계", label: "확통" },
+  { value: "미적분", label: "미적분" },
+  { value: "기하", label: "기하" },
 ];
 
 export function ProblemToolbar({
@@ -83,6 +90,26 @@ export function ProblemToolbar({
           ))}
         </SelectContent>
       </Select>
+
+      <div className="flex items-center gap-1 rounded-md border border-border bg-muted/30 p-0.5">
+        {ELECTIVE_OPTIONS.map((opt) => {
+          const active = (filters.electiveSubject || "") === opt.value;
+          return (
+            <button
+              key={opt.label}
+              type="button"
+              className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                active
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setFilter("electiveSubject", opt.value)}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
 
       {/* View toggle */}
       <div className="flex rounded-md border border-border bg-muted/30 p-0.5">

@@ -40,7 +40,15 @@ export class FilesService {
     if (!normalizedFilename.toLowerCase().endsWith(".pdf")) {
       throw new BadRequestException("Only PDF files are accepted");
     }
-    if (!["exam", "textbook_problem", "textbook_answer"].includes(params.role)) {
+    if (
+      ![
+        "exam",
+        "exam_problem",
+        "exam_answer",
+        "textbook_problem",
+        "textbook_answer",
+      ].includes(params.role)
+    ) {
       throw new BadRequestException("Invalid upload role");
     }
     if (!params.size || params.size <= 0) {
@@ -103,6 +111,20 @@ export class FilesService {
     return this.sourceFileIngestion.registerUploadedPdf(uploaderId, params);
   }
 
+  async registerUploadedExam(
+    uploaderId: string,
+    params: {
+      problemKey: string;
+      problemFilename: string;
+      problemSize: number;
+      answerKey?: string | null;
+      answerSize?: number | null;
+      autoAnalyze?: boolean;
+    },
+  ) {
+    return this.sourceFileIngestion.registerUploadedExam(uploaderId, params);
+  }
+
   async registerUploadedTextbook(
     uploaderId: string,
     params: {
@@ -117,6 +139,15 @@ export class FilesService {
     },
   ) {
     return this.sourceFileIngestion.registerUploadedTextbook(uploaderId, params);
+  }
+
+  async uploadExamPdf(
+    problemFile: Express.Multer.File,
+    answerFile: Express.Multer.File | undefined,
+    uploaderId: string,
+    meta: UploadMeta,
+  ) {
+    return this.sourceFileIngestion.uploadExamPdf(problemFile, answerFile, uploaderId, meta);
   }
 
   async uploadTextbookPdf(

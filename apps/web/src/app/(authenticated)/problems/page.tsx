@@ -17,10 +17,7 @@ import {
 import { Sparkles, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 import { LatexRenderer } from "@/components/math/latex-renderer";
-import {
-  ProblemLayoutMeta,
-  ProblemStemDisplay,
-} from "@/components/problems/problem-stem-display";
+import { ProblemStemDisplay } from "@/components/problems/problem-stem-display";
 import { ProblemSourcePreview } from "@/components/problems/problem-source-preview";
 import { ProblemPresetBar } from "@/components/problems/problem-preset-bar";
 import { ProblemFilterSidebar } from "@/components/problems/problem-filter-sidebar";
@@ -28,61 +25,14 @@ import { ProblemToolbar } from "@/components/problems/problem-toolbar";
 import { ProblemTableView } from "@/components/problems/problem-table-view";
 import { ProblemCardView } from "@/components/problems/problem-card-view";
 import { ProblemDeleteDialog } from "@/components/problems/problem-delete-dialog";
+import { ProblemChoiceList } from "@/components/problems/problem-choice-list";
+import {
+  getProblemNumberLabel,
+  getProblemSourcePresentation,
+} from "@/components/problems/problem-presenters";
+import type { Problem, ProblemChoice } from "@/components/problems/problem-types";
 import { useProblemFilters } from "@/components/problems/use-problem-filters";
-
-/* ------------------------------------------------------------------ */
-/*  Interfaces                                                         */
-/* ------------------------------------------------------------------ */
-
-interface ProblemExamMeta {
-  examYear: number;
-  examMonth: number;
-  examType: string;
-  subject: string;
-  questionNumber: number;
-  correctAnswer: string | null;
-  correctRate: number | null;
-  pointValue: number | null;
-  choiceRates: Record<string, number> | null;
-  isCommon: boolean | null;
-}
-
-interface Problem {
-  id: string;
-  displayNumber: string | null;
-  problemNumber: string | null;
-  stemText: string;
-  stemLatex: string;
-  problemType: string;
-  bbox?: ProblemLayoutMeta | null;
-  reviewStatus: string;
-  gradeLevel: string | null;
-  subject: string | null;
-  unitMajor: string | null;
-  unitMinor: string | null;
-  difficulty: number | null;
-  classificationConfidence: number | null;
-  sourceFile: string | null;
-  startPage: number | null;
-  createdAt: string;
-  similarity?: number;
-  choices?: Array<{
-    label?: string;
-    contentText?: string;
-    contentLatex?: string;
-  }>;
-  assets?: Array<{
-    id: string;
-    kind: string;
-    s3Key: string;
-  }>;
-  bookSource?: {
-    title?: string;
-    chapter?: string;
-    section?: string;
-  } | null;
-  examMeta?: ProblemExamMeta | null;
-}
+import { PROBLEM_TYPE_LABELS } from "@/components/problems/constants";
 
 interface ProblemsResponse {
   data: Problem[];
@@ -90,12 +40,6 @@ interface ProblemsResponse {
   page: number;
   limit: number;
   totalPages: number;
-}
-
-interface TwinProblemChoice {
-  label: string;
-  contentText: string;
-  contentLatex: string;
 }
 
 interface TwinProblemResponse {
@@ -113,23 +57,12 @@ interface TwinProblemResponse {
     difficulty: number | null;
     stemText: string;
     stemLatex: string;
-    choices: TwinProblemChoice[];
+    choices: ProblemChoice[];
     correctChoiceLabel: string | null;
     answerText: string;
     solutionText: string;
   };
 }
-
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
-/* ------------------------------------------------------------------ */
-
-const PROBLEM_TYPE_LABELS: Record<string, string> = {
-  multiple_choice: "객관식",
-  short_answer: "주관식",
-  essay: "서술형",
-  true_false: "O/X",
-};
 
 function difficultyLabel(d: number | null): string | null {
   if (d === null) return null;
@@ -149,22 +82,6 @@ function difficultyColor(d: number | null): string {
   if (d <= 4) return "bg-orange-900/30 text-orange-400";
   if (d <= 5) return "bg-red-900/30 text-red-400";
   return "bg-purple-900/30 text-purple-400";
-}
-
-function getProblemSource(problem: Problem) {
-  const title =
-    problem.bookSource?.title || problem.sourceFile || "출처 미상";
-  const detail = [
-    problem.bookSource?.chapter || problem.subject,
-    problem.bookSource?.section || problem.unitMajor,
-  ]
-    .filter(Boolean)
-    .join(" \u00b7 ");
-
-  return {
-    title,
-    detail: detail || problem.unitMinor || "단원 정보 없음",
-  };
 }
 
 function getVisiblePages(current: number, total: number) {
@@ -198,7 +115,7 @@ function ProblemsPageContent() {
     useState<TwinProblemResponse | null>(null);
 
   // Main problems query
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["problems", apiQueryString],
     queryFn: () => api.get<ProblemsResponse>(`/problems?${apiQueryString}`),
   });
@@ -228,15 +145,21 @@ function ProblemsPageContent() {
     generatedTwin && generatedTwin.sourceProblemId === previewProblem?.id
       ? generatedTwin
       : null;
+  const previewSource = previewProblem
+    ? getProblemSourcePresentation(previewProblem)
+    : null;
+  const previewNumberLabel = previewProblem
+    ? getProblemNumberLabel(previewProblem, "문제 미리보기")
+    : null;
 
   // Selection handlers
   const handleSelectAll = useCallback(() => {
-    if (selectedIds.size === problems.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(problems.map((p) => p.id)));
-    }
-  }, [problems, selectedIds]);
+    setSelectedIds((prev) =>
+      prev.size === problems.length
+        ? new Set()
+        : new Set(problems.map((p) => p.id)),
+    );
+  }, [problems]);
 
   function openPreview(problem: Problem) {
     setPreviewProblem(problem);
@@ -271,6 +194,15 @@ function ProblemsPageContent() {
             <div className="flex-1 flex items-center justify-center">
               <div className="animate-pulse text-muted-foreground">
                 로딩 중...
+              </div>
+            </div>
+          ) : isError ? (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="text-center text-destructive">
+                <p className="text-lg font-medium">문제를 불러오지 못했습니다</p>
+                <p className="text-sm mt-1 text-muted-foreground">
+                  {error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다"}
+                </p>
               </div>
             </div>
           ) : problems.length === 0 ? (
@@ -356,16 +288,14 @@ function ProblemsPageContent() {
               <DialogHeader className="border-b border-border px-6 py-5">
                 <DialogTitle className="flex items-center gap-2">
                   <span>
-                    {previewProblem.displayNumber ||
-                      previewProblem.problemNumber ||
-                      "문제 미리보기"}
+                    {previewNumberLabel}
                   </span>
                   <Badge variant="outline">
-                    {getProblemSource(previewProblem).title}
+                    {previewSource?.title}
                   </Badge>
                 </DialogTitle>
                 <DialogDescription>
-                  {getProblemSource(previewProblem).detail}
+                  {previewSource?.detail}
                 </DialogDescription>
               </DialogHeader>
               <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
@@ -386,31 +316,14 @@ function ProblemsPageContent() {
                         className="text-sm leading-relaxed text-foreground"
                       />
 
-                      {previewProblem.choices &&
-                        previewProblem.choices.length > 0 && (
-                          <div className="mt-5 space-y-2.5 border-t border-border pt-4">
-                            {previewProblem.choices.map(
-                              (choice, choiceIndex) => (
-                                <div
-                                  key={`${previewProblem.id}-choice-${choiceIndex}`}
-                                  className="flex items-start gap-2 text-sm"
-                                >
-                                  <span className="shrink-0 font-medium text-brand-beige">
-                                    {choice.label || `${choiceIndex + 1}.`}
-                                  </span>
-                                  <LatexRenderer
-                                    content={
-                                      choice.contentLatex ||
-                                      choice.contentText ||
-                                      ""
-                                    }
-                                    className="leading-relaxed"
-                                  />
-                                </div>
-                              ),
-                            )}
-                          </div>
-                        )}
+                      <ProblemChoiceList
+                        keyPrefix={previewProblem.id}
+                        choices={previewProblem.choices}
+                        className="mt-5 space-y-2.5 border-t border-border pt-4"
+                        itemClassName="flex items-start gap-2 text-sm"
+                        labelClassName="shrink-0 font-medium text-brand-beige"
+                        contentClassName="leading-relaxed"
+                      />
                     </div>
                   </div>
 
@@ -501,31 +414,14 @@ function ProblemsPageContent() {
                             className="text-sm leading-relaxed text-foreground"
                           />
 
-                          {activeTwin.problem.choices.length > 0 && (
-                            <div className="mt-5 space-y-2.5 border-t border-border pt-4">
-                              {activeTwin.problem.choices.map(
-                                (choice, choiceIndex) => (
-                                  <div
-                                    key={`${activeTwin.sourceProblemId}-twin-choice-${choiceIndex}`}
-                                    className="flex items-start gap-2 text-sm"
-                                  >
-                                    <span className="shrink-0 font-medium text-brand-beige">
-                                      {choice.label ||
-                                        `${choiceIndex + 1}.`}
-                                    </span>
-                                    <LatexRenderer
-                                      content={
-                                        choice.contentLatex ||
-                                        choice.contentText ||
-                                        ""
-                                      }
-                                      className="leading-relaxed"
-                                    />
-                                  </div>
-                                ),
-                              )}
-                            </div>
-                          )}
+                          <ProblemChoiceList
+                            keyPrefix={activeTwin.sourceProblemId}
+                            choices={activeTwin.problem.choices}
+                            className="mt-5 space-y-2.5 border-t border-border pt-4"
+                            itemClassName="flex items-start gap-2 text-sm"
+                            labelClassName="shrink-0 font-medium text-brand-beige"
+                            contentClassName="leading-relaxed"
+                          />
                         </div>
 
                         <div className="rounded-xl border border-border bg-brand-dark/50 p-4">

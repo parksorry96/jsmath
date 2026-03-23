@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     mathpix_base_url: str = "https://api.mathpix.com/v3"
     ai_api_key: str = ""
     ai_api_base_url: str = "https://api.openai.com/v1"
-    ai_model: str = "gpt-5-mini"
+    ai_model: str = "gpt-5.4-mini"
+    ai_fallback_model: str = "gpt-5.4"
+    ai_fallback_timeout_sec: int = Field(default=240, ge=60)
     internal_api_token: str = ""
     jwt_secret: str = ""
     enable_api_docs: bool = False

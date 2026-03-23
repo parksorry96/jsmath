@@ -69,6 +69,7 @@ export class ProblemsController {
     @Query("examYear") examYear?: string,
     @Query("examMonth") examMonth?: string,
     @Query("examType") examType?: string,
+    @Query("electiveSubject") electiveSubject?: string,
     @Query("curriculumNodeId") curriculumNodeId?: string,
     @Query("position") position?: string,
     @Query("correctRateMin") correctRateMin?: string,
@@ -81,16 +82,11 @@ export class ProblemsController {
     @Query("includeDetails") includeDetails?: string,
   ) {
     const queryText = q ?? search;
-    if (searchMode === "semantic" && queryText) {
-      return this.problems.semanticSearch(queryText, {
-        requesterId: req.user.id,
-        requesterRole: req.user.role,
-        subject,
-        gradeLevel,
-        difficulty,
-        limit: limit ? parseInt(limit, 10) : undefined,
-      });
-    }
+
+    const parsedCorrectRateMin = correctRateMin ? parseInt(correctRateMin, 10) : undefined;
+    const parsedCorrectRateMax = correctRateMax ? parseInt(correctRateMax, 10) : undefined;
+    const parsedPointValue = pointValue ? parseInt(pointValue, 10) : undefined;
+    const parsedExamYearMin = examYearMin ? parseInt(examYearMin, 10) : undefined;
 
     return this.problems.findAll({
       requesterId: req.user.id,
@@ -106,15 +102,17 @@ export class ProblemsController {
       bookTitle,
       solutionTag,
       q: queryText,
+      searchMode,
       examYear,
       examMonth,
       examType,
+      electiveSubject,
       curriculumNodeId,
       position,
-      correctRateMin: correctRateMin ? parseInt(correctRateMin) : undefined,
-      correctRateMax: correctRateMax ? parseInt(correctRateMax) : undefined,
-      pointValue: pointValue ? parseInt(pointValue) : undefined,
-      examYearMin: examYearMin ? parseInt(examYearMin) : undefined,
+      correctRateMin: parsedCorrectRateMin !== undefined && !isNaN(parsedCorrectRateMin) ? parsedCorrectRateMin : undefined,
+      correctRateMax: parsedCorrectRateMax !== undefined && !isNaN(parsedCorrectRateMax) ? parsedCorrectRateMax : undefined,
+      pointValue: parsedPointValue !== undefined && !isNaN(parsedPointValue) ? parsedPointValue : undefined,
+      examYearMin: parsedExamYearMin !== undefined && !isNaN(parsedExamYearMin) ? parsedExamYearMin : undefined,
       sortBy,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,

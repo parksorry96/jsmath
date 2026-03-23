@@ -2,6 +2,7 @@
 
 from .base import OCR_SCHEMA, Base, TimestampMixin  # noqa: F401
 from .checkpoint import PipelineCheckpoint  # noqa: F401
+from .exam_meta import ExamQuestionMeta  # noqa: F401
 from .curriculum_node import CurriculumNode, find_curriculum_node  # noqa: F401
 from .job import JobStatus, OcrJobTracking  # noqa: F401
 from .ocr import OcrLine, OcrPage  # noqa: F401

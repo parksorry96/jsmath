@@ -23,6 +23,7 @@ export type UploadMeta = {
 };
 
 const MAX_DIRECT_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_DIRECT_EXAM_COMBINED_BYTES = 25 * 1024 * 1024;
 const MAX_DIRECT_TEXTBOOK_COMBINED_BYTES = 25 * 1024 * 1024;
 const QUEUE_FAILURE_MESSAGE = "Failed to queue OCR job";
 
@@ -353,6 +354,135 @@ export class SourceFileIngestionService implements OnModuleDestroy {
     });
   }
 
+  async registerUploadedExam(
+    uploaderId: string,
+    params: {
+      problemKey: string;
+      problemFilename: string;
+      problemSize: number;
+      answerKey?: string | null;
+      answerSize?: number | null;
+      autoAnalyze?: boolean;
+    },
+  ) {
+    const problemUpload = await this.storage.ensureUploadedPdfObject(
+      params.problemKey,
+      uploaderId,
+      params.problemSize,
+    );
+
+    let answerS3Key: string | null = null;
+    if (params.answerKey) {
+      await this.storage.ensureUploadedPdfObject(
+        params.answerKey,
+        uploaderId,
+        params.answerSize ?? undefined,
+      );
+      answerS3Key = params.answerKey;
+    }
+
+    const fileHash = createHash("sha256")
+      .update(
+        `${params.problemKey}:${answerS3Key ?? ""}:${problemUpload.etag ?? problemUpload.sizeBytes}`,
+      )
+      .digest("hex");
+    const existing = await this.findExistingSourceFile(uploaderId, fileHash);
+    const existingResult = await this.reprocessExistingSourceFile({
+      existing,
+      filename: params.problemFilename,
+      meta: {
+        documentType: "exam",
+        bookTitle: null,
+        publisher: null,
+        answerS3Key,
+        autoAnalyze: params.autoAnalyze ?? true,
+      },
+    });
+    if (existingResult) {
+      return existingResult;
+    }
+
+    return this.createSourceFileAndQueueOcr({
+      uploaderId,
+      filename: params.problemFilename,
+      s3Key: params.problemKey,
+      sizeBytes: problemUpload.sizeBytes,
+      fileHash,
+      meta: {
+        documentType: "exam",
+        bookTitle: null,
+        publisher: null,
+        answerS3Key,
+        autoAnalyze: params.autoAnalyze ?? true,
+      },
+    });
+  }
+
+  async uploadExamPdf(
+    problemFile: Express.Multer.File,
+    answerFile: Express.Multer.File | undefined,
+    uploaderId: string,
+    meta: UploadMeta,
+  ) {
+    if (!this.uploadPolicy.isPdfUpload(problemFile)) {
+      throw new BadRequestException("problem_file must be a valid PDF");
+    }
+    if (answerFile && !this.uploadPolicy.isPdfUpload(answerFile)) {
+      throw new BadRequestException("answer_file must be a valid PDF");
+    }
+    if (!answerFile) {
+      return this.uploadPdf(problemFile, uploaderId, meta);
+    }
+
+    const combinedSize = problemFile.size + answerFile.size;
+    if (combinedSize > MAX_DIRECT_EXAM_COMBINED_BYTES) {
+      throw new BadRequestException(
+        "Direct exam uploads are limited to a combined 25MB. Please use multipart upload for larger files.",
+      );
+    }
+
+    const fileHash = createHash("sha256")
+      .update(problemFile.buffer)
+      .update(answerFile.buffer)
+      .digest("hex");
+    const existing = await this.findExistingSourceFile(uploaderId, fileHash);
+    const existingResult = await this.reprocessExistingSourceFile({
+      existing,
+      filename: problemFile.originalname,
+      meta: {
+        documentType: "exam",
+        bookTitle: null,
+        publisher: null,
+        answerS3Key: existing?.answerS3Key ?? null,
+        autoAnalyze: meta.autoAnalyze ?? true,
+      },
+    });
+    if (existingResult) {
+      return existingResult;
+    }
+
+    const problemKey = `uploads/${uploaderId}/exam/${randomUUID()}.pdf`;
+    const answerKey = `uploads/${uploaderId}/exam-answer/${randomUUID()}.pdf`;
+
+    await this.storage.uploadBuffer(problemKey, problemFile.buffer);
+    await this.storage.uploadBuffer(answerKey, answerFile.buffer);
+
+    return this.createSourceFileAndQueueOcr({
+      uploaderId,
+      filename: problemFile.originalname,
+      s3Key: problemKey,
+      sizeBytes: combinedSize,
+      fileHash,
+      meta: {
+        documentType: "exam",
+        bookTitle: null,
+        publisher: null,
+        answerS3Key: answerKey,
+        autoAnalyze: meta.autoAnalyze ?? true,
+      },
+    });
+  }
+
   async uploadTextbookPdf(
     problemFile: Express.Multer.File,
     answerFile: Express.Multer.File | undefined,
@@ -431,6 +561,10 @@ export class SourceFileIngestionService implements OnModuleDestroy {
       });
       await this.prisma.problemChoice.deleteMany({
         where: { problem: { ocrJobId: { in: jobIds } } },
+      });
+      await this.prisma.examQuestionMeta.updateMany({
+        where: { problem: { ocrJobId: { in: jobIds } } },
+        data: { problemId: null },
       });
       await this.prisma.problem.deleteMany({
         where: { ocrJobId: { in: jobIds } },

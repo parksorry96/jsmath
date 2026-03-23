@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from statistics import median
 from typing import Any
@@ -10,11 +11,50 @@ from typing import Any
 _CHOICE_LINE_PATTERN = re.compile(
     r"^\s*(?:[①②③④⑤]|[\(（][1-5][\)）]|[1-5][.)])\s*"
 )
-_VIEW_LABEL_PATTERN = re.compile(r"^\s*(?:\[?\s*보기\s*\]?|<\s*보기\s*>)\s*$")
 _VIEW_ENTRY_PATTERN = re.compile(
     r"^\s*(?:[ㄱ-ㅎᄀ-ᄒ][.．]|[①②③④⑤]|[\(（][가-힣A-Z1-9][\)）])"
 )
-_CONDITION_ENTRY_PATTERN = re.compile(r"^\s*\((?:가|나|다|라|마|바|사|아|자|차|[A-Z])\)")
+_CONDITION_ENTRY_PATTERN = re.compile(
+    r"^\s*[\(（](?:가|나|다|라|마|바|사|아|자|차|[A-Z])[\)）]"
+)
+
+
+def _normalize_box_label(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text or "")
+    normalized = re.sub(r"\s+", "", normalized)
+    return normalized.strip("[]<>〈〉《》")
+
+
+def _is_view_label(text: str) -> bool:
+    return _normalize_box_label(text) == "보기"
+
+
+def _is_choice_line(text: str) -> bool:
+    return bool(_CHOICE_LINE_PATTERN.match(text))
+
+
+def _is_condition_entry(text: str) -> bool:
+    return bool(_CONDITION_ENTRY_PATTERN.match(text))
+
+
+def _is_indented_continuation(
+    entry_record: dict[str, Any],
+    candidate_record: dict[str, Any],
+    *,
+    min_indent_delta: float = 12.0,
+) -> bool:
+    text = candidate_record["text"]
+    if not text.strip():
+        return False
+    if _is_choice_line(text) or _is_view_label(text) or _is_condition_entry(text):
+        return False
+
+    entry_bbox = entry_record.get("bbox")
+    candidate_bbox = candidate_record.get("bbox")
+    if entry_bbox and candidate_bbox:
+        return candidate_bbox["x"] >= entry_bbox["x"] + min_indent_delta
+
+    return True
 
 
 def _to_rect(
@@ -233,23 +273,31 @@ def _build_view_block(
     stop_index: int,
 ) -> tuple[dict[str, Any], int] | None:
     current = records[start_index]
-    if not _VIEW_LABEL_PATTERN.match(current["text"]):
+    if not _is_view_label(current["text"]):
         return None
 
     block_records = [current]
     end_index = start_index
+    current_entry: dict[str, Any] | None = None
+    entry_count = 0
     for index in range(start_index + 1, stop_index):
         candidate = records[index]
         text = candidate["text"]
-        if _CHOICE_LINE_PATTERN.match(text):
+        if _is_choice_line(text):
             break
-        if _VIEW_ENTRY_PATTERN.match(text) or block_records[-1]["text"].strip() == "보기":
+        if _VIEW_ENTRY_PATTERN.match(text):
+            block_records.append(candidate)
+            end_index = index
+            current_entry = candidate
+            entry_count += 1
+            continue
+        if current_entry is not None and _is_indented_continuation(current_entry, candidate):
             block_records.append(candidate)
             end_index = index
             continue
         break
 
-    if len(block_records) < 2:
+    if entry_count == 0:
         return None
 
     block = _build_boxed_block(
@@ -273,23 +321,31 @@ def _build_condition_block(
     stop_index: int,
 ) -> tuple[dict[str, Any], int] | None:
     current = records[start_index]
-    if not _CONDITION_ENTRY_PATTERN.match(current["text"]):
+    if not _is_condition_entry(current["text"]):
         return None
 
     block_records = [current]
     end_index = start_index
+    current_entry = current
+    entry_count = 1
     for index in range(start_index + 1, stop_index):
         candidate = records[index]
         text = candidate["text"]
-        if _CHOICE_LINE_PATTERN.match(text) or _VIEW_LABEL_PATTERN.match(text):
+        if _is_choice_line(text) or _is_view_label(text):
             break
-        if _CONDITION_ENTRY_PATTERN.match(text):
+        if _is_condition_entry(text):
+            block_records.append(candidate)
+            end_index = index
+            current_entry = candidate
+            entry_count += 1
+            continue
+        if _is_indented_continuation(current_entry, candidate):
             block_records.append(candidate)
             end_index = index
             continue
         break
 
-    if len(block_records) < 2:
+    if entry_count < 2:
         return None
 
     block = _build_boxed_block(

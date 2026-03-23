@@ -1,6 +1,19 @@
 import Constants from "expo-constants";
-import { Platform } from "react-native";
+import { NativeModules, Platform } from "react-native";
 import { getItemAsync } from "./storage";
+
+function extractHost(candidate: string) {
+  if (!candidate) return null;
+
+  try {
+    const normalized = candidate.includes("://")
+      ? candidate.replace(/^exp:\/\//, "http://")
+      : `http://${candidate}`;
+    return new URL(normalized).hostname;
+  } catch {
+    return candidate.split(":")[0] ?? null;
+  }
+}
 
 function inferExpoHost() {
   const candidates = [
@@ -9,11 +22,15 @@ function inferExpoHost() {
       ?.extra?.expoClient?.hostUri,
     (Constants as { manifest?: { debuggerHost?: string } }).manifest?.debuggerHost,
     (Constants as { expoGoConfig?: { debuggerHost?: string } }).expoGoConfig?.debuggerHost,
+    (NativeModules as { SourceCode?: { scriptURL?: string } }).SourceCode?.scriptURL,
   ];
 
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.length > 0) {
-      return candidate.split(":")[0];
+      const host = extractHost(candidate);
+      if (host) {
+        return host;
+      }
     }
   }
 
@@ -34,13 +51,21 @@ function resolvePublicUrl(
   }
 
   const host = inferExpoHost();
-  if (!host) {
-    throw new Error(
-      "Missing Expo public URL configuration. Set EXPO_PUBLIC_API_URL/EXPO_PUBLIC_OCR_URL or run from Expo with a reachable dev host.",
-    );
+  if (host) {
+    return `http://${host}:${port}${suffix}`;
   }
 
-  return `http://${host}:${port}${suffix}`;
+  const isIosSimulator =
+    Platform.OS === "ios" &&
+    Boolean((Constants as { platform?: { ios?: { simulator?: boolean } } }).platform?.ios?.simulator);
+
+  if (isIosSimulator) {
+    return `http://localhost:${port}${suffix}`;
+  }
+
+  throw new Error(
+    "Missing Expo public URL configuration. Set EXPO_PUBLIC_API_URL/EXPO_PUBLIC_OCR_URL or run from Expo with a reachable dev host.",
+  );
 }
 
 export const API_URL = resolvePublicUrl(process.env.EXPO_PUBLIC_API_URL, 3001, "/v1");

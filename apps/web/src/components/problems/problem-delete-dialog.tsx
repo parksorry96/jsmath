@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -27,21 +27,33 @@ export function ProblemDeleteDialog({
   problemIds,
   onSuccess,
 }: ProblemDeleteDialogProps) {
-  const queryClient = useQueryClient();
   const isBulk = problemIds.length > 1;
 
   const mutation = useMutation({
     mutationFn: async () => {
       if (problemIds.length === 1) {
         await api.post(`/problems/${problemIds[0]}/retire`);
+        return null;
       } else {
-        await api.post("/problems/batch-retire", { ids: problemIds });
+        return api.post<{
+          retired: string[];
+          blocked: { id: string; reason: string }[];
+        }>("/problems/batch-retire", { ids: problemIds });
       }
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["problems"] });
+    onSuccess: (result) => {
       onSuccess();
-      toast.success("문제가 삭제되었습니다.");
+      if (result && result.blocked.length > 0) {
+        const summary = result.blocked
+          .map((b) => `• ${b.id}: ${b.reason}`)
+          .join("\n");
+        toast.warning(
+          `${result.retired.length}개 삭제, ${result.blocked.length}개 실패`,
+          { description: summary },
+        );
+      } else {
+        toast.success("문제가 삭제되었습니다.");
+      }
     },
     onError: () => {
       toast.error("삭제 중 오류가 발생했습니다.");

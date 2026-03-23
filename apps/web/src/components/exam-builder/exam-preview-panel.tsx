@@ -36,32 +36,15 @@ import {
   getPreviewLayoutConfig,
   paginatePreviewProblems,
 } from "@/components/exam-builder/exam-preview-layout";
-import { resolveProblemChoices } from "@/components/exam-builder/choice-utils";
-import { LatexRenderer } from "@/components/math/latex-renderer";
+import {
+  ExamBuilderProblemContent,
+  type ExamBuilderProblem,
+} from "@/components/exam-builder/problem-preview-content";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-interface Problem {
-  id: string;
-  displayNumber: string | null;
-  problemNumber: string | null;
-  stemText: string;
-  stemLatex: string;
-  problemType: string;
-  difficulty: number | null;
-  subject: string | null;
-  unitMajor: string | null;
-  choices?: {
-    label: string;
-    contentLatex: string;
-    contentText: string;
-    position: number;
-  }[];
-  answerText?: string | null;
-}
-
 export interface ExamPreviewPanelProps {
-  selectedProblems: Problem[];
+  selectedProblems: ExamBuilderProblem[];
   problemsPerPage: number;
   title: string;
   docType: "exam" | "workbook";
@@ -69,7 +52,7 @@ export interface ExamPreviewPanelProps {
   examDate: string;
   duration: string;
   showNameField: boolean;
-  onReorder: (problems: Problem[]) => void;
+  onReorder: (problems: ExamBuilderProblem[]) => void;
   onLayoutChange?: (layout: ExamPreviewLayoutPlan | null) => void;
   onRemove?: (id: string) => void;
 }
@@ -92,83 +75,6 @@ export interface ExamPreviewLayoutPlan {
   columns: number;
   pages: ExamPreviewLayoutPlanPage[];
   rowsPerColumn: number;
-}
-
-const CIRCLED_NUMBERS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
-
-function ProblemChoices({
-  choices,
-  layout,
-}: {
-  choices: ReturnType<typeof resolveProblemChoices>["choices"];
-  layout: ReturnType<typeof resolveProblemChoices>["choiceLayout"];
-}) {
-  if (choices.length === 0) {
-    return null;
-  }
-
-  if (layout === "spread") {
-    return (
-      <div className="mt-1 ml-3 grid grid-cols-5 gap-x-2 gap-y-1 text-[0.92em]">
-        {choices.map((choice) => (
-          <div key={`${choice.position}-${choice.label}`} className="flex min-w-0 items-baseline gap-1">
-            <span className="shrink-0">{CIRCLED_NUMBERS[choice.position - 1] ?? `(${choice.position})`}</span>
-            <LatexRenderer
-              content={choice.contentLatex || choice.contentText}
-              className="min-w-0 leading-snug"
-            />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-0.5 ml-3 flex flex-col gap-px">
-      {choices.map((choice, idx) => (
-        <div key={`${choice.position}-${choice.label}-${idx}`} className="flex gap-1 items-baseline">
-          <span className="shrink-0">
-            {CIRCLED_NUMBERS[idx] ?? `(${idx + 1})`}
-          </span>
-          <LatexRenderer
-            content={choice.contentLatex || choice.contentText}
-            className="min-w-0"
-          />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ProblemContent({
-  problem,
-  number,
-  className,
-}: {
-  problem: Problem;
-  number: number;
-  className?: string;
-}) {
-  const resolvedProblem = resolveProblemChoices(problem);
-
-  return (
-    <div className={cn("w-full", className)}>
-      <div className="flex gap-1">
-        <span className="font-bold shrink-0">{number}.</span>
-        <div className="min-w-0 flex-1">
-          <LatexRenderer
-            content={resolvedProblem.stemContent}
-            className="leading-snug"
-          />
-        </div>
-      </div>
-
-      <ProblemChoices
-        choices={resolvedProblem.choices}
-        layout={resolvedProblem.choiceLayout}
-      />
-    </div>
-  );
 }
 
 function PreviewHeader({
@@ -215,7 +121,7 @@ function SortablePreviewProblem({
   globalIndex,
   onRemove,
 }: {
-  problem: Problem;
+  problem: ExamBuilderProblem;
   globalIndex: number;
   onRemove?: () => void;
 }) {
@@ -261,7 +167,11 @@ function SortablePreviewProblem({
         </button>
       )}
 
-      <ProblemContent problem={problem} number={globalIndex + 1} />
+      <ExamBuilderProblemContent
+        problem={problem}
+        number={globalIndex + 1}
+        variant="panel"
+      />
     </div>
   );
 }
@@ -270,14 +180,15 @@ function DragOverlayProblem({
   problem,
   globalIndex,
 }: {
-  problem: Problem;
+  problem: ExamBuilderProblem;
   globalIndex: number;
 }) {
   return (
     <div className="rounded bg-white/95 shadow-lg ring-1 ring-black/10 p-2 scale-[1.02] max-w-md text-[9px]">
-      <ProblemContent
+      <ExamBuilderProblemContent
         problem={problem}
         number={globalIndex + 1}
+        variant="panel"
         className="text-black"
       />
     </div>
@@ -291,7 +202,7 @@ function PreviewColumn({
   className,
   setRenderedSlotRef,
 }: {
-  items: { globalIndex: number; problem: Problem; span: number }[];
+  items: { globalIndex: number; problem: ExamBuilderProblem; span: number }[];
   onRemove?: (id: string) => void;
   rowsPerColumn: number;
   className?: string;
@@ -777,7 +688,11 @@ export function ExamPreviewPanel({
                       ref={setProblemMeasureRef(problem.id)}
                       className="w-full"
                     >
-                      <ProblemContent problem={problem} number={index + 1} />
+                      <ExamBuilderProblemContent
+                        problem={problem}
+                        number={index + 1}
+                        variant="panel"
+                      />
                     </div>
                   ))}
                 </div>

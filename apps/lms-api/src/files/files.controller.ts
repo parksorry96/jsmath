@@ -27,6 +27,7 @@ interface AuthRequest {
 }
 
 const MAX_DIRECT_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_DIRECT_EXAM_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_DIRECT_TEXTBOOK_FILE_BYTES = 20 * 1024 * 1024;
 
 function parseBooleanInput(value: unknown, defaultValue = true): boolean {
@@ -100,6 +101,43 @@ export class FilesController {
     });
   }
 
+  @Post("exam")
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: "problem_file", maxCount: 1 },
+        { name: "answer_file", maxCount: 1 },
+      ],
+      {
+        limits: { files: 2, fileSize: MAX_DIRECT_EXAM_FILE_BYTES },
+        fileFilter: pdfFileFilter,
+      },
+    ),
+  )
+  uploadExam(
+    @UploadedFiles()
+    files: {
+      problem_file?: Express.Multer.File[];
+      answer_file?: Express.Multer.File[];
+    },
+    @Request() req: AuthRequest,
+    @Body("auto_analyze") autoAnalyze?: string | boolean,
+  ) {
+    const problemFile = files?.problem_file?.[0];
+    const answerFile = files?.answer_file?.[0];
+
+    if (!problemFile) {
+      throw new BadRequestException("problem_file is required");
+    }
+
+    return this.files.uploadExamPdf(problemFile, answerFile, req.user.id, {
+      documentType: "exam",
+      bookTitle: null,
+      publisher: null,
+      autoAnalyze: parseBooleanInput(autoAnalyze, true),
+    });
+  }
+
   @Post("textbook")
   @UseInterceptors(
     FileFieldsInterceptor(
@@ -146,7 +184,7 @@ export class FilesController {
   initiateMultipartUpload(
     @Body("filename") filename: string,
     @Body("size") size?: number,
-    @Body("role") role?: "exam" | "textbook_problem" | "textbook_answer",
+    @Body("role") role?: "exam" | "exam_problem" | "exam_answer" | "textbook_problem" | "textbook_answer",
     @Body("contentType") contentType?: string,
     @Request() req?: AuthRequest,
   ) {
@@ -239,6 +277,29 @@ export class FilesController {
       documentType: docType,
       bookTitle: bookTitle?.trim() || null,
       publisher: publisher?.trim() || null,
+      autoAnalyze: parseBooleanInput(autoAnalyze, true),
+    });
+  }
+
+  @Post("exam/register")
+  registerUploadedExam(
+    @Body("problem_key") problemKey: string,
+    @Body("problem_filename") problemFilename: string,
+    @Body("problem_size") problemSize?: number,
+    @Body("answer_key") answerKey?: string,
+    @Body("answer_size") answerSize?: number,
+    @Body("auto_analyze") autoAnalyze?: boolean | string,
+    @Request() req?: AuthRequest,
+  ) {
+    return this.files.registerUploadedExam(req!.user.id, {
+      problemKey,
+      problemFilename,
+      problemSize: Number(problemSize),
+      answerKey: answerKey?.trim() || null,
+      answerSize:
+        answerSize === undefined || answerSize === null
+          ? null
+          : Number(answerSize),
       autoAnalyze: parseBooleanInput(autoAnalyze, true),
     });
   }

@@ -10,6 +10,8 @@ const BOOK_SOURCE_NUMBER_KEYS = ["problemNumber", "displayNumber", "localNumber"
 
 export type MultipartUploadRole =
   | "exam"
+  | "exam_problem"
+  | "exam_answer"
   | "textbook_problem"
   | "textbook_answer";
 
@@ -28,8 +30,10 @@ export class UploadPolicyService {
     role: MultipartUploadRole,
   ): string {
     const folder =
-      role === "exam"
+      role === "exam" || role === "exam_problem"
         ? "exam"
+        : role === "exam_answer"
+          ? "exam-answer"
         : role === "textbook_problem"
           ? "textbook"
           : "textbook-answer";

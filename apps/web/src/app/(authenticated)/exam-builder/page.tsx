@@ -25,6 +25,10 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { LatexRenderer } from "@/components/math/latex-renderer";
 import { resolveProblemChoices } from "@/components/exam-builder/choice-utils";
+import {
+  ExamBuilderProblemChoices,
+  type ExamBuilderProblem as Problem,
+} from "@/components/exam-builder/problem-preview-content";
 import { buildProblemPreview } from "@/lib/problem-preview";
 import {
   ExamPreviewPanel,
@@ -42,20 +46,6 @@ import Link from "next/link";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface Problem {
-  id: string;
-  displayNumber: string | null;
-  problemNumber: string | null;
-  stemText: string;
-  stemLatex: string;
-  problemType: string;
-  difficulty: number | null;
-  subject: string | null;
-  unitMajor: string | null;
-  choices?: { label: string; contentLatex: string; contentText: string; position: number }[];
-  answerText?: string | null;
-}
 
 interface FilterOptions {
   subjects: string[];
@@ -1209,32 +1199,11 @@ export default function ExamBuilderPage() {
             {previewProblemContent && previewProblemContent.choices.length > 0 && (
               <div className="mt-4 space-y-2">
                 <p className="text-sm font-medium text-muted-foreground">보기</p>
-                {previewProblemContent.choiceLayout === "spread" ? (
-                  <div className="grid grid-cols-5 gap-2 rounded-md border border-border bg-brand-charcoal px-3 py-3">
-                    {previewProblemContent.choices.map((choice) => (
-                      <div key={`${choice.position}-${choice.label}`} className="flex min-w-0 items-baseline gap-1 text-sm">
-                        <span className="shrink-0 text-brand-beige">{choice.label}</span>
-                        <LatexRenderer content={choice.contentLatex || choice.contentText} />
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="space-y-1.5">
-                    {previewProblemContent.choices.map((choice) => (
-                      <div
-                        key={`${choice.position}-${choice.label}`}
-                        className="flex items-start gap-2 rounded-md border border-border bg-brand-charcoal px-3 py-2"
-                      >
-                        <span className="shrink-0 text-sm font-medium text-brand-beige">
-                          {choice.label}
-                        </span>
-                        <div className="text-sm">
-                          <LatexRenderer content={choice.contentLatex || choice.contentText} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <ExamBuilderProblemChoices
+                  choices={previewProblemContent.choices}
+                  layout={previewProblemContent.choiceLayout}
+                  variant="modal"
+                />
               </div>
             )}
 

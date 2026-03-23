@@ -1,5 +1,15 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { PredictMockCutoffsDto } from "./dto/predict-mock-cutoffs.dto";
+import {
+  estimateMockCutoffs,
+  HistoricalExamInput,
+  MockExamItemInput,
+} from "./mock-cutoff-estimator";
 
 interface CutoffInput {
   examYear: number;
@@ -21,7 +31,27 @@ export interface SubjectPrediction {
   totalCorrect: number;
 }
 
-// Default 2024 CSAT Math cutoffs
+interface HistoricalExamMetaRow {
+  examYear: number;
+  examMonth: number;
+  examType: string;
+  subject: string;
+  correctAnswer: string | null;
+  correctRate: number | null;
+  pointValue: number | null;
+  choiceRates: unknown;
+}
+
+interface LegacyCutoffRow {
+  exam_year: number;
+  exam_month: number;
+  subject: string;
+  grade: number;
+  display_score: number;
+  percentile: number | null;
+}
+
+// 2024 CSAT Math defaults — update annually when new cutoff data is available
 const DEFAULT_CUTOFFS: CutoffInput[] = [
   { examYear: 2024, examMonth: 11, subject: "수학", grade: 1, minScore: 92, maxScore: 100, percentile: 96 },
   { examYear: 2024, examMonth: 11, subject: "수학", grade: 2, minScore: 85, maxScore: 91, percentile: 89 },
@@ -287,4 +317,292 @@ export class GradePredictionService {
       predictions: predictions.filter((p) => p.totalAnswered > 0),
     };
   }
+
+  async predictMockCutoffs(dto: PredictMockCutoffsDto) {
+    const requestedProblemIds = [...new Set(dto.problemIds ?? [])];
+    const inlineItems = (dto.items ?? []).map<MockExamItemInput>((item) => ({
+      problemId: item.problemId,
+      subject: item.subject,
+      sourceExamYear: item.sourceExamYear,
+      sourceExamMonth: item.sourceExamMonth,
+      sourceExamType: item.sourceExamType,
+      correctAnswer: item.correctAnswer,
+      correctRate: item.correctRate,
+      pointValue: item.pointValue,
+      choiceRates: item.choiceRates ?? null,
+    }));
+
+    if (requestedProblemIds.length === 0 && inlineItems.length === 0) {
+      throw new BadRequestException(
+        "Provide at least one problemId or one item with exam statistics",
+      );
+    }
+
+    const problemItems =
+      requestedProblemIds.length > 0
+        ? await this.loadCandidateItemsFromProblems(requestedProblemIds)
+        : [];
+    const candidateItems = [...inlineItems, ...problemItems];
+
+    if (candidateItems.length === 0) {
+      throw new BadRequestException(
+        "No candidate items with usable exam statistics were found",
+      );
+    }
+
+    const subject = (dto.subject ?? "").trim() || resolveDominantSubject(candidateItems);
+    if (!subject) {
+      throw new BadRequestException(
+        "Subject is required when candidate items do not carry subject metadata",
+      );
+    }
+
+    const lookbackYears = dto.lookbackYears ?? 10;
+    const minYear = new Date().getFullYear() - lookbackYears + 1;
+    const historicalExams = await this.loadHistoricalExams(
+      subject,
+      minYear,
+      dto.examTypes,
+    );
+
+    if (historicalExams.length === 0) {
+      throw new NotFoundException(
+        `No historical cutoff data found for subject "${subject}"`,
+      );
+    }
+
+    const estimation = estimateMockCutoffs(subject, candidateItems, historicalExams);
+    const resolvedProblemIds = new Set(
+      problemItems.map((item) => item.problemId).filter(Boolean) as string[],
+    );
+
+    return {
+      ...estimation,
+      lookbackYears,
+      requestedProblemCount: requestedProblemIds.length,
+      usableCandidateItemCount: candidateItems.length,
+      requestedExamTypes: dto.examTypes ?? null,
+      missingProblemIds: requestedProblemIds.filter((id) => !resolvedProblemIds.has(id)),
+    };
+  }
+
+  private async loadCandidateItemsFromProblems(
+    problemIds: string[],
+  ): Promise<MockExamItemInput[]> {
+    const problems = await this.prisma.problem.findMany({
+      where: { id: { in: problemIds } },
+      select: {
+        id: true,
+        subject: true,
+        pointValue: true,
+        examMeta: {
+          orderBy: [
+            { examYear: "desc" },
+            { examMonth: "desc" },
+            { createdAt: "desc" },
+          ],
+          take: 1,
+          select: {
+            examYear: true,
+            examMonth: true,
+            examType: true,
+            subject: true,
+            correctAnswer: true,
+            correctRate: true,
+            pointValue: true,
+            choiceRates: true,
+          },
+        },
+      },
+    });
+
+    const items: MockExamItemInput[] = [];
+
+    for (const problem of problems) {
+      const meta = problem.examMeta[0];
+      if (!meta || meta.correctRate == null) {
+        continue;
+      }
+
+      items.push({
+        problemId: problem.id,
+        subject: meta.subject ?? problem.subject,
+        sourceExamYear: meta.examYear,
+        sourceExamMonth: meta.examMonth,
+        sourceExamType: meta.examType,
+        correctAnswer: meta.correctAnswer,
+        correctRate: meta.correctRate,
+        pointValue: meta.pointValue ?? problem.pointValue ?? undefined,
+        choiceRates: parseChoiceRates(meta.choiceRates),
+      });
+    }
+
+    return items;
+  }
+
+  private async loadHistoricalExams(
+    subject: string,
+    minYear: number,
+    examTypes?: string[],
+  ): Promise<HistoricalExamInput[]> {
+    const [examMetas, legacyCutoffs, fallbackCutoffs] = await Promise.all([
+      this.prisma.examQuestionMeta.findMany({
+        where: {
+          examYear: { gte: minYear },
+          subject,
+          correctRate: { not: null },
+          ...(examTypes?.length ? { examType: { in: examTypes } } : {}),
+        },
+        select: {
+          examYear: true,
+          examMonth: true,
+          examType: true,
+          subject: true,
+          correctAnswer: true,
+          correctRate: true,
+          pointValue: true,
+          choiceRates: true,
+        },
+      }),
+      this.prisma.$queryRaw<LegacyCutoffRow[]>`
+        SELECT
+          exam_year,
+          exam_month,
+          subject,
+          grade,
+          display_score,
+          percentile
+        FROM public.legacy_grade_cutoffs
+        WHERE exam_year >= ${minYear}
+          AND subject = ${subject}
+      `,
+      this.prisma.gradeCutoff.findMany({
+        where: {
+          examYear: { gte: minYear },
+          subject,
+        },
+        select: {
+          examYear: true,
+          examMonth: true,
+          subject: true,
+          grade: true,
+          minScore: true,
+          percentile: true,
+        },
+      }),
+    ]);
+
+    const cutoffMap = new Map<
+      string,
+      Array<{ grade: number; displayScore: number; percentile: number | null }>
+    >();
+    const legacyKeys = new Set<string>();
+
+    for (const cutoff of legacyCutoffs) {
+      const key = `${cutoff.exam_year}-${cutoff.exam_month}-${cutoff.subject}`;
+      legacyKeys.add(key);
+      const rows = cutoffMap.get(key) ?? [];
+      rows.push({
+        grade: cutoff.grade,
+        displayScore: cutoff.display_score,
+        percentile: cutoff.percentile ?? null,
+      });
+      cutoffMap.set(key, rows);
+    }
+
+    for (const cutoff of fallbackCutoffs) {
+      const key = `${cutoff.examYear}-${cutoff.examMonth}-${cutoff.subject}`;
+      if (legacyKeys.has(key)) {
+        continue;
+      }
+      const rows = cutoffMap.get(key) ?? [];
+      rows.push({
+        grade: cutoff.grade,
+        displayScore: cutoff.minScore,
+        percentile: cutoff.percentile ?? null,
+      });
+      cutoffMap.set(key, rows);
+    }
+
+    const examMap = new Map<string, HistoricalExamInput>();
+
+    for (const meta of examMetas as HistoricalExamMetaRow[]) {
+      const cutoffKey = `${meta.examYear}-${meta.examMonth}-${meta.subject}`;
+      const cutoffs = cutoffMap.get(cutoffKey);
+      if (!cutoffs || cutoffs.length === 0 || meta.correctRate == null) {
+        continue;
+      }
+
+      const examKey = `${meta.examYear}-${meta.examMonth}-${meta.examType}-${meta.subject}`;
+      const current = examMap.get(examKey) ?? {
+        examYear: meta.examYear,
+        examMonth: meta.examMonth,
+        examType: meta.examType,
+        subject: meta.subject,
+        items: [],
+        cutoffs,
+      };
+
+      current.items.push({
+        subject: meta.subject,
+        sourceExamYear: meta.examYear,
+        sourceExamMonth: meta.examMonth,
+        sourceExamType: meta.examType,
+        correctAnswer: meta.correctAnswer,
+        correctRate: meta.correctRate,
+        pointValue: meta.pointValue ?? undefined,
+        choiceRates: parseChoiceRates(meta.choiceRates),
+      });
+      examMap.set(examKey, current);
+    }
+
+    return [...examMap.values()];
+  }
+}
+
+function parseChoiceRates(value: unknown): Record<string, number> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const parsed = Object.entries(value).reduce<Record<string, number>>(
+    (acc, [key, raw]) => {
+      const numeric =
+        typeof raw === "number"
+          ? raw
+          : typeof raw === "string"
+            ? Number(raw)
+            : NaN;
+      if (Number.isFinite(numeric) && numeric >= 0) {
+        acc[key] = numeric;
+      }
+      return acc;
+    },
+    {},
+  );
+
+  return Object.keys(parsed).length > 0 ? parsed : null;
+}
+
+function resolveDominantSubject(items: MockExamItemInput[]): string | null {
+  const counts = new Map<string, number>();
+
+  for (const item of items) {
+    const subject = item.subject?.trim();
+    if (!subject) {
+      continue;
+    }
+    counts.set(subject, (counts.get(subject) ?? 0) + 1);
+  }
+
+  let selected: string | null = null;
+  let maxCount = 0;
+  for (const [subject, count] of counts) {
+    if (count > maxCount) {
+      selected = subject;
+      maxCount = count;
+    }
+  }
+
+  return selected;
 }

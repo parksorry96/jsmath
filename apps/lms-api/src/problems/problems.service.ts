@@ -21,6 +21,13 @@ import {
   isAdminRole,
 } from "../common/access-control";
 
+type CurriculumClassificationLike = {
+  subject?: string | null;
+  unitMajor?: string | null;
+  unitMinor?: string | null;
+  confidence?: number | null;
+};
+
 export interface ProblemsQuery {
   requesterId: string;
   requesterRole: string;
@@ -38,12 +45,14 @@ export interface ProblemsQuery {
   examYear?: string;
   examMonth?: string;
   examType?: string;
+  electiveSubject?: string;
   curriculumNodeId?: string;
   position?: string;        // "killer" | "semi_killer" | "normal"
   correctRateMin?: number;  // 0-100 percentage
   correctRateMax?: number;  // 0-100 percentage
   pointValue?: number;      // 2, 3, 4
   examYearMin?: number;     // minimum exam year (inclusive)
+  searchMode?: string;      // "standard" | "semantic" | "hybrid"
   sortBy?: string;          // "newest" | "correct_rate_asc" | "correct_rate_desc" | "point_value_desc"
   page?: number;
   limit?: number;
@@ -114,6 +123,44 @@ function buildProblemListSelect(includeDetails: boolean) {
   };
 }
 
+function toCurriculumClassificationLike(value: unknown): CurriculumClassificationLike | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as CurriculumClassificationLike;
+}
+
+function applyPrimaryClassificationFallback<
+  T extends {
+    subject?: string | null;
+    unitMajor?: string | null;
+    unitMinor?: string | null;
+    classificationConfidence?: number | null;
+    classification2015?: unknown;
+    classification2022?: unknown;
+  },
+>(problem: T): T {
+  const classification2015 = toCurriculumClassificationLike(problem.classification2015);
+  const classification2022 = toCurriculumClassificationLike(problem.classification2022);
+  const primary =
+    (classification2015?.subject ? classification2015 : null) ??
+    (classification2022?.subject ? classification2022 : null);
+
+  if (!primary) {
+    return problem;
+  }
+
+  return {
+    ...problem,
+    subject: problem.subject ?? primary.subject ?? null,
+    unitMajor: problem.unitMajor ?? primary.unitMajor ?? null,
+    unitMinor: problem.unitMinor ?? primary.unitMinor ?? null,
+    classificationConfidence:
+      problem.classificationConfidence ?? primary.confidence ?? null,
+  };
+}
+
 @Injectable()
 export class ProblemsService {
   private readonly logger = new Logger(ProblemsService.name);
@@ -173,24 +220,56 @@ export class ProblemsService {
         select: { problemType: true },
         distinct: ["problemType"],
       }),
-      this.prisma.$queryRaw<{ year: number }[]>`
-        SELECT DISTINCT (exam_source->>'year')::int as year
-        FROM ocr.problems
-        WHERE exam_source IS NOT NULL AND exam_source->>'year' IS NOT NULL
-        ORDER BY year DESC
-      `,
-      this.prisma.$queryRaw<{ type: string }[]>`
-        SELECT DISTINCT exam_source->>'type' as type
-        FROM ocr.problems
-        WHERE exam_source IS NOT NULL AND exam_source->>'type' IS NOT NULL
-        ORDER BY type
-      `,
-      this.prisma.$queryRaw<{ tag: string }[]>`
-        SELECT DISTINCT jsonb_array_elements_text(solution_tags) as tag
-        FROM ocr.problems
-        WHERE solution_tags IS NOT NULL
-        ORDER BY tag
-      `,
+      isAdminRole(requesterRole)
+        ? this.prisma.$queryRaw<{ year: number }[]>`
+            SELECT DISTINCT CASE WHEN (p.exam_source->>'year') ~ '^\d+$' THEN (p.exam_source->>'year')::int ELSE NULL END as year
+            FROM ocr.problems p
+            WHERE p.exam_source IS NOT NULL AND p.exam_source->>'year' IS NOT NULL
+              AND CASE WHEN (p.exam_source->>'year') ~ '^\d+$' THEN (p.exam_source->>'year')::int ELSE NULL END IS NOT NULL
+            ORDER BY year DESC
+          `
+        : this.prisma.$queryRaw<{ year: number }[]>`
+            SELECT DISTINCT CASE WHEN (p.exam_source->>'year') ~ '^\d+$' THEN (p.exam_source->>'year')::int ELSE NULL END as year
+            FROM ocr.problems p
+            JOIN ocr.ocr_jobs oj ON oj.id = p.ocr_job_id
+            JOIN ocr.source_files sf ON sf.id = oj.source_file_id
+            WHERE p.exam_source IS NOT NULL AND p.exam_source->>'year' IS NOT NULL
+              AND sf.uploader_id = ${requesterId}
+              AND CASE WHEN (p.exam_source->>'year') ~ '^\d+$' THEN (p.exam_source->>'year')::int ELSE NULL END IS NOT NULL
+            ORDER BY year DESC
+          `,
+      isAdminRole(requesterRole)
+        ? this.prisma.$queryRaw<{ type: string }[]>`
+            SELECT DISTINCT p.exam_source->>'type' as type
+            FROM ocr.problems p
+            WHERE p.exam_source IS NOT NULL AND p.exam_source->>'type' IS NOT NULL
+            ORDER BY type
+          `
+        : this.prisma.$queryRaw<{ type: string }[]>`
+            SELECT DISTINCT p.exam_source->>'type' as type
+            FROM ocr.problems p
+            JOIN ocr.ocr_jobs oj ON oj.id = p.ocr_job_id
+            JOIN ocr.source_files sf ON sf.id = oj.source_file_id
+            WHERE p.exam_source IS NOT NULL AND p.exam_source->>'type' IS NOT NULL
+              AND sf.uploader_id = ${requesterId}
+            ORDER BY type
+          `,
+      isAdminRole(requesterRole)
+        ? this.prisma.$queryRaw<{ tag: string }[]>`
+            SELECT DISTINCT jsonb_array_elements_text(p.solution_tags) as tag
+            FROM ocr.problems p
+            WHERE p.solution_tags IS NOT NULL
+            ORDER BY tag
+          `
+        : this.prisma.$queryRaw<{ tag: string }[]>`
+            SELECT DISTINCT jsonb_array_elements_text(p.solution_tags) as tag
+            FROM ocr.problems p
+            JOIN ocr.ocr_jobs oj ON oj.id = p.ocr_job_id
+            JOIN ocr.source_files sf ON sf.id = oj.source_file_id
+            WHERE p.solution_tags IS NOT NULL
+              AND sf.uploader_id = ${requesterId}
+            ORDER BY tag
+          `,
     ]);
 
     return {
@@ -211,115 +290,28 @@ export class ProblemsService {
   }
 
   async findAll(query: ProblemsQuery) {
+    // Dispatch to hybrid/semantic search when applicable
+    if (query.q && query.searchMode === 'hybrid') {
+      try {
+        return await this.hybridSearch(query);
+      } catch (err) {
+        this.logger.warn('Hybrid search failed, falling back to standard listing', err);
+      }
+    }
+    if (query.q && query.searchMode === 'semantic') {
+      return this.semanticSearch(query.q, query, query.limit);
+    }
     return this.findAllWithExamMeta(query);
   }
-
-  // Old findAll implementation (Prisma-based, kept as fallback reference)
-  // async findAll_legacy(query: ProblemsQuery) {
-  //   const page = query.page ?? 1;
-  //   const limit = Math.min(query.limit ?? 20, 100);
-  //   const skip = (page - 1) * limit;
-  //   const includeDetails = query.includeDetails ?? true;
-  //
-  //   if (query.q) {
-  //     try {
-  //       return await this.hybridSearch(query);
-  //     } catch (err) {
-  //       this.logger.warn("Hybrid search failed, falling back to ILIKE", err);
-  //     }
-  //   }
-  //
-  //   const where: Record<string, unknown> = {
-  //     ...this.getProblemScopeWhere(query.requesterId, query.requesterRole),
-  //   };
-  //
-  //   if (query.ocrJobId) where.ocrJobId = query.ocrJobId;
-  //   if (query.reviewStatus) where.reviewStatus = query.reviewStatus;
-  //   if (query.gradeLevel) where.gradeLevel = query.gradeLevel;
-  //   if (query.subject) where.subject = query.subject;
-  //   if (query.unitMajor) where.unitMajor = query.unitMajor;
-  //   if (query.problemType) where.problemType = query.problemType;
-  //   if (query.analysisStatus) where.analysisStatus = query.analysisStatus;
-  //   if (query.bookTitle) {
-  //     where.bookSource = { path: ["title"], string_contains: query.bookTitle };
-  //   }
-  //   if (query.solutionTag) {
-  //     where.solutionTags = { array_contains: [query.solutionTag] };
-  //   }
-  //   if (query.difficulty !== undefined) {
-  //     const parsed = parseInt(query.difficulty, 10);
-  //     if (!isNaN(parsed)) where.difficulty = parsed;
-  //   }
-  //
-  //   const examSourceFilters: Record<string, unknown>[] = [];
-  //   if (query.examYear) {
-  //     examSourceFilters.push({
-  //       examSource: { path: ["year"], equals: parseInt(query.examYear, 10) },
-  //     });
-  //   }
-  //   if (query.examMonth) {
-  //     examSourceFilters.push({
-  //       examSource: { path: ["month"], equals: parseInt(query.examMonth, 10) },
-  //     });
-  //   }
-  //   if (query.examType) {
-  //     examSourceFilters.push({
-  //       examSource: { path: ["type"], string_contains: query.examType },
-  //     });
-  //   }
-  //   if (examSourceFilters.length > 0) {
-  //     where.AND = examSourceFilters;
-  //   }
-  //
-  //   if (query.curriculumNodeId) {
-  //     const descendants = await this.prisma.$queryRaw<{ id: string }[]>`
-  //       WITH RECURSIVE tree AS (
-  //         SELECT id FROM ocr.curriculum_nodes WHERE id = ${query.curriculumNodeId}::uuid
-  //         UNION ALL
-  //         SELECT cn.id FROM ocr.curriculum_nodes cn
-  //         JOIN tree t ON cn.parent_id = t.id
-  //       )
-  //       SELECT id FROM tree
-  //     `;
-  //     const nodeIds = descendants.map((d) => d.id);
-  //     where.curriculumNodeId = { in: nodeIds };
-  //   }
-  //
-  //   if (query.q) {
-  //     where.stemText = { contains: query.q, mode: "insensitive" };
-  //   }
-  //
-  //   const [items, total] = await Promise.all([
-  //     this.prisma.problem.findMany({
-  //       where,
-  //       skip,
-  //       take: limit,
-  //       orderBy: { createdAt: "desc" },
-  //       select: buildProblemListSelect(includeDetails),
-  //     }),
-  //     this.prisma.problem.count({ where }),
-  //   ]);
-  //
-  //   return {
-  //     data: items.map((item) => ({
-  //       ...item,
-  //       sourceFile: normalizeFilename(item.ocrJob?.sourceFile?.filename) ?? null,
-  //       ocrJob: undefined,
-  //     })),
-  //     total,
-  //     page,
-  //     limit,
-  //     totalPages: Math.ceil(total / limit),
-  //   };
-  // }
 
   private async findAllWithExamMeta(query: ProblemsQuery) {
     const { page = 1, limit: rawLimit = 20, requesterId, requesterRole } = query;
     const limit = Math.min(rawLimit, 100);
     const offset = (page - 1) * limit;
+    const normalizedElectiveSubject = query.electiveSubject?.replace(/\s+/g, "") || null;
 
     const conditions: string[] = ['p.retired_at IS NULL'];
-    const params: any[] = [];
+    const params: unknown[] = [];
     let paramIndex = 1;
 
     // Access control (ocr_jobs -> source_files -> uploader_id)
@@ -385,14 +377,15 @@ export class ProblemsService {
       paramIndex++;
     }
     if (query.q) {
+      const escapedQ = query.q.replace(/%/g, '\\%').replace(/_/g, '\\_');
       conditions.push(`p.stem_text ILIKE $${paramIndex}`);
-      params.push(`%${query.q}%`);
+      params.push(`%${escapedQ}%`);
       paramIndex++;
     }
 
     // Exam source filters (from problem's exam_source JSON)
     if (query.examYear) {
-      conditions.push(`(p.exam_source->>'year')::int = $${paramIndex}`);
+      conditions.push(`CASE WHEN (p.exam_source->>'year') ~ '^\\d+$' THEN (p.exam_source->>'year')::int ELSE NULL END = $${paramIndex}`);
       params.push(parseInt(String(query.examYear)));
       paramIndex++;
     }
@@ -402,9 +395,23 @@ export class ProblemsService {
       paramIndex++;
     }
 
+    let electiveSubjectParamIndex: number | null = null;
+    if (normalizedElectiveSubject) {
+      electiveSubjectParamIndex = paramIndex;
+      params.push(normalizedElectiveSubject);
+      paramIndex++;
+      conditions.push(`(
+        p.exam_source->>'type' = 'suneung'
+        AND (
+          COALESCE((p.exam_source->>'isCommon')::boolean, p.is_common, false) = true
+          OR regexp_replace(COALESCE(p.exam_source->>'subject', p.subject, ''), '\\s+', '', 'g') = $${electiveSubjectParamIndex}
+        )
+      )`);
+    }
+
     // Exam year minimum (e.g., examYearMin=2023 for "최근 3년")
     if (query.examYearMin) {
-      conditions.push(`(p.exam_source->>'year')::int >= $${paramIndex}`);
+      conditions.push(`CASE WHEN (p.exam_source->>'year') ~ '^\\d+$' THEN (p.exam_source->>'year')::int ELSE NULL END >= $${paramIndex}`);
       params.push(query.examYearMin);
       paramIndex++;
     }
@@ -412,7 +419,7 @@ export class ProblemsService {
     // Exam month filter (from exam_question_meta or exam_source)
     if (query.examMonth) {
       const month = parseInt(String(query.examMonth));
-      conditions.push(`(eqm.exam_month = $${paramIndex} OR (p.exam_source->>'month')::int = $${paramIndex})`);
+      conditions.push(`(eqm.exam_month = $${paramIndex} OR CASE WHEN (p.exam_source->>'month') ~ '^\\d+$' THEN (p.exam_source->>'month')::int ELSE NULL END = $${paramIndex})`);
       params.push(month);
       paramIndex++;
     }
@@ -466,17 +473,37 @@ export class ProblemsService {
     else if (query.sortBy === 'point_value_desc') orderBy = 'eqm.point_value DESC NULLS LAST, p.created_at DESC';
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const eqmJoin = electiveSubjectParamIndex !== null
+      ? `LEFT JOIN LATERAL (
+          SELECT * FROM ocr.exam_question_meta eqm2
+          WHERE (
+            eqm2.problem_id = p.id
+            OR (
+              (p.exam_source->>'year') IS NOT NULL
+              AND (p.exam_source->>'month') IS NOT NULL
+              AND (p.exam_source->>'number') IS NOT NULL
+              AND eqm2.exam_year = CASE WHEN (p.exam_source->>'year') ~ '^\\d+$' THEN (p.exam_source->>'year')::int ELSE NULL END
+              AND eqm2.exam_month = CASE WHEN (p.exam_source->>'month') ~ '^\\d+$' THEN (p.exam_source->>'month')::int ELSE NULL END
+              AND eqm2.exam_type = p.exam_source->>'type'
+              AND eqm2.question_number = CASE WHEN (p.exam_source->>'number') ~ '^\\d+$' THEN (p.exam_source->>'number')::int ELSE NULL END
+            )
+          )
+          AND regexp_replace(eqm2.subject, '\\s+', '', 'g') = $${electiveSubjectParamIndex}
+          ORDER BY CASE WHEN eqm2.problem_id = p.id THEN 0 ELSE 1 END, eqm2.created_at DESC
+          LIMIT 1
+        ) eqm ON true`
+      : `LEFT JOIN LATERAL (
+          SELECT * FROM ocr.exam_question_meta eqm2
+          WHERE eqm2.problem_id = p.id
+          ORDER BY eqm2.created_at DESC
+          LIMIT 1
+        ) eqm ON true`;
 
     // Count query
     const countSql = `${ctePart}
       SELECT COUNT(DISTINCT p.id) as total
       FROM ocr.problems p
-      LEFT JOIN LATERAL (
-        SELECT * FROM ocr.exam_question_meta eqm2
-        WHERE eqm2.problem_id = p.id
-        ORDER BY eqm2.created_at DESC
-        LIMIT 1
-      ) eqm ON true
+      ${eqmJoin}
       ${whereClause}`;
 
     const countResult = await this.prisma.$queryRawUnsafe<[{ total: bigint }]>(countSql, ...params);
@@ -488,6 +515,7 @@ export class ProblemsService {
         p.id, p.stem_latex, p.stem_text, p.problem_number, p.display_number,
         p.problem_type, p.review_status, p.grade_level, p.subject,
         p.unit_major, p.unit_minor, p.difficulty, p.classification_confidence,
+        p.classification_2015, p.classification_2022,
         p.solution_confidence, p.review_confidence, p.solution_tags,
         p.analysis_status, p.ocr_job_id, p.start_page, p.end_page,
         p.book_source, p.exam_source, p.answer_match_status, p.created_at,
@@ -503,53 +531,77 @@ export class ProblemsService {
         eqm.choice_rates AS meta_choice_rates,
         eqm.is_common AS meta_is_common
       FROM ocr.problems p
-      LEFT JOIN LATERAL (
-        SELECT * FROM ocr.exam_question_meta eqm2
-        WHERE eqm2.problem_id = p.id
-        ORDER BY eqm2.created_at DESC
-        LIMIT 1
-      ) eqm ON true
+      ${eqmJoin}
       LEFT JOIN ocr.ocr_jobs oj ON p.ocr_job_id = oj.id
       LEFT JOIN ocr.source_files sf ON oj.source_file_id = sf.id
       ${whereClause}
       ORDER BY ${orderBy}
-      LIMIT ${limit} OFFSET ${offset}`;
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(limit, offset);
 
     const rows = await this.prisma.$queryRawUnsafe<any[]>(dataSql, ...params);
 
-    const problems = rows.map(row => ({
-      id: row.id,
-      stemLatex: row.stem_latex,
-      stemText: row.stem_text,
-      problemNumber: row.problem_number,
-      displayNumber: row.display_number,
-      problemType: row.problem_type,
-      reviewStatus: row.review_status,
-      gradeLevel: row.grade_level,
-      subject: row.subject,
-      unitMajor: row.unit_major,
-      unitMinor: row.unit_minor,
-      difficulty: row.difficulty,
-      classificationConfidence: row.classification_confidence,
-      startPage: row.start_page,
-      bookSource: row.book_source,
-      examSource: row.exam_source,
-      createdAt: row.created_at,
-      sourceFile: row.source_filename,
-      bbox: row.bbox,
-      examMeta: row.meta_exam_year ? {
-        examYear: row.meta_exam_year,
-        examMonth: row.meta_exam_month,
-        examType: row.meta_exam_type,
-        subject: row.meta_subject,
-        questionNumber: row.meta_question_number,
-        correctAnswer: row.meta_correct_answer,
-        correctRate: row.meta_correct_rate,
-        pointValue: row.meta_point_value,
-        choiceRates: row.meta_choice_rates,
-        isCommon: row.meta_is_common,
-      } : null,
-    }));
+    // Enrich with choices/assets when includeDetails is requested
+    const includeDetails = query.includeDetails ?? false;
+    let detailsMap: Map<string, { choices: unknown[]; assets: unknown[]; solutionLatex: string | null }> | null = null;
+    if (includeDetails && rows.length > 0) {
+      const ids = rows.map((r: any) => r.id as string);
+      const enriched = await this.prisma.problem.findMany({
+        where: { id: { in: ids } },
+        select: {
+          id: true,
+          solutionLatex: true,
+          choices: {
+            select: { label: true, contentLatex: true, contentText: true, position: true },
+            orderBy: { position: 'asc' as const },
+          },
+          assets: {
+            select: { id: true, kind: true, subKind: true, s3Key: true, format: true, widthPx: true, heightPx: true },
+          },
+        },
+      });
+      detailsMap = new Map(enriched.map((e) => [e.id, { choices: e.choices, assets: e.assets, solutionLatex: e.solutionLatex }]));
+    }
+
+    const problems = rows.map((row) => {
+      const details = detailsMap?.get(row.id);
+      return applyPrimaryClassificationFallback({
+        id: row.id,
+        stemLatex: row.stem_latex,
+        stemText: row.stem_text,
+        problemNumber: row.problem_number,
+        displayNumber: row.display_number,
+        problemType: row.problem_type,
+        reviewStatus: row.review_status,
+        gradeLevel: row.grade_level,
+        subject: row.subject,
+        unitMajor: row.unit_major,
+        unitMinor: row.unit_minor,
+        classification2015: row.classification_2015,
+        classification2022: row.classification_2022,
+        difficulty: row.difficulty,
+        classificationConfidence: row.classification_confidence,
+        startPage: row.start_page,
+        bookSource: row.book_source,
+        examSource: row.exam_source,
+        createdAt: row.created_at,
+        sourceFile: row.source_filename,
+        bbox: row.bbox,
+        ...(details ? { solutionLatex: details.solutionLatex, choices: details.choices, assets: details.assets } : {}),
+        examMeta: row.meta_exam_year ? {
+          examYear: row.meta_exam_year,
+          examMonth: row.meta_exam_month,
+          examType: row.meta_exam_type,
+          subject: row.meta_subject,
+          questionNumber: row.meta_question_number,
+          correctAnswer: row.meta_correct_answer,
+          correctRate: row.meta_correct_rate,
+          pointValue: row.meta_point_value,
+          choiceRates: row.meta_choice_rates,
+          isCommon: row.meta_is_common,
+        } : null,
+      });
+    });
 
     return {
       data: problems,
@@ -645,10 +697,10 @@ export class ProblemsService {
       LIMIT $${limitParamIdx}
     `;
 
-    const rows = await this.prisma.$queryRawUnsafe(sql, ...params);
+    const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
     return {
       data: rows,
-      total: (rows as unknown[]).length,
+      total: rows.length,
       page: 1,
       limit: safeLimit,
       totalPages: 1,
@@ -729,8 +781,8 @@ export class ProblemsService {
             AND (${safeDifficulty}::int IS NULL OR p.difficulty = ${safeDifficulty})
             AND (${bookTitle}::text IS NULL OR p.book_source->>'title' LIKE '%' || ${bookTitle} || '%')
             AND (${solutionTagJson}::jsonb IS NULL OR p.solution_tags @> ${solutionTagJson}::jsonb)
-            AND (${safeExamYear}::int IS NULL OR (p.exam_source->>'year')::int = ${safeExamYear})
-            AND (${safeExamMonth}::int IS NULL OR (p.exam_source->>'month')::int = ${safeExamMonth})
+            AND (${safeExamYear}::int IS NULL OR CASE WHEN (p.exam_source->>'year') ~ '^\d+$' THEN (p.exam_source->>'year')::int ELSE NULL END = ${safeExamYear})
+            AND (${safeExamMonth}::int IS NULL OR CASE WHEN (p.exam_source->>'month') ~ '^\d+$' THEN (p.exam_source->>'month')::int ELSE NULL END = ${safeExamMonth})
             AND (${examType}::text IS NULL OR p.exam_source->>'type' LIKE '%' || ${examType} || '%')
             AND (${curriculumNodeId}::uuid IS NULL OR p.curriculum_node_id IN (SELECT id FROM curriculum_tree))
         ),
@@ -1048,7 +1100,7 @@ export class ProblemsService {
       },
     });
     if (!problem) throw new NotFoundException("Problem not found");
-    return problem;
+    return applyPrimaryClassificationFallback(problem);
   }
 
   async getProblem(problemId: string, requesterId: string, requesterRole: string) {
@@ -1063,8 +1115,10 @@ export class ProblemsService {
       throw new NotFoundException("Problem not found");
     }
 
+    const enriched = applyPrimaryClassificationFallback(problem);
+
     return {
-      ...problem,
+      ...enriched,
       sourceFile: normalizeFilename(problem.ocrJob?.sourceFile?.filename) ?? null,
       ocrJob: undefined,
     };
@@ -1306,13 +1360,20 @@ export class ProblemsService {
       return { success: false, reason: `활성 과제에 포함됨: ${names}` };
     }
 
-    await this.prisma.problem.update({
-      where: { id },
-      data: {
-        reviewStatus: 'retired',
-        retiredAt: new Date(),
-        retiredBy: userId,
-      },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.problem.update({
+        where: { id },
+        data: {
+          reviewStatus: 'retired',
+          retiredAt: new Date(),
+          retiredBy: userId,
+        },
+      });
+
+      await tx.examQuestionMeta.updateMany({
+        where: { problemId: id },
+        data: { problemId: null },
+      });
     });
 
     return { success: true };

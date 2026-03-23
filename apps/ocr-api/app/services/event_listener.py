@@ -170,6 +170,11 @@ async def _handle_submit(raw: str) -> None:
     s3_key = payload.get("s3Key")
     answer_s3_key = payload.get("answerS3Key")
     document_type = payload.get("documentType", "exam")
+    pipeline_document_type = (
+        "exam_with_answers"
+        if document_type == "exam" and answer_s3_key
+        else document_type
+    )
     book_title = payload.get("bookTitle")
     publisher = payload.get("publisher")
 
@@ -193,7 +198,7 @@ async def _handle_submit(raw: str) -> None:
             source_file_id=source_file_id,
             s3_key=s3_key,
             status=JobStatus.pending,
-            document_type=document_type,
+            document_type=pipeline_document_type,
             book_title=book_title,
             publisher=publisher,
         )
@@ -213,7 +218,7 @@ async def _handle_submit(raw: str) -> None:
         None,
         start_ocr_pipeline,
         ocr_job_id,
-        document_type,
+        pipeline_document_type,
         answer_s3_key,
     )
 
